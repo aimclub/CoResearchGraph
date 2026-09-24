@@ -1511,6 +1511,23 @@ for _key, _hook, _path in _EM_CALLBACKS:
 
 # Critic callbacks: their LLM prompts embed the orchestrator's current roster.
 _cb("pre_action_critique", "after_model", factory=_pre_action_critique)
+
+
+def _spoiler_guard_query(ctx):
+    from CoScientist.agents.callbacks.spoiler_guard import guard_from_settings
+    return guard_from_settings().guard_query
+
+
+def _spoiler_guard_result(ctx):
+    from CoScientist.agents.callbacks.spoiler_guard import guard_from_settings
+    return guard_from_settings().guard_result
+
+
+# Blind-review guard (agents/blind.yaml): first in both chains, so a refused
+# query never reaches the tool and a filtered result is what the counters and
+# the link registry behind it see.
+_cb("guard_spoiler_query", "before_tool", factory=_spoiler_guard_query)
+_cb("guard_spoiler_result", "after_tool", factory=_spoiler_guard_result)
 _cb("post_action_critique", "after_tool", factory=_post_action_critique)
 
 

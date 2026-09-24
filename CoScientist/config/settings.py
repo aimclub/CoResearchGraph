@@ -593,6 +593,37 @@ class SynapseSettings(BaseModel):
 # =========================
 # CRITIC
 # =========================
+# =========================
+# BLIND REVIEW GUARD
+# =========================
+class BlindSettings(BaseModel):
+    """Blind-review guard for validation runs with a known answer.
+
+    A refuted claim is re-checked by the system; the guard keeps the outcome
+    of that check out of what search tools return (agents/blind.yaml wires it
+    onto the search-capable agents). Env: BLIND__ENABLED, BLIND__CUTOFF_YEAR,
+    BLIND__BLOCKLIST (JSON list), BLIND__CLAIM, BLIND__JUDGE, BLIND__JUDGE_MODEL.
+    """
+
+    enabled: bool = False
+    # Last publication year the run may read. OpenAlex queries get the filter;
+    # other results are dropped when they carry a later date.
+    cutoff_year: Optional[int] = None
+    # Case-insensitive terms that identify the refutation: authors, titles,
+    # method names, DOIs. A query naming one is refused; a result block naming
+    # one is dropped or redacted.
+    blocklist: List[str] = Field(default_factory=list)
+    # One sentence naming the claim under review, for the judge.
+    claim: str = ""
+    # An LLM judge reads the blocks that passed the blocklist and drops those
+    # that reveal the outcome of the check without using a listed term.
+    judge: bool = True
+    judge_model: Optional[str] = None  # falls back to llm.main_model
+    judge_timeout: float = 45.0
+    judge_max_items: int = 25
+    judge_max_chars: int = 1500
+
+
 class CriticSettings(BaseModel):
     """Critic LLM callback parameters (pre-action, post-action, plan critic)."""
     timeout: float = 90.0
@@ -676,6 +707,7 @@ class Settings(BaseSettings):
     synapse: SynapseSettings = SynapseSettings()
     critic: CriticSettings = CriticSettings()
     agents: AgentsSettings = AgentsSettings()
+    blind: BlindSettings = BlindSettings()
 
     model_config = SettingsConfigDict(
         env_file=".env",          
