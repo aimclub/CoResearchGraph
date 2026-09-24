@@ -100,3 +100,5 @@ def test_a_note_on_an_input_ref_folds_into_its_description():
     assert ref.description == "ETTh1.csv from download_ett_data"
     ref = DataRef.model_validate({"data_id": "D2", "kind": "url", "description": "x", "url": "http://a/b", "notes": None})
     assert ref.description == "x"
+    ref = DataRef.model_validate({"data_id": "D3", "kind": "url", "description": "x", "url": "http://a/b", "binding": None})
+    assert ref.url == "http://a/b"

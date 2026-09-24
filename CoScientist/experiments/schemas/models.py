@@ -280,11 +280,18 @@ class DataRef(StrictModel):
         # GLM keeps adding a free-text "notes" next to description, whatever the
         # schema says; four plan revisions in a row died on it (2026-09-25).
         # Fold it into the description instead of refusing the plan.
-        for key in ("notes", "note", "comment", "comments"):
-            note = raw.pop(key, None)
-            if isinstance(note, str) and note.strip():
+        # Unknown keys: a note joins the description, an empty one ("binding":
+        # null, next revision) is dropped; anything else stays for the schema
+        # error, so a real shape mistake is still reported.
+        known = set(cls.model_fields) | {"producer"}
+        for key in [k for k in raw if k not in known]:
+            value = raw[key]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                raw.pop(key)
+            elif key in ("notes", "note", "comment", "comments") and isinstance(value, str):
+                raw.pop(key)
                 base = str(raw.get("description") or "").strip()
-                raw["description"] = f"{base} {note.strip()}".strip() if base else note.strip()
+                raw["description"] = f"{base} {value.strip()}".strip() if base else value.strip()
         # GLM sometimes nests producer refs instead of flat source_* fields.
         producer = raw.pop("producer", None)
         if isinstance(producer, dict):
