@@ -1,6 +1,8 @@
 """Alembic build route, await, auto-record, critique."""
 from __future__ import annotations
 
+import asyncio
+
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +23,7 @@ from CoScientist.experiments.runtime import (
 from CoScientist.experiments.schemas import ExperimentTask
 
 from .helpers import (
+    _route_return,
     _alembic_started_state,
     _alembic_task,
     _inventory,
@@ -213,12 +216,12 @@ def test_await_alembic_job_waits_until_done(monkeypatch):
         "CoScientist.tools.alembic_tools.wait_mcp_build", _wait,
     )
     running = {"job_id": "dockstring-abc", "status": "running"}
-    out = await_alembic_job_if_experiment(
+    out = asyncio.run(await_alembic_job_if_experiment(
         SimpleNamespace(name="build_mcp_server"),
         {"repo_url": "https://github.com/dockstring/dockstring"},
         _tool_context(state),
         running,
-    )
+    ))
     assert out["status"] == "done"
     assert out["mcp_url"] == "http://127.0.0.1:9000/mcp"
     attempt = state["experiment_runtime"]["tasks"]["EXP-1"]["attempts"]
@@ -404,3 +407,90 @@ def test_alembic_success_reopens_on_react_tools_while_fedot_is_off():
     assert task_runtime["current_route"] == "react_tools"
     assert task_runtime["task"]["route"] == "react_tools"
     assert task_runtime["route_history"][-1]["route"] == "react_tools"
+
+
+def test_await_alembic_job_also_waits_on_a_status_poll(monkeypatch):
+    """A build another agent started earlier comes back as a running job the
+    builder only polls; the module must wait inside that poll, and inside a
+    poll the repeat-call guard refused (no job_id in the response then)."""
+    from CoScientist.experiments.runtime import await_alembic_job_if_experiment
+
+    state = _alembic_started_state()
+    done = {"job_id": "dockstring-abc", "status": "done",
+            "mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["dock"]}
+    monkeypatch.setattr("CoScientist.tools.alembic_tools.wait_mcp_build", lambda job_id, **kw: done)
+
+    running = {"job_id": "dockstring-abc", "status": "running", "elapsed_seconds": 8}
+    out = asyncio.run(await_alembic_job_if_experiment(
+        SimpleNamespace(name="check_mcp_build"), {"job_id": "dockstring-abc"}, _tool_context(state), running,
+    ))
+    assert out["status"] == "done" and out["mcp_url"] == "http://127.0.0.1:9000/mcp"
+
+    blocked = {"status": "blocked", "blocked_by": "repeat_call_guard", "repeats": 8}
+    out = asyncio.run(await_alembic_job_if_experiment(
+        SimpleNamespace(name="check_mcp_build"), {"job_id": "dockstring-abc"}, _tool_context(state), blocked,
+    ))
+    assert out["status"] == "done"
+    assert asyncio.run(await_alembic_job_if_experiment(
+        SimpleNamespace(name="list_mcp_builds"), {}, _tool_context(state), {"builds": []},
+    )) is None
+
+
+def test_a_build_result_with_only_the_served_address_passes_the_evidence_gate():
+    """The executor reported mcp_url and the served tools, no criteria_checks
+    and no artifacts: the address is the evidence, every criterion is attested
+    on it, and the task reopens on its post-build route."""
+    from CoScientist.experiments.runtime import state_machine
+
+    state = _alembic_started_state()
+    mark_route_returned(state, "McpBuilderAgent")
+    runtime = state["experiment_runtime"]
+    attempt_id = next(iter(runtime["tasks"]["EXP-1"]["attempts"]))
+    stored = state_machine.record_result(state, "EXP-1", attempt_id, {
+        "status": "success",
+        "summary": "MCP server for the repository is served",
+        "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["dock"], "job_id": "dockstring-abc"},
+    }, settings=ExperimentsSettings(route_fedot=True))
+    assert stored["status"] == "success"
+    ids = {c["criterion_id"] for c in stored["task_result"]["criteria_checks"]}
+    assert ids >= {c["criterion_id"] for c in runtime["tasks"]["EXP-1"]["task"]["success_criteria"]}
+    assert all(c["passed"] for c in stored["task_result"]["criteria_checks"])
+
+
+
+def _plan_with_a_consumer_of_the_served_mcp():
+    build = _alembic_task("EXP-1")
+    build["expected_artifacts"] = [
+        {"name": "informer2020-mcp-server", "role": "mcp_server", "description": "served MCP", "required": True},
+        {"name": "informer2020_build_report.md", "role": "report", "media_type": "text/markdown", "description": "build report"},
+    ]
+    rep = _task("EXP-2", route="react_tools", depends_on=["EXP-1"])
+    rep["input_data"] = [{"kind": "task_artifact", "source_task_id": "EXP-1", "source_artifact_id": "informer2020-mcp-server"}]
+    ctl = _task("EXP-3", route="react_tools", depends_on=["EXP-2"])
+    return _plan(build, rep, ctl)
+
+
+def test_a_served_mcp_resolves_as_the_artifact_the_planner_named(tmp_path):
+    """Run 10 of the blind Informer check: EXP-2 listed EXP-1's expected artifact
+    ``informer2020-mcp-server`` as a task_artifact input. The build reported an
+    address, no artifact of that name existed, readiness blocked EXP-2 and EXP-3
+    while EXP-1 was done, and the run went to reporting after one task."""
+    outputs_file = tmp_path / "family_outputs.json"
+    outputs_file.write_text("{}")
+    cfg = ExperimentsSettings(route_alembic=True)
+    state = {}
+    initialize_runtime(state, _plan_with_a_consumer_of_the_served_mcp(), critique={"verdict": "approve", "issues": [], "summary": "forced"}); approve_plan(state)
+    rt = state["experiment_runtime"]
+    start_task(state, "EXP-1", settings=cfg)
+    _route_return(state, "McpBuilderAgent")
+    att = rt["tasks"]["EXP-1"]["attempt_order"][-1]
+    record_result(state, "EXP-1", att, {"status": "success", "summary": "served", "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["t"]}}, settings=cfg)
+    start_task(state, "EXP-1", settings=cfg)
+    _route_return(state, "ExperimentAgent")
+    att = rt["tasks"]["EXP-1"]["attempt_order"][-1]
+    r = record_result(state, "EXP-1", att, {"status": "success", "summary": "smoke ok", "artifacts": [{"name": "family_outputs.json", "role": "data", "workspace_path": str(outputs_file)}], "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "mcp_endpoint": "http://127.0.0.1:9000/mcp"}, "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "ok"}]}, settings=cfg)
+    assert rt["phase"] == "execution"
+    assert rt["tasks"]["EXP-2"]["status"] == "ready"
+    served = [a for a in rt["results"][-1]["artifacts"] if a["role"] == "mcp_server"]
+    assert [a["name"] for a in served] == ["informer2020-mcp-server"]
+    assert served[0]["external_url"] == "http://127.0.0.1:9000/mcp"

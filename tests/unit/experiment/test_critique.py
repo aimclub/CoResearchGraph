@@ -488,3 +488,48 @@ def test_critique_allows_multiple_hypotheses_on_one_operation_via_also_tests():
     )
     assert not any("uncovered by non-optional" in i.message for i in critique.issues)
     assert not any("share the same operation_ref" in i.message for i in critique.issues)
+
+
+def test_a_conclusion_operation_is_left_to_the_reporting_stage():
+    """OP-n "draw the conclusion with numbers" has no task by design: the
+    aggregator writes it. It must not send the plan into revision."""
+    task = _task("EXP-1", route="coder")
+    task["design"]["operation_ref"] = "OP-1"
+    critique = critique_plan(
+        _plan(task),
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        operations=[
+            {"operation_id": "OP-1", "statement": "Reproduce the authors' result with their code"},
+            {"operation_id": "OP-2", "statement": "Draw the conclusion with numbers per horizon"},
+        ],
+    )
+    assert not any("Frame operations uncovered" in i.message for i in critique.issues)
+    note = next(i for i in critique.issues if "left to the reporting stage" in i.message)
+    assert note.severity == "minor" and "OP-2" in note.message
+    still = critique_plan(
+        _plan(task),
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        operations=[
+            {"operation_id": "OP-1", "statement": "Reproduce the authors' result with their code"},
+            {"operation_id": "OP-2", "statement": "Train the control models and compare on the same split"},
+        ],
+    )
+    assert any("Frame operations uncovered" in i.message and "OP-2" in i.message for i in still.issues)
+
+
+def test_a_conclusion_operation_with_glued_constraints_is_still_reporting():
+    """Run 11 of the blind Informer check: the frame parser attached the
+    request's constraints paragraph ("epochs may be reduced", "save artifacts")
+    to OP-3 "make the conclusion", and the training verb in it made the
+    critique demand a task for the conclusion again."""
+    from CoScientist.experiments.critique.validator import _is_reporting_operation
+
+    statement = (
+        "Сделай вывод: подтверждается ли заявление, с числами по каждому горизонту.\n\n"
+        "Ограничения: CPU или одна GPU 4 ГБ, несколько часов. Число эпох можно уменьшить, "
+        "если протокол одинаков для всех сравниваемых моделей. Все скрипты и метрики сохраняй как артефакты."
+    )
+    assert _is_reporting_operation(statement)
+    assert not _is_reporting_operation("Обучи модель и сделай вывод по каждому горизонту.")

@@ -128,9 +128,14 @@ class ExperimentControlToolset(BaseToolset):
                 "error_message": str(exc),
                 "retryable": True,
             }
-            stored = state_machine.record_result(
-                tool_context.state, task_id, attempt_id, downgraded, route_agents=route_agents,
-            )
+            try:
+                stored = state_machine.record_result(
+                    tool_context.state, task_id, attempt_id, downgraded, route_agents=route_agents,
+                )
+            except ExperimentRuntimeError as again:
+                # Never let the second attempt raise through the module: the
+                # executor gets the error and decides.
+                return again.as_dict()
             stored.update({"downgraded_from": result.get("status"), "downgrade_reason": "result_incomplete"})
             _mirror_result_to_graph(tool_context, task_id, stored)
             return stored

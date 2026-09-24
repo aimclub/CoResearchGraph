@@ -1,6 +1,8 @@
 """AgentTool / control-tool callbacks: one route + mandatory record_result."""
 from __future__ import annotations
 
+import asyncio
+
 import copy
 import json
 import logging
@@ -218,18 +220,27 @@ def pin_alembic_build_args(
     return None
 
 
-def await_alembic_job_if_experiment(
+async def await_alembic_job_if_experiment(
     tool: BaseTool, args: dict[str, Any], tool_context: ToolContext, tool_response: Any,
 ) -> Any:
-    """after_tool on McpBuilder: block until the EM build is done or failed."""
-    if getattr(tool, "name", "") != "build_mcp_server" or not isinstance(tool_response, dict):
+    """after_tool on McpBuilder: block until the EM build is done or failed.
+
+    Fires on ``build_mcp_server`` and on ``check_mcp_build``: a build that
+    another agent started earlier in the session (the orchestrator, the
+    builds page) comes back to the module as a running job the builder only
+    polls, and polling is what the repeat-call guard cuts off. Waiting here,
+    inside the one call, is what keeps the executor from recording a failure
+    while the build is still going (2026-09-23, Informer2020 run).
+    """
+    name = getattr(tool, "name", "")
+    if name not in ("build_mcp_server", "check_mcp_build") or not isinstance(tool_response, dict):
         return None
     state = tool_context.state
     ctx = _em_alembic_attempt(state)
     pin = _read_em_alembic_pin(state)
     if ctx is None and not pin.get("repo_url"):
         return None
-    job_id = str(tool_response.get("job_id") or "").strip()
+    job_id = str(tool_response.get("job_id") or (args or {}).get("job_id") or "").strip()
     if not job_id:
         return None
 
@@ -265,8 +276,10 @@ def await_alembic_job_if_experiment(
 
     cfg = get_settings().experiments
     audit(logger, f"EXPERIMENT_ALEMBIC_WAIT job_id={job_id} timeout_s={cfg.alembic_timeout_s}")
-    snap = wait_mcp_build(
-        job_id, timeout_s=cfg.alembic_timeout_s, poll_s=cfg.alembic_poll_s,
+    # The wait polls with time.sleep; run it in a thread so the web server's
+    # event loop (the pages, the API, other sessions) keeps serving meanwhile.
+    snap = await asyncio.to_thread(
+        wait_mcp_build, job_id, timeout_s=cfg.alembic_timeout_s, poll_s=cfg.alembic_poll_s,
     )
     while snap.get("status") == "running":
         audit(
@@ -274,8 +287,8 @@ def await_alembic_job_if_experiment(
             f"EXPERIMENT_ALEMBIC_WAIT_EXTEND job_id={job_id} "
             f"timeout_s={cfg.alembic_timeout_s}",
         )
-        snap = wait_mcp_build(
-            job_id, timeout_s=cfg.alembic_timeout_s, poll_s=cfg.alembic_poll_s,
+        snap = await asyncio.to_thread(
+            wait_mcp_build, job_id, timeout_s=cfg.alembic_timeout_s, poll_s=cfg.alembic_poll_s,
         )
 
     snap = enrich_snapshot_with_tools(snap if isinstance(snap, dict) else {})

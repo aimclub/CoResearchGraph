@@ -376,6 +376,52 @@ def _mirror_record_to_session(
     except Exception as exc:  # noqa: BLE001 — the artifact is still usable
         logger.warning("experiment artifact mirror failed for %s (%s)", name, exc)
     return None
+def synthesize_mcp_server_artifacts(
+    task: ExperimentTask,
+    artifacts: list[ArtifactRef],
+    *,
+    mcp_url: str,
+    runtime: dict[str, Any],
+    attempt: dict[str, Any],
+) -> list[ArtifactRef]:
+    """Give a served Alembic MCP the artifact names the planner promised.
+
+    A build task's expected artifacts of role ``mcp_server`` (or named
+    ``mcp_endpoint``/``mcp_url``) exist as soon as the server answers, but the
+    executor reports an address, not a file. Downstream tasks reference these
+    names as ``task_artifact`` inputs; without an ArtifactRef carrying the name,
+    ``find_artifact`` fails and readiness blocks the consumer while its producer
+    is already done. One transient artifact per unclaimed name, pointing at the
+    served URL, keeps the plan's names resolvable.
+    """
+    url = str(mcp_url or "").strip()
+    if not url.startswith("http"):
+        return artifacts
+    claimed = {str(a.name) for a in artifacts}
+    extra: list[ArtifactRef] = []
+    for item in task.expected_artifacts:
+        if item.role != "mcp_server" and item.name not in {"mcp_endpoint", "mcp_url"}:
+            continue
+        if item.name in claimed:
+            continue
+        extra.append(
+            ArtifactRef(
+                artifact_id=f"ART-{uuid4().hex}",
+                plan_id=runtime["plan_id"],
+                task_id=task.id,
+                attempt_id=attempt["attempt_id"],
+                role="mcp_server",
+                name=item.name,
+                external_url=url,
+                media_type="application/json",
+                producer_route=attempt["route"],
+                producer_tool="build_mcp_server",
+                created_at=utc_now(),
+                durability="transient",
+            )
+        )
+        claimed.add(item.name)
+    return [*artifacts, *extra]
 
 
 def artifact_exists(artifact: ArtifactRef) -> bool:

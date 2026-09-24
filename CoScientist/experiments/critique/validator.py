@@ -233,6 +233,31 @@ def _placeholder_url_hits(text: str) -> list[str]:
     return hits
 
 
+_REPORTING_OP = re.compile(
+    r"\b(conclu(de|sion)|verdict|report|summar(y|ise|ize)|write[- ]?up|interpret(ation)?)\b"
+    r"|вывод|заключен|отч[её]т|итог|резюм|интерпрет",
+    re.I,
+)
+
+
+def _is_reporting_operation(statement: str) -> bool:
+    """A frame operation whose whole ask is the conclusion or the report."""
+    # The frame parser may glue the request's trailing paragraph (budget,
+    # constraints, "save everything as artifacts") onto the last operation;
+    # the operation itself is its first paragraph.
+    text = (statement or "").strip().split("\n", 1)[0].strip()
+    if not text:
+        return False
+    if not _REPORTING_OP.search(text):
+        return False
+    # An operation that also names a computation or measurement is a task.
+    return not re.search(
+        r"\b(train|fit|run|evaluate|compute|measure|benchmark|simulate|predict|compare)\b"
+        r"|обуч|запуст|вычисл|измер|сравн|посчит|прогон",
+        text, re.I,
+    )
+
+
 def critique_plan(
     plan: ExperimentPlan,
     *,
@@ -380,6 +405,15 @@ def critique_plan(
         if ops:
             ops_ids = [str(op["operation_id"]).strip().upper() for op in ops]
             ops_set = set(ops_ids)
+            # A frame operation that asks for the conclusion, verdict or report
+            # is the reporting stage's work (ResultAggregator), and a plan task
+            # for it is refused as a narrative task. Requiring a task for it
+            # sent every plan into revision until the budget ran out
+            # (2026-09-23, "OP-3: conclusion with numbers per horizon").
+            reporting_ops = [
+                str(op["operation_id"]).strip().upper() for op in ops
+                if _is_reporting_operation(str(op.get("statement") or ""))
+            ]
             covered: list[str] = []
             missing_ref: list[str] = []
             for task in plan.tasks:
@@ -391,7 +425,13 @@ def critique_plan(
                 else:
                     missing_ref.append(task.id)
             covered_set = set(covered)
-            if miss_ops := [oid for oid in ops_ids if oid not in covered_set]:
+            left_to_report = [oid for oid in reporting_ops if oid not in covered_set]
+            if left_to_report:
+                co("minor",
+                   f"Frame operations left to the reporting stage: {', '.join(left_to_report)}.",
+                   "A conclusion, verdict or report is written by ResultAggregator from the "
+                   "task results; no plan task is needed for it.")
+            if miss_ops := [oid for oid in ops_ids if oid not in covered_set and oid not in left_to_report]:
                 co("major",
                    f"Frame operations uncovered by non-optional tasks: {', '.join(miss_ops)}.",
                    "Add a required task per uncovered OP-n and set design.operation_ref. "

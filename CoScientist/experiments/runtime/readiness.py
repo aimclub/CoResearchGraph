@@ -11,9 +11,10 @@ TERMINAL_TASK_STATES = frozenset({"done", "done_with_warnings", "failed", "skipp
 SUCCESS_DEPENDENCY_STATES = frozenset({"done", "done_with_warnings", "skipped"})
 
 
-def required_task_artifacts_missing(runtime: dict[str, Any], task_dump: dict[str, Any]) -> bool:
-    """True when a required task_artifact input cannot be resolved yet."""
+def missing_task_artifacts(runtime: dict[str, Any], task_dump: dict[str, Any]) -> list[str]:
+    """Required task_artifact inputs that cannot be resolved yet, as ``task:artifact``."""
     task = ExperimentTask.model_validate(task_dump)
+    missing: list[str] = []
     for data_ref in task.input_data:
         if not data_ref.required or data_ref.kind != "task_artifact":
             continue
@@ -24,8 +25,14 @@ def required_task_artifacts_missing(runtime: dict[str, Any], task_dump: dict[str
                 source_task_id=str(data_ref.source_task_id) if data_ref.source_task_id else None,
             )
         except ExperimentRuntimeError:
-            return True
-    return False
+            src = str(data_ref.source_task_id or "?")
+            missing.append(f"{src}:{data_ref.source_artifact_id or ''}")
+    return missing
+
+
+def required_task_artifacts_missing(runtime: dict[str, Any], task_dump: dict[str, Any]) -> bool:
+    """True when a required task_artifact input cannot be resolved yet."""
+    return bool(missing_task_artifacts(runtime, task_dump))
 
 
 def artifact_producers_terminal(runtime: dict[str, Any], task_id: str, task_dump: dict[str, Any]) -> bool:
@@ -92,9 +99,11 @@ def refresh_readiness(runtime: dict[str, Any]) -> None:
             for dep_id, status in zip(dep_ids, deps)
         ):
             dumped = task["task"]
-            if required_task_artifacts_missing(runtime, dumped):
+            if missing := missing_task_artifacts(runtime, dumped):
                 if artifact_producers_terminal(runtime, task_id, dumped):
                     task["status"] = "blocked"
-                    task["last_message"] = "Required upstream artifact is missing."
+                    task["last_message"] = (
+                        "Required upstream artifact is missing: " + ", ".join(missing)
+                    )
             else:
                 task["status"] = "ready"
