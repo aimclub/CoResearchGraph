@@ -221,7 +221,171 @@ def materialize_outputs_as_artifacts(
     return created
 
 
+_TOOL_RESULTS_KEY = "_em_tool_results"
+_MAX_TOOL_RESULTS = 500
+_MAX_TOOL_RESULT_BYTES = 200_000
+_MATERIALIZABLE_ROLES = frozenset({"data", "report", "log"})
+
+
+def _parse_structured(response: Any) -> Any:
+    """A tool's structured payload: MCP content blocks or JSON text become dict/list."""
+    if isinstance(response, Mapping) and isinstance(response.get("content"), list):
+        text = "\n".join(
+            str(block.get("text") or "")
+            for block in response["content"]
+            if isinstance(block, Mapping) and block.get("type", "text") == "text"
+        ).strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except ValueError:
+            return None
+    if isinstance(response, (Mapping, list)):
+        return response
+    if isinstance(response, str):
+        try:
+            return json.loads(response)
+        except ValueError:
+            return None
+    return None
+
+
+def record_tool_result(
+    state: MutableMapping[str, Any],
+    *,
+    attempt_id: str,
+    tool: str,
+    args: Mapping[str, Any] | None,
+    response: Any,
+) -> bool:
+    """Keep a route agent's structured tool result for the attempt.
+
+    MCP tools hand their numbers back in the response, not in files; without
+    this record the only trace of a training run is the agent's prose.
+    """
+    parsed = _parse_structured(response)
+    if not isinstance(parsed, (Mapping, list)) or not parsed:
+        return False
+    try:
+        encoded = json.dumps(parsed, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return False
+    if len(encoded) > _MAX_TOOL_RESULT_BYTES:
+        return False
+    existing = list(state.get(_TOOL_RESULTS_KEY) or [])
+    if len(existing) >= _MAX_TOOL_RESULTS:
+        return False
+    existing.append({
+        "attempt_id": str(attempt_id),
+        "tool": str(tool),
+        "args": dict(args or {}),
+        "result": json.loads(encoded),
+    })
+    state[_TOOL_RESULTS_KEY] = existing
+    return True
+
+
+def _flatten(value: Any, prefix: str, out: dict[str, Any]) -> dict[str, Any]:
+    """Nested mappings become dotted columns; lists stay as JSON text."""
+    for key, item in value.items():
+        column = f"{prefix}{key}"
+        if isinstance(item, Mapping):
+            _flatten(item, column + ".", out)
+        elif isinstance(item, (list, tuple)):
+            out[column] = json.dumps(item, ensure_ascii=False, default=str)
+        else:
+            out[column] = item
+    return out
+
+
+def _tool_result_rows(results: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for entry in results:
+        row: dict[str, Any] = {"tool": entry.get("tool")}
+        _flatten(entry.get("args") or {}, "", row)
+        result = entry.get("result")
+        if isinstance(result, Mapping):
+            _flatten(result, "", row)
+        else:
+            row["result"] = json.dumps(result, ensure_ascii=False, default=str)
+        rows.append(row)
+    return rows
+
+
+def _rows_csv(rows: list[dict[str, Any]]) -> str:
+    columns: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: ("" if v is None else v) for k, v in row.items()})
+    return buffer.getvalue()
+
+
+def materialize_tool_results(
+    state: MutableMapping[str, Any],
+    *,
+    task_id: str,
+    attempt_id: str,
+    expected_artifacts: list[Mapping[str, Any]],
+    existing_names: set[str] | None = None,
+    producer_tool: str = "route_tool_results",
+) -> list[dict[str, Any]]:
+    """Write the attempt's recorded tool results under the planner's artifact names.
+
+    A react_tools attempt calls MCP tools that return metrics as JSON and has no
+    tool to write files, while the planner names a table (``informer_metrics.csv``)
+    and the evidence gate demands it. One row per tool call, flattened, as CSV
+    or JSON by the expected name, so the gate, downstream ``task_artifact``
+    inputs and the report all find what the run measured.
+    """
+    results = [
+        r for r in (state.get(_TOOL_RESULTS_KEY) or [])
+        if isinstance(r, Mapping) and str(r.get("attempt_id")) == str(attempt_id)
+    ]
+    if not results:
+        return []
+    present = set(existing_names or ())
+    rows = _tool_result_rows(results)
+    created: list[dict[str, Any]] = []
+    for spec in expected_artifacts:
+        if not isinstance(spec, Mapping):
+            continue
+        name = str(spec.get("name") or "").strip()
+        role = str(spec.get("role") or "data")
+        if not name or name in present or role not in _MATERIALIZABLE_ROLES:
+            continue
+        media_type = str(spec.get("media_type") or "")
+        lowered = name.lower()
+        if media_type == "text/csv" or lowered.endswith(".csv"):
+            payload, media = _rows_csv(rows).encode("utf-8"), "text/csv"
+        elif media_type in {"", "application/json", "text/plain", "text/markdown"} or lowered.endswith((".json", ".txt", ".md")):
+            payload, media = json.dumps(rows, ensure_ascii=False, indent=2, default=str).encode("utf-8"), "application/json"
+        else:
+            continue
+        artifact = _write_artifact(
+            task_id=str(task_id),
+            attempt_id=str(attempt_id),
+            name=name,
+            media_type=media,
+            payload=payload,
+            producer_tool=producer_tool,
+            state=state,
+        )
+        if artifact:
+            present.add(name)
+            created.append({"name": name, "rows": len(rows), "workspace_path": artifact["workspace_path"]})
+    return created
+
+
 __all__ = [
     "materialize_inline_result",
     "materialize_outputs_as_artifacts",
+    "materialize_tool_results",
+    "record_tool_result",
 ]

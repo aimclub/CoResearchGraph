@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import logging
+from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Optional
 
 from google.adk.models import LlmResponse
@@ -430,21 +431,85 @@ def force_molecule_generator_s3_upload(
     return force_schema_s3_upload(tool, args, tool_context)
 
 
-def on_route_agent_returned(
+_TOOL_RESULT_ROUTES = frozenset({"react_tools", "fedot_mas"})
+
+
+def capture_experiment_tool_results(
     tool: BaseTool, args: dict[str, Any], tool_context: ToolContext, tool_response: Any,
 ) -> None:
+    """after_tool on route agents: keep each structured tool result for the attempt."""
+    tool_name = getattr(tool, "name", "")
+    if not tool_name or tool_name in ROUTE_AGENT_NAMES:
+        return
+    try:
+        _, _, attempt = active_attempt(tool_context.state)
+    except ExperimentRuntimeError:
+        return
+    if str(attempt.get("route") or "") not in _TOOL_RESULT_ROUTES:
+        return
+    from CoScientist.experiments.runtime.inline_artifacts import record_tool_result
+
+    try:
+        record_tool_result(
+            tool_context.state, attempt_id=str(attempt["attempt_id"]),
+            tool=tool_name, args=args, response=tool_response,
+        )
+    except Exception as exc:  # noqa: BLE001 — a capture must never break a tool call
+        logger.warning("capture_experiment_tool_results failed: %s", exc)
+
+
+def _materialize_route_tool_results(state: Any, task_runtime: dict[str, Any], attempt: dict[str, Any]) -> str:
+    """Write the attempt's tool results under the planner's names; the note for the executor."""
+    from CoScientist.experiments.runtime.artifacts import captured_delta
+    from CoScientist.experiments.runtime.inline_artifacts import materialize_tool_results
+
+    task = task_runtime.get("task") if isinstance(task_runtime.get("task"), dict) else {}
+    existing = {
+        str(raw.get("name") or Path(str(raw.get("workspace_path") or raw.get("s3_key") or "")).name)
+        for raw in captured_delta(state, attempt)
+    }
+    created = materialize_tool_results(
+        state,
+        task_id=str(task.get("id") or ""),
+        attempt_id=str(attempt["attempt_id"]),
+        expected_artifacts=list(task.get("expected_artifacts") or []),
+        existing_names=existing,
+    )
+    if not created:
+        return ""
+    listed = ", ".join(f"{c['name']} ({c['rows']} rows, {c['workspace_path']})" for c in created)
+    audit(logger, f"EXPERIMENT_TOOL_RESULTS_MATERIALIZED task_id={task.get('id')} attempt_id={attempt['attempt_id']} names={[c['name'] for c in created]}")
+    return (
+        "\n\n[Experiment module] Materialized from this route's tool results: "
+        f"{listed}. They are captured artifacts of this attempt: cite them in "
+        "record_result and judge the criteria they satisfy as passed."
+    )
+
+
+def on_route_agent_returned(
+    tool: BaseTool, args: dict[str, Any], tool_context: ToolContext, tool_response: Any,
+) -> Optional[dict[str, Any]]:
     """Close the route slot after a successful or failed agent response."""
     tool_name = getattr(tool, "name", "")
     if tool_name not in ROUTE_AGENT_NAMES:
-        return
+        return None
     try:
-        runtime, _, attempt = active_attempt(tool_context.state)
+        runtime, task_runtime, attempt = active_attempt(tool_context.state)
         if tool_name != ROUTE_AGENT_BY_ROUTE.get(attempt["route"]) or attempt.get("route_returned"):
-            return
+            return None
         if tool_name == "CoderAgent":
             from CoScientist.experiments.runtime.coder_artifacts import promote_coder_workspace_artifacts
             promote_coder_workspace_artifacts(tool_context.state)
+        note = ""
+        if tool_name in {"ExperimentAgent", "FedotAgent"}:
+            try:
+                note = _materialize_route_tool_results(tool_context.state, task_runtime, attempt)
+            except Exception as exc:  # noqa: BLE001 — materialization must not block the return
+                logger.warning("materialize route tool results failed: %s", exc)
+                note = ""
         stored = tool_response
+        if note and isinstance(tool_response, dict) and isinstance(tool_response.get("result"), str):
+            stored = {**tool_response, "result": tool_response["result"] + note}
         snap = _alembic_snapshot(runtime=runtime, attempt=attempt)
         if tool_name == "McpBuilderAgent" and isinstance(snap, dict):
             stored = copy.deepcopy(snap)
@@ -454,8 +519,9 @@ def on_route_agent_returned(
                 attempt["alembic_job_id"] = snap["job_id"]
         mark_route_returned(tool_context.state, tool_name)
         tool_context.state["experiment_last_route_response"] = copy.deepcopy(stored)
+        return stored if stored is not tool_response else None
     except ExperimentRuntimeError:
-        return
+        return None
 
 
 def _force_call(name: str, args: dict[str, Any], role: str = "model") -> LlmResponse:
@@ -927,6 +993,7 @@ __all__ = [
     "NO_MATCHING_TOOL_STATE_KEY",
     "assess_experiment_inventory_feasibility",
     "await_alembic_job_if_experiment",
+    "capture_experiment_tool_results",
     "force_molecule_generator_s3_upload",
     "force_schema_s3_upload",
     "guard_route_agent_tool",
