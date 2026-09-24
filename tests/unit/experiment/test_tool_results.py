@@ -85,3 +85,18 @@ def test_the_route_return_materializes_and_tells_the_executor(tmp_path, monkeypa
     assert stored["status"] == "success"
     assert [a["name"] for a in stored["task_result"]["artifacts"]] == ["informer_metrics.csv"]
     assert runtime["tasks"]["EXP-1"]["status"] == "done"
+
+
+def test_a_note_on_an_input_ref_folds_into_its_description():
+    """Blind Informer run 13: every plan revision carried input_data[].notes and
+    the strict schema refused all four; the module died and the orchestrator
+    re-delegated. The note is prose for the description, not a schema error."""
+    from CoScientist.experiments.schemas.models import DataRef
+
+    ref = DataRef.model_validate({
+        "data_id": "D1", "kind": "task_artifact", "description": "ETTh1.csv",
+        "source_task_id": "EXP-1", "source_artifact_id": "ETTh1.csv", "notes": "from download_ett_data",
+    })
+    assert ref.description == "ETTh1.csv from download_ett_data"
+    ref = DataRef.model_validate({"data_id": "D2", "kind": "url", "description": "x", "url": "http://a/b", "notes": None})
+    assert ref.description == "x"

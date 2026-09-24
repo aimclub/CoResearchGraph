@@ -277,6 +277,14 @@ class DataRef(StrictModel):
         if not isinstance(data, dict):
             return data
         raw = dict(data)
+        # GLM keeps adding a free-text "notes" next to description, whatever the
+        # schema says; four plan revisions in a row died on it (2026-09-25).
+        # Fold it into the description instead of refusing the plan.
+        for key in ("notes", "note", "comment", "comments"):
+            note = raw.pop(key, None)
+            if isinstance(note, str) and note.strip():
+                base = str(raw.get("description") or "").strip()
+                raw["description"] = f"{base} {note.strip()}".strip() if base else note.strip()
         # GLM sometimes nests producer refs instead of flat source_* fields.
         producer = raw.pop("producer", None)
         if isinstance(producer, dict):
