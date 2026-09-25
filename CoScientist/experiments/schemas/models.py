@@ -139,6 +139,19 @@ def _utc_iso_str(value: Any) -> str:
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_empty_unknown_keys(cls, data: Any) -> Any:
+        """An unknown key holding nothing (``"context_refs_full": null``) is
+        noise from the planner model, not a shape error; a real unknown value
+        still fails as before."""
+        if not isinstance(data, dict):
+            return data
+        known = set(cls.model_fields)
+        if all(k in known or v is not None for k, v in data.items()):
+            return data
+        return {k: v for k, v in data.items() if k in known or v is not None}
+
 
 class ExecutionRoute(str, Enum):
     REACT_TOOLS = "react_tools"

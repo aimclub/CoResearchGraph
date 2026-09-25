@@ -102,3 +102,15 @@ def test_a_note_on_an_input_ref_folds_into_its_description():
     assert ref.description == "x"
     ref = DataRef.model_validate({"data_id": "D3", "kind": "url", "description": "x", "url": "http://a/b", "binding": None})
     assert ref.url == "http://a/b"
+
+
+def test_an_empty_unknown_key_anywhere_in_a_plan_is_dropped():
+    """Run 16: the planner put "context_refs_full": null at the plan root and
+    the last revision died on it."""
+    from .helpers import _plan
+    plan = _plan(_task("EXP-1", route="react_tools"))
+    payload = plan.model_dump(mode="json")
+    payload["context_refs_full"] = None
+    payload["tasks"][0]["design"]["extra_note"] = None
+    from CoScientist.experiments.schemas import ExperimentPlan
+    assert ExperimentPlan.model_validate(payload).plan_id == plan.plan_id
