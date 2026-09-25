@@ -132,3 +132,20 @@ def test_the_json_sanitiser_keeps_the_largest_object_in_the_text():
             'План: {"schema_version": "experiment-plan/1.0", "plan_id": "P", "tasks": [{"id": "EXP-1"}]}')
     assert _extract_json(text)["plan_id"] == "P"
     assert _extract_json('{"a": 1}')["a"] == 1
+
+
+def test_an_artifact_kept_locally_and_uploaded_normalises_to_its_managed_copy(tmp_path):
+    from CoScientist.experiments.runtime.artifacts import normalise_artifacts
+    from .helpers import _plan, _task
+    from CoScientist.experiments.runtime.state_machine import initialize_runtime, approve_plan, start_task
+    cfg = ExperimentsSettings(route_fedot=True)
+    state: dict = {}
+    initialize_runtime(state, _plan(_task("EXP-1", route="coder")), critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state); start_task(state, "EXP-1", settings=cfg)
+    rt = state["experiment_runtime"]; tr = rt["tasks"]["EXP-1"]; att = tr["attempts"][tr["attempt_order"][-1]]
+    local = tmp_path / "w.pt"; local.write_bytes(b"x")
+    refs, warnings = normalise_artifacts(
+        [{"name": "w.pt", "role": "model", "workspace_path": str(local), "bucket": "b", "s3_key": "k/w.pt"}],
+        runtime=rt, task_runtime=tr, attempt=att,
+    )
+    assert len(refs) == 1 and refs[0].s3_key == "k/w.pt" and refs[0].workspace_path is None

@@ -242,7 +242,11 @@ def normalise_artifacts(
             bucket = get_settings().s3.bucket_name
 
         if bucket and s3_key:
-            external_url, durability = None, "managed"
+            # A file the coder both kept in its workspace and uploaded arrives
+            # with two locations; the managed copy is the canonical one, and
+            # ArtifactRef accepts exactly one (UQ run 2, 2026-09-25: nine
+            # identical record_result refusals on fno_darcy_weights.pt).
+            external_url, durability, workspace_path = None, "managed", None
             location_key = ("s3", bucket, s3_key)
         elif workspace_path:
             external_url, durability = None, durability or "workspace"
