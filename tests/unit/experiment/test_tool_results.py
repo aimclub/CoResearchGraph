@@ -124,3 +124,11 @@ def test_the_plan_is_the_object_with_tasks_even_when_another_object_comes_first(
             '{"schema_version": "experiment-plan/1.0", "plan_id": "P", "tasks": []}')
     assert _json_payload(text)["plan_id"] == "P"
     assert _json_payload('{"id": "H1"}') == {"id": "H1"}
+
+
+def test_the_json_sanitiser_keeps_the_largest_object_in_the_text():
+    from CoScientist.agents.callbacks.json_output import _extract_json
+    text = ('Гипотеза: {"hypothesis_id": "H1", "statement": "x"}\n'
+            'План: {"schema_version": "experiment-plan/1.0", "plan_id": "P", "tasks": [{"id": "EXP-1"}]}')
+    assert _extract_json(text)["plan_id"] == "P"
+    assert _extract_json('{"a": 1}')["a"] == 1

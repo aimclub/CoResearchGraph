@@ -94,9 +94,15 @@ def _extract_json(text: str) -> Optional[Any]:
     if parsed is not None:
         return parsed
 
+    # Every balanced ``{...}`` that parses; the longest one is the answer. The
+    # first one used to win, and a planner that restated a hypothesis as a
+    # small JSON object before its plan lost three revisions to that object
+    # (UQ run, 2026-09-25).
+    candidates: list[Any] = []
     start = text.find("{")
     while start != -1:
         depth = 0
+        end = -1
         for i in range(start, len(text)):
             ch = text[i]
             if ch == "{":
@@ -104,12 +110,19 @@ def _extract_json(text: str) -> Optional[Any]:
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
-                    parsed = _try_loads(text[start : i + 1])
-                    if parsed is not None:
-                        return parsed
+                    end = i
                     break
-        start = text.find("{", start + 1)
-    return None
+        if end == -1:
+            break
+        parsed = _try_loads(text[start : end + 1])
+        if parsed is not None:
+            candidates.append((end + 1 - start, parsed))
+            start = text.find("{", end + 1)
+        else:
+            start = text.find("{", start + 1)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def _maybe_apply_tool_rerank(callback_context: CallbackContext, payload: Any) -> None:
