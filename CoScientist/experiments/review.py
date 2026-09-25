@@ -186,7 +186,29 @@ def _json_payload(value: Any) -> Any:
         return value
     from CoScientist.experiments.runtime.shared import parse_fenced_json
 
-    return parse_fenced_json(value)
+    payload = parse_fenced_json(value)
+    if isinstance(payload, dict) and "tasks" not in payload and '"tasks"' in value:
+        # The planner's text carried another object first (a hypothesis it
+        # restated, a note); the plan is the object that has the tasks.
+        found = _first_object_with_key(value, "tasks")
+        if found is not None:
+            payload = found
+    return payload
+
+
+def _first_object_with_key(text: str, key: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    start = 0
+    while (start := text.find("{", start)) >= 0:
+        try:
+            obj, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            start += 1
+            continue
+        if isinstance(obj, dict) and key in obj:
+            return obj
+        start += max(end, 1)
+    return None
 
 
 def _stamp_context_invariants(

@@ -114,3 +114,13 @@ def test_an_empty_unknown_key_anywhere_in_a_plan_is_dropped():
     payload["tasks"][0]["design"]["extra_note"] = None
     from CoScientist.experiments.schemas import ExperimentPlan
     assert ExperimentPlan.model_validate(payload).plan_id == plan.plan_id
+
+
+def test_the_plan_is_the_object_with_tasks_even_when_another_object_comes_first():
+    """UQ run 2026-09-25: three plan revisions died with the schema errors of a
+    hypothesis object, because the planner's text opened with one."""
+    from CoScientist.experiments.review import _json_payload
+    text = ('Гипотеза: {"id": "H1", "statement": "x"}\n\n'
+            '{"schema_version": "experiment-plan/1.0", "plan_id": "P", "tasks": []}')
+    assert _json_payload(text)["plan_id"] == "P"
+    assert _json_payload('{"id": "H1"}') == {"id": "H1"}
