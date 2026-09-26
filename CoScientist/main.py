@@ -18,11 +18,11 @@ from uuid import uuid4
 
 from google.adk.sessions import InMemorySessionService
 from google.adk.sessions.base_session_service import BaseSessionService
-from google.adk.runners import Runner
 from google.adk.agents.run_config import RunConfig
 from google.genai import types
 
 from CoScientist.config import get_settings, ReportConfig
+from CoScientist.checkpoints.runner import CheckpointRunner as Runner
 from CoScientist.agents import orchestrator_agent, root_agent, run_root, build_for_mode
 from CoScientist.reporting import finalize_report, RunResult
 from CoScientist.tools.coder_tools import coder_toolset
@@ -218,52 +218,56 @@ class CoScientistManager:
             # Build the agent system (reads start_mode + tunable params from settings).
             system = build_for_mode()
 
+            plugins = [
+                # Stage boundary snapshots and deterministic fast-forward
+                # must run before observers and agent-local callbacks.
+                CheckpointPlugin(),
+                # First: deterministically refuse training on a fabricated
+                # dataset (before_tool gate) — fabrication buys nothing.
+                ArtifactGatePlugin(),
+                # Refuse the Nth identical tool call: any agent can fall into a
+                # tight loop (a collector once repeated one web search 39 times).
+                RepeatCallGuardPlugin(),
+                EventLoggerPlugin(),
+                # Observer: reports tool use from nested AgentTool runners
+                # too, which the top-level event stream cannot see. Inert
+                # unless a consumer (the Web UI) registered a sink.
+                ToolActivityPlugin(),
+                # Observer: posts the final answer of the agents flagged
+                # `report_output` (hypotheses, research, execution report),
+                # which otherwise only exists inside the caller's
+                # function_response. Inert without a sink.
+                AgentOutputPlugin(),
+                # Prices every model call, in nested AgentTool runners too,
+                # so one session total covers the whole agent tree.
+                UsageMetricsPlugin(),
+                GraphMemoryPlugin(),
+                BackgroundValidatorPlugin(),
+                # Fills user_id / session_id into the tool calls that declare
+                # them, so an MCP server scopes its S3 keys correctly and the
+                # model never has to copy an id by hand.
+                SessionScopePlugin(),
+                # External integration observers must see full tool results,
+                # before the truncation plugin alters them for model context.
+                *self._additional_plugins,
+                # Capture artifact (figure/table) URLs from tool results BEFORE
+                # truncation can drop them, so the report collector downloads them.
+                McpArtifactCapturePlugin(),
+                # After it: a PDF already mirrored is re-filed as a paper
+                # here instead of being fetched again.
+                PaperCapturePlugin(),
+                # Keep truncation last so observers receive full results.
+                ToolResultTruncationPlugin(),
+            ]
+            if get_settings().checkpoints.enabled:
+                from CoScientist.checkpoints import CheckpointPlugin as SnapshotCheckpointPlugin
+
+                plugins.insert(0, SnapshotCheckpointPlugin())
+
             app = App(
                 name=self.app_name,
                 root_agent=system.run_root,
-                plugins=[
-                    # Stage boundary snapshots and deterministic fast-forward
-                    # must run before observers and agent-local callbacks.
-                    CheckpointPlugin(),
-                    # First: deterministically refuse training on a fabricated
-                    # dataset (before_tool gate) — fabrication buys nothing.
-                    ArtifactGatePlugin(),
-                    # Refuse the Nth identical tool call: any agent can fall into a
-                    # tight loop (a collector once repeated one web search 39 times).
-                    RepeatCallGuardPlugin(),
-                    EventLoggerPlugin(),
-                    # Observer: reports tool use from nested AgentTool runners
-                    # too, which the top-level event stream cannot see. Inert
-                    # unless a consumer (the Web UI) registered a sink.
-                    ToolActivityPlugin(),
-                    # Observer: posts the final answer of the agents flagged
-                    # `report_output` (hypotheses, research, execution report),
-                    # which otherwise only exists inside the caller's
-                    # function_response. Inert without a sink.
-                    AgentOutputPlugin(),
-                    # Prices every model call, in nested AgentTool runners too,
-                    # so one session total covers the whole agent tree.
-                    UsageMetricsPlugin(),
-                    GraphMemoryPlugin(),
-                    BackgroundValidatorPlugin(),
-                    # Fills user_id / session_id into the tool calls that declare
-                    # them, so an MCP server scopes its S3 keys correctly and the
-                    # model never has to copy an id by hand.
-                    SessionScopePlugin(),
-                    # External integration observers must see full tool results,
-                    # before the truncation plugin alters them for model context.
-                    *self._additional_plugins,
-                    # Capture artifact (figure/table) URLs from tool results BEFORE
-                    # truncation can drop them, so the report collector downloads them.
-                    McpArtifactCapturePlugin(),
-                    # After it: a PDF already mirrored is re-filed as a paper
-                    # here instead of being fetched again.
-                    PaperCapturePlugin(),
-                    # Truncation answers None now, so it no longer decides
-                    # whether anything after it runs; it cuts for the model at
-                    # before_model and keeps only a safety net here.
-                    ToolResultTruncationPlugin(),
-                ],
+                plugins=plugins,
                 events_compaction_config=_compaction_config(),
             )
             self.runner = Runner(app=app, session_service=self.session_service)

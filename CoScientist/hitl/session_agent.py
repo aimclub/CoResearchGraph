@@ -519,6 +519,19 @@ class SessionAgent(LlmAgent):
                     ),
                 )
 
+            # T0 checkpoint: the output/plan is formed but the review has not
+            # been shown yet. The final event is BUFFERED (not committed), so no
+            # plugin hook can see this moment — hence the explicit call; the
+            # buffered event is merged into the snapshot by capture.
+            try:
+                from CoScientist.checkpoints.hooks import save_pre_hitl_checkpoint
+                await save_pre_hitl_checkpoint(
+                    ctx, agent_name=self.name,
+                    final_event=final_event, output_text=output_text,
+                )
+            except Exception:  # noqa: BLE001 — never break the review loop
+                logger.exception("pre-HITL checkpoint failed; run continues")
+
             # Perform HITL check (subclasses may run a multi-step dialogue).
             response = await self._review_decision(ctx, usable)
 

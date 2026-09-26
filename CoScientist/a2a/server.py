@@ -14,10 +14,10 @@ from fastapi import FastAPI
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.artifacts import InMemoryArtifactService
-from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 
 from CoScientist.assembly.schema import AgentConfig
+from CoScientist.checkpoints.runner import CheckpointRunner as Runner
 
 
 # Substrings that mark a settings key as sensitive; matched case-insensitively.
@@ -122,12 +122,33 @@ def make_a2a_app(
         A FastAPI application implementing the A2A JSON-RPC protocol.
     """
     _attach_opik_tracer(agent, app_name)
+    from CoScientist.config import get_settings
     from CoScientist.logging.event_logger import EventLoggerPlugin
     from CoScientist.logging.metrics import UsageMetricsPlugin
     from CoScientist.graph.emitter import GraphEmitterPlugin
     from CoScientist.agents.truncation_plugin import ToolResultTruncationPlugin
     from CoScientist.tools.paper_capture_plugin import PaperCapturePlugin
     from CoScientist.verify.gate_plugin import ArtifactGatePlugin
+
+    plugins = [
+        ArtifactGatePlugin(),
+        EventLoggerPlugin(),
+        UsageMetricsPlugin(),
+        GraphEmitterPlugin(),
+        PaperCapturePlugin(),
+        ToolResultTruncationPlugin(),
+    ]
+    checkpoint_plugin = None
+    if get_settings().checkpoints.enabled:
+        from CoScientist.checkpoints import CheckpointPlugin
+
+        checkpoint_plugin = CheckpointPlugin()
+        plugins.insert(0, checkpoint_plugin)
+
+    if get_settings().synapse.enabled:
+        from CoScientist.checkpoints.synapse import SynapseTracePlugin
+
+        plugins.insert(0, SynapseTracePlugin())
 
     runner = Runner(
         agent=agent,
@@ -136,22 +157,29 @@ def make_a2a_app(
         artifact_service=InMemoryArtifactService(),
         # ArtifactGatePlugin first: refuse training on a fabricated dataset here
         # too, so an agent served over A2A is held to the same standard as the
-        # in-process runner. Truncation used to have to stay last, because ADK
-        # early-exits on the first non-None after_tool and it answered with the
-        # cut result — which silently skipped every agent's own after_tool
-        # chain. It answers None now and cuts at before_model instead.
-        plugins=[
-            ArtifactGatePlugin(),
-            EventLoggerPlugin(),
-            UsageMetricsPlugin(),
-            GraphEmitterPlugin(),
-            PaperCapturePlugin(),
-            ToolResultTruncationPlugin(),
-        ],
+        # in-process runner. Truncation MUST stay last (ADK early-exits on the
+        # first non-None after_tool).
+        plugins=plugins,
     )
     executor = A2aAgentExecutor(runner=runner)
+    task_store = InMemoryTaskStore()
     handler = DefaultRequestHandler(
         agent_executor=executor,
-        task_store=InMemoryTaskStore(),
+        task_store=task_store,
     )
-    return A2AFastAPIApplication(agent_card=agent_card, http_handler=handler).build()
+    builder = A2AFastAPIApplication(agent_card=agent_card, http_handler=handler)
+    if get_settings().synapse.enabled:
+        from CoScientist.a2a.synapse_tracing import SynapseJSONRPCHandler
+
+        builder.handler = SynapseJSONRPCHandler(
+            agent_card, handler, task_store=task_store
+        )
+    app = builder.build()
+    if checkpoint_plugin is not None:
+        from CoScientist.checkpoints import make_checkpoint_router
+
+        app.include_router(make_checkpoint_router(
+            session_service=runner.session_service,
+            app_name=app_name,
+        ))
+    return app

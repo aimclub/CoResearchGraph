@@ -1,0 +1,17 @@
+# Strict local scientific pilot; regular Synapse demo and production profiles
+# retain their existing free-form orchestration.
+extends: synapse_demo
+defaults:
+  reasoning: medium
+agents:
+  HypothesesAgent:
+    reasoning: medium
+  OrchestratorAgent:
+    callbacks:
+      before_agent: [before_get_task, inject_graph_root, inject_research_context, user_links]
+      before_model: [save_uploaded_artifacts, seed_coder_workspace, redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+      # The missing-tool patch handles older ADK; ADK 2.9 handles unknown
+      # calls natively. guard_unknown_tools would end the turn on prose.
+      after_model: [require_pilot_delegations, expand_link_refs]

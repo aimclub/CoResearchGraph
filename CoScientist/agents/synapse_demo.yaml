@@ -1,0 +1,10 @@
+extends: system
+agents:
+  PlanningPipelineAgent:
+    a2a: null
+  MedicalAgent:
+    enabled: false
+    a2a: null
+  McpBuilderAgent:
+    enabled: false
+    a2a: null

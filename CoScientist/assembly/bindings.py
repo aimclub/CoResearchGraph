@@ -1380,6 +1380,8 @@ _cb("PaperSearchGuard", "before_tool", factory=lambda ctx: _paper_search_guard()
 _cb("ForbidExploreMyPapers", "before_tool", factory=lambda ctx: _forbid_explore_my_papers())
 # Catch hallucinated tool calls (e.g. `find`) and correct instead of crashing.
 _cb("guard_unknown_tools", "after_model", factory=_guard_unknown_tools)
+from CoScientist.agents.callbacks.pilot_delegation import require_pilot_delegations
+_cb("require_pilot_delegations", "after_model", func=require_pilot_delegations)
 # End the planner's turn once its plan is registered, so it cannot loop
 # re-registering to undo create_plan's own normalisation.
 _cb("finish_after_plan_registered", "after_model",

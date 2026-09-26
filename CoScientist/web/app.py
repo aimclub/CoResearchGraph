@@ -1540,6 +1540,16 @@ def create_app() -> FastAPI:
         app.mount("/static", _RevalidatingStatic(directory=str(_static_dir)),
                   name="static")
 
+    if get_settings().checkpoints.enabled:
+        from CoScientist.checkpoints import make_checkpoint_router
+
+        async def resolve_checkpoint_session():
+            return runtime.session_service, APP_NAME
+
+        app.include_router(make_checkpoint_router(
+            session_resolver=resolve_checkpoint_session,
+        ))
+
     # --- HTML endpoint ---
     @app.get("/", response_class=HTMLResponse)
     async def index():
