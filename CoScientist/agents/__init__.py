@@ -74,8 +74,8 @@ if _tracer is not None:
             _ag.before_tool_callback.insert(0, _ag.before_tool_callback.pop())
 
 
-def build_for_mode():
-    """Build an AgentSystem configured for the current start mode from settings.
+def config_for_mode():
+    """Return a fresh, mode-adjusted config without constructing any agents.
 
     Reads ``settings.web.start_mode``:
       * ``"init"`` / ``"planner"`` — PlanningPipelineAgent is root (sequential: PlannerAgent →
@@ -85,18 +85,15 @@ def build_for_mode():
       * ``"orchestrator_planner"`` — OrchestratorAgent is root, provided with
         create_plan_tool directly, while PlannerAgent is disabled.
 
-    Other runtime-tunable parameters (e.g. ``max_searches``) are read from
-    ``settings.web`` by individual components at build time.
-
-    Returns:
-        An :class:`~CoScientist.assembly.assembler.AgentSystem`.
+    The web topology endpoint uses the same transformation as the runtime, so
+    the diagram cannot drift from the tree that the next request will build.
     """
     from CoScientist.config import get_settings
     start_mode = get_settings().web.start_mode
+    raw_config = load_config()
+    patched = copy.deepcopy(raw_config)
 
     if start_mode in ("init", "planner"):
-        raw_config = load_config()
-        patched = copy.deepcopy(raw_config)
         pipeline_agent_name = "PlanningPipelineAgent" if "PlanningPipelineAgent" in patched.agents else "InitAgent"
         if pipeline_agent_name in patched.agents:
             patched.agents[pipeline_agent_name].root = True
@@ -113,28 +110,28 @@ def build_for_mode():
                     orch_cb.insert(orch_cb.index("redact_link_urls"), "inject_original_query")
                 else:
                     orch_cb.insert(0, "inject_original_query")
-            system = build_system(config=patched)
+            return patched
         else:
             logger.warning(
                 "start_mode is set to %r but 'PlanningPipelineAgent' is not present in "
                 "the system config; falling back to default build_system()",
                 start_mode,
             )
-            system = build_system()
-        _tracer = get_multi_agent_tracer()
-        if _tracer is not None:
-            track_adk_agent_recursive(system.run_root, _tracer)
-            for _ag in system.agents.values():
-                if isinstance(getattr(_ag, "after_model_callback", None), list) and len(_ag.after_model_callback) > 1:
-                    _ag.after_model_callback.insert(0, _ag.after_model_callback.pop())
-                if isinstance(getattr(_ag, "before_tool_callback", None), list) and len(_ag.before_tool_callback) > 1:
-                    _ag.before_tool_callback.insert(0, _ag.before_tool_callback.pop())
-        return system
+            return patched
+
+    # Domain-specific profiles can expose a different root (for example,
+    # ``RootOrchestrator`` in the microfluidics profile). Their YAML already
+    # declares the complete entry topology, so the main-profile mode switch
+    # has nothing safe to rewrite.
+    if "OrchestratorAgent" not in patched.agents:
+        logger.info(
+            "start_mode %r does not apply to profile root %r; using the YAML topology",
+            start_mode,
+            patched.root.name,
+        )
+        return patched
 
     if start_mode in ("orchestrator_planner", "orchestrator_plan"):
-        raw_config = load_config()
-        patched = copy.deepcopy(raw_config)
-
         # Make OrchestratorAgent the root.
         patched.agents["OrchestratorAgent"].root = True
         for name in ("PlanningPipelineAgent", "InitAgent"):
@@ -156,25 +153,12 @@ def build_for_mode():
         if "create_plan_tool" not in orch_tools:
             orch_tools.append("create_plan_tool")
 
-        system = build_system(config=patched)
-        _tracer = get_multi_agent_tracer()
-        if _tracer is not None:
-            track_adk_agent_recursive(system.run_root, _tracer)
-            for _ag in system.agents.values():
-                if isinstance(getattr(_ag, "after_model_callback", None), list) and len(_ag.after_model_callback) > 1:
-                    _ag.after_model_callback.insert(0, _ag.after_model_callback.pop())
-                if isinstance(getattr(_ag, "before_tool_callback", None), list) and len(_ag.before_tool_callback) > 1:
-                    _ag.before_tool_callback.insert(0, _ag.before_tool_callback.pop())
-        return system
+        return patched
 
     if start_mode != "orchestrator":
         raise ValueError(
             f"Unknown start_mode {start_mode!r}; expected 'init'/'planner', 'orchestrator', or 'orchestrator_planner'"
         )
-
-    # Load a fresh config and patch it for orchestrator-as-root mode.
-    raw_config = load_config()
-    patched = copy.deepcopy(raw_config)
 
     # Make OrchestratorAgent the root.
     patched.agents["OrchestratorAgent"].root = True
@@ -188,8 +172,11 @@ def build_for_mode():
     if "PlannerAgent" in patched.agents and "PlannerAgent" not in orch_subs:
         orch_subs.insert(0, "PlannerAgent")
 
-    # Re-validate the patched config and build.
-    system = build_system(config=patched)
+    return patched
+
+
+def _trace_system(system):
+    """Attach the optional tracer and keep callback ordering stable."""
     _tracer = get_multi_agent_tracer()
     if _tracer is not None:
         track_adk_agent_recursive(system.run_root, _tracer)
@@ -198,6 +185,12 @@ def build_for_mode():
                 _ag.after_model_callback.insert(0, _ag.after_model_callback.pop())
             if isinstance(getattr(_ag, "before_tool_callback", None), list) and len(_ag.before_tool_callback) > 1:
                 _ag.before_tool_callback.insert(0, _ag.before_tool_callback.pop())
+
+
+def build_for_mode():
+    """Build an AgentSystem from the effective config for the current run."""
+    system = build_system(config=config_for_mode())
+    _trace_system(system)
     return system
 
 __all__ = [
@@ -221,4 +214,5 @@ __all__ = [
     "pipeline_post_agents",
     "tz_agent",
     "build_for_mode",
+    "config_for_mode",
 ]

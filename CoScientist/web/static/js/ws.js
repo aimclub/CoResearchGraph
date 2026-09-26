@@ -66,6 +66,10 @@
           case 'session_snapshot':
             renderSessionSnapshot(data);
             break;
+          case 'agent_configuration':
+            if (typeof loadSettings === 'function') loadSettings();
+            addTelemetry('AGENTS :: configuration revision ' + data.desiredRevision);
+            break;
           case 'status':
             applyRunStatus(data.status, data.run_status_version);
             if (typeof RunTimer !== 'undefined') {

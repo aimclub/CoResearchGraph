@@ -762,6 +762,22 @@ def test_every_declared_hitl_reaches_the_agent_that_must_use_it(monkeypatch, pro
     assert checked, f"{profile}: no hitl llm agents found — the test proves nothing"
 
 
+def test_experiment_reviewers_own_the_review_without_generic_approval_tools(monkeypatch):
+    """A plan is approved once, after deterministic validation, not by the LLM."""
+    from CoScientist.assembly.schema import resolve_config_path
+
+    config = load_config(resolve_config_path("experiments"))
+    system = _build_with(monkeypatch, config, hitl_enabled=True)
+
+    for name in ("ExperimentPlannerAgent", "ExperimentResultReviewAgent"):
+        cfg = config.agent(name)
+        agent = system.agent(name)
+        assert cfg.hitl is True and cfg.hitl_tools is False
+        assert getattr(agent, "hitl_handler", None) is not None
+        assert {"request_approval", "request_selection"}.isdisjoint(_tool_names(agent))
+        assert "request_approval" not in agent.instruction
+
+
 @pytest.mark.parametrize("profile", ["system", "experiments"])
 def test_every_agent_a_human_reads_is_told_which_language_to_write(monkeypatch, profile):
     """The rule has to reach every prompt, or it reaches the wrong half of one run.

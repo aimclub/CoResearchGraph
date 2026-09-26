@@ -53,6 +53,10 @@ class WebHITLHandler(AbstractHITLHandler):
     def __init__(self):
         # request_id -> future/payload/session metadata
         self._pending: dict[str, dict] = {}
+        # Two resumed invocations can reach the same logical review before
+        # either one has published its card.  Reserving the request under this
+        # lock keeps them on one future instead of replacing each other.
+        self._request_lock = asyncio.Lock()
         # (user_id, session_id) -> connected browser sockets. ``None`` is kept
         # solely for backwards-compatible callers that have no session context.
         self._sockets: dict[SessionKey | None, list] = {}
@@ -288,9 +292,46 @@ class WebHITLHandler(AbstractHITLHandler):
         kind = (request.context or {}).get("experiment_review_kind")
         return kind in {"plan", "result"}
 
+    @staticmethod
+    def _request_id(
+        request: HITLRequest,
+        session_key: SessionKey | None,
+    ) -> str:
+        """Return a stable id when the caller supplies a logical review id.
+
+        Random ids remain the default for ordinary confirmations.  A durable
+        experiment review includes its plan digest in ``experiment_review_id``;
+        replaying that exact checkpoint therefore redraws the same card rather
+        than creating a second independently actionable request.
+        """
+        review_id = (request.context or {}).get("experiment_review_id")
+        if not review_id:
+            return str(uuid.uuid4())
+        scope = ":".join(session_key or ("unscoped", request.agent_name))
+        return str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"coscientist:hitl:{scope}:{review_id}",
+        ))
+
+    @staticmethod
+    def _response(response_data: dict) -> HITLResponse:
+        action = HITLAction(response_data.get("action", "approve"))
+        return HITLResponse(
+            action=action,
+            approved=response_data.get("approved", False),
+            selected_option=response_data.get("selected_option"),
+            instructions=response_data.get("instructions"),
+            free_input=response_data.get("free_input"),
+            form_values=response_data.get("form_values"),
+            timed_out=response_data.get("timed_out", False),
+            decision_source=response_data.get(
+                "decision_source", HITLDecisionSource.HUMAN.value),
+            system_reason=response_data.get("system_reason"),
+        )
+
     async def handle_request(self, request: HITLRequest) -> HITLResponse:
-        request_id = str(uuid.uuid4())
         session_key = self._request_session_key(request)
+        request_id = self._request_id(request, session_key)
         public_context = dict(request.context or {})
         public_context.pop("_session", None)
 
@@ -298,7 +339,7 @@ class WebHITLHandler(AbstractHITLHandler):
         # events are still written to the transcript — a reload or an export
         # must show WHAT was asked as well as that the mode answered it, and a
         # response with no request reads as a gap in the record.
-        if _auto_approves():
+        if _auto_approves() and not request.requires_human:
             response = resolve_auto(request)
             asked = {
                 "type": "hitl_request", "request_id": request_id,
@@ -333,7 +374,11 @@ class WebHITLHandler(AbstractHITLHandler):
         # auto/basic/debug.
         from CoScientist.hitl.mode import wait_seconds
 
-        timeout_sec = wait_seconds()
+        timeout_sec = (
+            request.timeout_seconds
+            if request.requires_human and request.timeout_seconds is not None
+            else wait_seconds()
+        )
         payload = {
             "type": "hitl_request",
             "request_id": request_id,
@@ -346,23 +391,10 @@ class WebHITLHandler(AbstractHITLHandler):
             "form": request.form,
             "invoked_via": request.invoked_via,
             "trigger": request.trigger,
+            "requires_human": request.requires_human,
             "timeout_seconds": timeout_sec,
             "timestamp": datetime.now().isoformat(),
         }
-        # Before `_record`: the transcript must carry the document reference
-        # too, or a reopened session would show a card with no way in.
-        await self._attach_document(payload, session_key)
-        self._record(session_key, payload)
-        if self._checkpoint is not None and session_key is not None:
-            try:
-                await self._checkpoint(session_key, payload)
-            except Exception as exc:  # noqa: BLE001 - checkpointing is observer-only
-                logger.warning("HITL checkpoint could not be created: %s", exc)
-
-        log_payload = dict(payload)
-        log_payload["_session_key"] = session_key
-        self._event_log.append(log_payload)
-
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         entry = {
@@ -375,9 +407,45 @@ class WebHITLHandler(AbstractHITLHandler):
             "deadline": loop.time() + timeout_sec
             if timeout_sec is not None and timeout_sec > 0 else None,
         }
-        self._pending[request_id] = entry
+        async with self._request_lock:
+            existing = self._pending.get(request_id)
+            if existing is None:
+                self._pending[request_id] = entry
 
-        delivered = await self._broadcast(payload, session_key)
+        if existing is not None:
+            # The owner records, publishes and handles the timeout.  Every
+            # concurrent replay observes the same human decision without
+            # drawing another card or appending duplicate transcript events.
+            response_data = await asyncio.shield(existing["future"])
+            return self._response(response_data)
+
+        try:
+            # Before `_record`: the transcript must carry the document
+            # reference too, or a reopened session would show a card with no
+            # way in.
+            await self._attach_document(payload, session_key)
+            self._record(session_key, payload)
+            if self._checkpoint is not None and session_key is not None:
+                try:
+                    await self._checkpoint(session_key, payload)
+                except Exception as exc:  # noqa: BLE001 - observer-only
+                    logger.warning("HITL checkpoint could not be created: %s", exc)
+
+            log_payload = dict(payload)
+            log_payload["_session_key"] = session_key
+            self._event_log.append(log_payload)
+            delivered = await self._broadcast(payload, session_key)
+        except BaseException:
+            # Reservation happens before the first await to close the duplicate
+            # race.  If publication itself is cancelled, release that
+            # reservation and wake any coalesced waiter instead of leaving a
+            # card that can be redelivered forever.
+            if self._pending.get(request_id) is entry:
+                self._pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            raise
+
         if delivered:
             logger.info("HITL request %s sent to %d tab(s)", request_id[:8], delivered)
         else:
@@ -401,6 +469,9 @@ class WebHITLHandler(AbstractHITLHandler):
                         if self._is_experiment_review(request)
                         else "review_window_elapsed")
             ).model_dump(mode="json")
+            # Wake any coalesced invocation with the same fail-closed result.
+            if not future.done():
+                future.set_result(response_data)
             timeout_event = {
                 "type": "hitl_timeout",
                 "request_id": request_id,
@@ -428,23 +499,12 @@ class WebHITLHandler(AbstractHITLHandler):
             # ``shield`` deliberately keeps the response future alive when the
             # caller is cancelled. Remove and cancel it explicitly so a stopped
             # run cannot be redelivered as a stale request on reconnect.
-            self._pending.pop(request_id, None)
+            if self._pending.get(request_id) is entry:
+                self._pending.pop(request_id, None)
             if not future.done():
                 future.cancel()
 
-        action = HITLAction(response_data.get("action", "approve"))
-        return HITLResponse(
-            action=action,
-            approved=response_data.get("approved", False),
-            selected_option=response_data.get("selected_option"),
-            instructions=response_data.get("instructions"),
-            free_input=response_data.get("free_input"),
-            form_values=response_data.get("form_values"),
-            timed_out=response_data.get("timed_out", False),
-            decision_source=response_data.get(
-                "decision_source", HITLDecisionSource.HUMAN.value),
-            system_reason=response_data.get("system_reason"),
-        )
+        return self._response(response_data)
 
     @staticmethod
     async def _await_response(entry: dict) -> dict:
@@ -517,7 +577,7 @@ class WebHITLHandler(AbstractHITLHandler):
         if entry and session_key is not None and entry.get("session_key") not in (None, session_key):
             logger.warning("Ignoring HITL response %s from wrong session", request_id[:8])
             return False
-        entry = self._pending.pop(request_id, None)
+        entry = self._pending.get(request_id)
         if entry and not entry["future"].done():
             entry["future"].set_result(response_data)
             self._record(entry.get("session_key"), hitl_response_event(request_id, response_data))

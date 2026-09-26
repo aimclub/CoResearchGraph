@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import functools
+import hashlib
+import json
 import logging
 import os
 from datetime import timedelta
@@ -338,23 +340,86 @@ def initialize_runtime(
     return runtime
 
 
-def approve_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
-    runtime = _runtime(state)
-    if runtime["phase"] != "awaiting_review":
-        raise ExperimentRuntimeError("invalid_phase", f"Plan approval requires awaiting_review, got {runtime['phase']!r}.")
-    if (runtime.get("critique") or {}).get("verdict") != "approve":
-        raise ExperimentRuntimeError("critique_revise", "Plan cannot be approved while deterministic critique requires revision.")
+def _mark_plan_approved(state: MutableMapping[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
     runtime["approved"] = True
     runtime["phase"] = "execution"
     state["experiment_plan_revision_count"] = 0
     state["experiment_inventory_blocker_hits"] = 0
     refresh_readiness(runtime)
     # Same reason as mark_result_review: ADK records a state delta on assignment
-    # to a top-level key, never on a nested mutation. Without this line the
-    # approval above stays invisible to the caller and the plan is re-approved.
+    # to a top-level key, never on a nested mutation.
     state[RUNTIME_KEY] = runtime
     _publish_active_tasks(state, runtime)
     return {"status": "success", "phase": runtime["phase"], "plan_id": runtime["plan_id"]}
+
+
+def approve_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
+    runtime = _runtime(state)
+    if runtime["phase"] != "awaiting_review":
+        raise ExperimentRuntimeError("invalid_phase", f"Plan approval requires awaiting_review, got {runtime['phase']!r}.")
+    if (runtime.get("critique") or {}).get("verdict") != "approve":
+        raise ExperimentRuntimeError("critique_revise", "Plan cannot be approved while deterministic critique requires revision.")
+    return _mark_plan_approved(state, runtime)
+
+
+def approve_plan_with_human_override(
+    state: MutableMapping[str, Any],
+    *,
+    plan_digest: str,
+    accepted_issue_ids: list[str],
+    decision_source: str,
+) -> dict[str, Any]:
+    """Approve one exhausted-review candidate, without weakening normal approval.
+
+    The review agent creates the candidate record after schema validation and
+    marks whether deterministic execution blockers remain.  This narrow gate
+    accepts only a real human answer for the exact plan digest shown in the
+    card; callers cannot turn an arbitrary ``critique=revise`` runtime into an
+    execution with a boolean force flag.
+    """
+    runtime = _runtime(state)
+    candidate = state.get("experiment_plan_candidate")
+    if runtime["phase"] != "awaiting_review":
+        raise ExperimentRuntimeError(
+            "invalid_phase",
+            f"Plan override requires awaiting_review, got {runtime['phase']!r}.",
+        )
+    if decision_source != "human":
+        raise ExperimentRuntimeError(
+            "human_required", "Exhausted plan review requires a human decision."
+        )
+    if not isinstance(candidate, dict) or candidate.get("status") != "awaiting_human":
+        raise ExperimentRuntimeError(
+            "override_not_pending", "No exhausted-review candidate is awaiting approval."
+        )
+    if candidate.get("digest") != plan_digest:
+        raise ExperimentRuntimeError(
+            "candidate_changed", "The approved plan is not the plan shown to the operator."
+        )
+    readiness = candidate.get("readiness") or {}
+    if not readiness.get("executable") or readiness.get("execution_blockers"):
+        raise ExperimentRuntimeError(
+            "plan_not_executable", "Human approval cannot bypass execution blockers."
+        )
+    actual_digest = hashlib.sha256(
+        json.dumps(
+            runtime.get("plan"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    if actual_digest != plan_digest:
+        raise ExperimentRuntimeError(
+            "candidate_changed", "Runtime plan changed after the review card was created."
+        )
+    runtime["human_critique_override"] = {
+        "plan_digest": plan_digest,
+        "accepted_issue_ids": list(accepted_issue_ids),
+        "decision_source": decision_source,
+        "accepted_at": utc_now().isoformat(),
+    }
+    candidate["status"] = "approved_with_issues"
+    candidate["decision"] = runtime["human_critique_override"]
+    state["experiment_plan_candidate"] = candidate
+    return _mark_plan_approved(state, runtime)
 
 
 _TASK_VIEW_FIELDS = ("status", "current_route", "planned_route", "last_message")

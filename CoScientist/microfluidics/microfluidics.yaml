@@ -521,6 +521,7 @@ agents:
   # ── Module D — stage 11: report ────────────────────────────────────────────
   ReportAgent:
     class: llm
+    required_for_pipeline: true
     title: Итоговый отчёт
     description: >-
       финальный отчёт — сводит ТЗ, литературу, кандидатов, маршруты, экономику

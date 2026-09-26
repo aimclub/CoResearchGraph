@@ -457,6 +457,7 @@ agents:
         tags: [research, literature, web-search, knowledge]
 
   TaskExecutorAgent:
+    required_for_pipeline: true
     # Asks before acting on a decision; inert until HITL__ENABLED.
     hitl: true
     class: llm

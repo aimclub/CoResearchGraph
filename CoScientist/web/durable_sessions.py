@@ -7,6 +7,8 @@ hide unrelated sessions and the replacement is atomic.
 """
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import os
 import re
@@ -31,6 +33,10 @@ class DurableSessionService(InMemorySessionService):
     def __init__(self, root: Optional[Path] = None) -> None:
         super().__init__()
         self.root = Path(root or state_dir()) / "adk_sessions"
+        # Full events are already written to disk under one process-wide lock.
+        # Serialising their in-memory mutation as well makes rollback exact for
+        # session-, user- and app-scoped state when persistence fails.
+        self._append_lock = asyncio.Lock()
 
     def _path(self, app_name: str, user_id: str, session_id: str) -> Path:
         return (
@@ -51,27 +57,80 @@ class DurableSessionService(InMemorySessionService):
     def _canonical(self, session: Session) -> Session:
         return self.sessions[session.app_name][session.user_id][session.id]
 
-    def _persist(self, session: Session) -> None:
+    @staticmethod
+    def _serialized(session: Session) -> str:
+        return json.dumps(session.model_dump(mode="json"), ensure_ascii=False)
+
+    def _persist(self, session: Session, *, serialized: str | None = None) -> None:
         target = self._path(session.app_name, session.user_id, session.id)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".json.tmp")
         temporary.write_text(
-            json.dumps(session.model_dump(mode="json"), ensure_ascii=False),
+            serialized if serialized is not None else self._serialized(session),
             encoding="utf-8",
         )
         os.replace(temporary, target)
+
+    @staticmethod
+    def _restore_session(target: Session, snapshot: Session) -> None:
+        target.state = copy.deepcopy(snapshot.state)
+        target.events = copy.deepcopy(snapshot.events)
+        target.last_update_time = snapshot.last_update_time
 
     async def create_session(self, **kwargs: Any) -> Session:
         app_name = kwargs["app_name"]
         user_id = kwargs["user_id"]
         session_id = kwargs.get("session_id")
-        if session_id and self._load(app_name, user_id, session_id) is not None:
-            # Let ADK raise its normal AlreadyExistsError.
-            return await super().create_session(**kwargs)
-        session = await super().create_session(**kwargs)
-        with _LOCK:
-            self._persist(self._canonical(session))
-        return session
+        # Validate every namespace before ADK extracts app:/user: values and
+        # mutates its shared maps.  A failed first save must not leave a ghost
+        # session or poisoned shared state behind.
+        probe = Session(
+            app_name=app_name,
+            user_id=user_id,
+            id=session_id or "serialization-probe",
+            state=copy.deepcopy(kwargs.get("state") or {}),
+        )
+        self._serialized(probe)
+
+        async with self._append_lock:
+            if session_id and self._load(app_name, user_id, session_id) is not None:
+                # Let ADK raise its normal AlreadyExistsError.
+                return await super().create_session(**kwargs)
+
+            sessions_existed = app_name in self.sessions
+            users_existed = (
+                sessions_existed and user_id in self.sessions.get(app_name, {})
+            )
+            sessions_before = copy.deepcopy(
+                self.sessions.get(app_name, {}).get(user_id)
+            )
+            app_existed = app_name in self.app_state
+            user_app_existed = app_name in self.user_state
+            app_before = copy.deepcopy(self.app_state.get(app_name))
+            user_before = copy.deepcopy(self.user_state.get(app_name))
+            try:
+                session = await super().create_session(**kwargs)
+                canonical = self._canonical(session)
+                serialized = self._serialized(canonical)
+                with _LOCK:
+                    self._persist(canonical, serialized=serialized)
+                return session
+            except Exception:
+                if users_existed:
+                    self.sessions.setdefault(app_name, {})[user_id] = sessions_before
+                elif sessions_existed:
+                    self.sessions.get(app_name, {}).pop(user_id, None)
+                else:
+                    self.sessions.pop(app_name, None)
+                if app_existed:
+                    self.app_state[app_name] = app_before
+                else:
+                    self.app_state.pop(app_name, None)
+                if user_app_existed:
+                    self.user_state[app_name] = user_before
+                else:
+                    self.user_state.pop(app_name, None)
+                raise
 
     async def get_session(
         self,
@@ -90,21 +149,66 @@ class DurableSessionService(InMemorySessionService):
     async def append_event(self, session: Session, event: Event) -> Event:
         if session.id not in self.sessions.get(session.app_name, {}).get(session.user_id, {}):
             self._load(session.app_name, session.user_id, session.id)
-        # Do not hold a synchronous lock across ADK's await: a concurrent
-        # append in the same event loop would otherwise block the loop itself.
-        result = await super().append_event(session=session, event=event)
-        with _LOCK:
-            self._persist(self._canonical(session))
-        return result
+        if event.partial:
+            return await super().append_event(session=session, event=event)
+
+        async with self._append_lock:
+            canonical = self._canonical(session)
+            # Fail before ADK mutates either the caller's session or the
+            # canonical history.  Checking the event separately pinpoints a
+            # bad delta even when the current session is still healthy.
+            self._serialized(canonical)
+            event.model_dump(mode="json")
+
+            canonical_before = copy.deepcopy(canonical)
+            session_before = (
+                copy.deepcopy(session) if session is not canonical else canonical_before
+            )
+            app_name, user_id = session.app_name, session.user_id
+            app_existed = app_name in self.app_state
+            user_app_existed = app_name in self.user_state
+            app_before = copy.deepcopy(self.app_state.get(app_name))
+            user_before = copy.deepcopy(self.user_state.get(app_name))
+
+            try:
+                result = await super().append_event(session=session, event=event)
+                serialized = self._serialized(canonical)
+                with _LOCK:
+                    self._persist(canonical, serialized=serialized)
+                return result
+            except Exception:
+                self._restore_session(canonical, canonical_before)
+                if session is not canonical:
+                    self._restore_session(session, session_before)
+                if app_existed:
+                    self.app_state[app_name] = app_before
+                else:
+                    self.app_state.pop(app_name, None)
+                if user_app_existed:
+                    self.user_state[app_name] = user_before
+                else:
+                    self.user_state.pop(app_name, None)
+                raise
 
     async def replace_session(self, session: Session) -> None:
         """Persist an intentional state/events replacement, e.g. rollback."""
-        with _LOCK:
+        self._serialized(session)
+        async with self._append_lock:
             canonical = self._canonical(session)
-            canonical.state = dict(session.state)
-            canonical.events = list(session.events)
-            canonical.last_update_time = session.last_update_time
-            self._persist(canonical)
+            before = copy.deepcopy(canonical)
+            try:
+                canonical.state = copy.deepcopy(session.state)
+                canonical.events = copy.deepcopy(session.events)
+                canonical.last_update_time = session.last_update_time
+                # Serialize the canonical object too: callers can pass a stale
+                # session with different identity fields, while only these
+                # replacement fields are committed.
+                serialized = self._serialized(canonical)
+                with _LOCK:
+                    self._persist(canonical, serialized=serialized)
+            except Exception:
+                self._restore_session(canonical, before)
+                raise
 
     async def delete_session(self, **kwargs: Any) -> None:
         await super().delete_session(**kwargs)

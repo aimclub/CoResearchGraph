@@ -12,6 +12,7 @@ load_dotenv()
 
 import asyncio
 import os
+from contextlib import nullcontext
 from typing import Optional, Sequence
 import logging
 from uuid import uuid4
@@ -22,7 +23,8 @@ from google.adk.runners import Runner
 from google.adk.agents.run_config import RunConfig
 from google.genai import types
 
-from CoScientist.config import get_settings, ReportConfig
+from CoScientist.config import get_settings, settings_scope, ReportConfig
+from CoScientist.config.settings import Settings
 from CoScientist.agents import orchestrator_agent, root_agent, run_root, build_for_mode
 from CoScientist.reporting import finalize_report, RunResult
 from CoScientist.tools.coder_tools import coder_toolset
@@ -142,6 +144,7 @@ class CoScientistManager:
         session_service: Optional[BaseSessionService] = None,
         initial_state: Optional[dict] = None,
         plugins: Optional[Sequence[object]] = None,
+        settings_override: Optional[Settings] = None,
     ):
         self.app_name = app_name
         self.user_id = user_id or f"user_{uuid4().hex}"
@@ -154,6 +157,9 @@ class CoScientistManager:
         # Integrations may add observer-only ADK plugins (for example the
         # Codesynapse trace exporter) without replacing the core runtime stack.
         self._additional_plugins = list(plugins or ())
+        # The web binds one immutable settings snapshot to each run. CLI users
+        # leave this unset and continue to read the process configuration.
+        self.settings_override = settings_override
 
         # Web mode injects one shared service so managers can reopen existing
         # sessions. CLI mode falls back to a private in-memory service.
@@ -167,7 +173,19 @@ class CoScientistManager:
         self._hitl_handler = hitl_handler
 
 
+    def settings_context(self):
+        """Bind this manager's settings for assembly and the complete run."""
+        return (
+            settings_scope(self.settings_override)
+            if self.settings_override is not None
+            else nullcontext(get_settings())
+        )
+
     async def initialize(self):
+        with self.settings_context():
+            await self._initialize()
+
+    async def _initialize(self):
         """Initialize session + runner."""
         if self._initialized:
             return
@@ -361,6 +379,15 @@ class CoScientistManager:
         return final or None
 
     async def run(
+        self,
+        query: str,
+        verbose: bool = True,
+        report_config: Optional[ReportConfig] = None,
+    ) -> RunResult:
+        with self.settings_context():
+            return await self._run(query, verbose=verbose, report_config=report_config)
+
+    async def _run(
         self,
         query: str,
         verbose: bool = True,

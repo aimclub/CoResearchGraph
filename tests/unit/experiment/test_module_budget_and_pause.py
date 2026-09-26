@@ -248,6 +248,8 @@ def test_a_timed_out_plan_review_records_why(monkeypatch):
 
     assert response.timed_out and not response.approved
     assert state[PAUSE_REASON_STATE_KEY] == "plan_review_timeout"
+    assert state["experiment_module_outcome"]["status"] == "blocked"
+    assert state["experiment_module_outcome"]["stage"] == "plan_review"
     # NOT the blocking flag: a second plan means a second review card, which
     # is the chance the operator missed. The dispatch budget bounds those.
     assert state.get("experiment_plan_review_paused") is False

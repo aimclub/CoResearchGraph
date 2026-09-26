@@ -48,6 +48,13 @@ class HITLRequest(BaseModel):
                     "HITL tool name (request_approval, request_selection). The web UI "
                     "builds a localized header from it.")
     timeout_seconds: Optional[float] = Field(default=None, description="Timeout for the request")
+    requires_human: bool = Field(
+        default=False,
+        description=(
+            "Reject automatic mode decisions for this request. Used only when "
+            "a deterministic control boundary explicitly requires an operator."
+        ),
+    )
 
 
 class HITLResponse(BaseModel):

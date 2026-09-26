@@ -25,6 +25,8 @@ _CLEAR_ON_NEW_RUN = (
     "experiment_artifacts_manifest",
     "experiment_last_route_response", "experiment_active_envelope",
     "experiment_plan_validation_errors", "experiment_plan_review_paused",
+    "experiment_plan_candidate", "experiment_plan_fallback_pending",
+    "experiment_module_outcome",
     "experiment_review_pause_reason", "experiment_module_runs", "experiment_module_dispatched",
     "experiment_plan_revision_count", "experiment_inventory_blocker_hits",
     "experiment_no_matching_tool", "experiment_execution_summary",

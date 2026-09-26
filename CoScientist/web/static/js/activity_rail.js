@@ -5,7 +5,7 @@
     // watch it, or open one of the side tools. Settings is not a destination
     // among these, so it lives on the gear in the footer.
     const NAV_GROUPS = [
-      { key: 'nav.group.work', items: ['OrchestratorAgent', 'PlannerAgent', 'KnowledgeGraph'] },
+      { key: 'nav.group.work', items: ['OrchestratorAgent', 'PlannerAgent', 'AgentTopology', 'KnowledgeGraph'] },
       { key: 'nav.group.observe', items: ['ToolsViewer', 'ToolCatalogue', 'SessionTrace', 'PaperStatistics', 'FedotTrace', 'FedotDemo'] },
       { key: 'nav.group.tools', items: ['MCPBuilder', 'CoderSandbox'] },
     ];
@@ -17,6 +17,7 @@
       { name: "TZSpecAgent", icon: "assignment", desc: "Technical Spec" },
       { name: "ToolsViewer", icon: "handyman", desc: "Tools Viewer" },
       { name: "ToolCatalogue", icon: "inventory", desc: "Tool Catalogue", href: "/tools" },
+      { name: "AgentTopology", icon: "account_tree", desc: "MAS Configuration", id: "agent-tree-link", href: "/agent-tree" },
       // The knowledge memory is gone; this graph is the research record.
       { name: "KnowledgeGraph", icon: "bubble_chart", desc: "Research Graph", id: "graph-link", href: "/graph" },
       { name: "SessionTrace", icon: "timeline", desc: "Session Trace", id: "trace-link", href: "/trace" },
@@ -86,11 +87,11 @@
         openToolsViewer();
       } else if (name === "ToolCatalogue") {
         window.open('/tools', '_blank');
-      } else if (name === "KnowledgeGraph" || name === "SessionTrace") {
+      } else if (name === "KnowledgeGraph" || name === "SessionTrace" || name === "AgentTopology") {
         // Scope to the open session FIRST. The rail's own href carries no
         // session, so preferring it opened whichever session the page happened
         // to fall back to — the graph of a different run.
-        const page = name === "SessionTrace" ? '/trace' : '/graph';
+        const page = name === "SessionTrace" ? '/trace' : name === "AgentTopology" ? '/agent-tree' : '/graph';
         const scoped = (activeUser && activeSession)
           ? `${page}?user_id=${encodeURIComponent(activeUser.id)}&session_id=${encodeURIComponent(activeSession.id)}`
           : page;

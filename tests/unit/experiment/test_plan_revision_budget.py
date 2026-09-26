@@ -25,6 +25,11 @@ from CoScientist.experiments.review import (
     ExperimentReviewSessionAgent,
     _stamp_context_invariants,
 )
+from CoScientist.hitl.models import (
+    HITLAction,
+    HITLDecisionSource,
+    HITLResponse,
+)
 
 from .helpers import _inventory, _plan, _task
 
@@ -152,3 +157,163 @@ def test_a_replan_starts_from_a_full_revision_budget():
 def test_the_budget_leaves_room_for_a_human_round():
     """Two rounds could not absorb one HITL edit plus one planner slip."""
     assert ExperimentsSettings().max_plan_revisions >= 4
+
+
+def test_exhausted_revisions_send_the_current_executable_plan_to_a_human(monkeypatch):
+    task = _task("EXP-1", route="react_tools")
+    plan = _plan(task)
+    state = {
+        "experiment_context": {
+            **_context(plan),
+            "operations": [
+                {"operation_id": "OP-1", "statement": "Prepare input data"},
+                {"operation_id": "OP-2", "statement": "Run the computation"},
+            ],
+        },
+        "experiment_plan_revision_count": ExperimentsSettings().max_plan_revisions - 1,
+    }
+    asked = []
+
+    async def approve(request):
+        asked.append(request)
+        return HITLResponse(
+            action=HITLAction.APPROVE,
+            approved=True,
+            decision_source=HITLDecisionSource.HUMAN,
+        )
+
+    monkeypatch.setattr(review_mod, "record_plan_proposed", lambda *_a, **_k: "PR-1")
+    monkeypatch.setattr(review_mod, "close_plan_record", lambda *_a, **_k: None)
+    monkeypatch.setattr(review_mod, "_publish_approved_plan_to_graph", lambda *_a, **_k: None)
+    agent = ExperimentReviewSessionAgent(name="Reviewer", review_kind="plan")
+    agent.hitl_handler = SimpleNamespace(handle_request=approve)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-1")
+
+    response = asyncio.run(agent._review_plan(ctx, plan.model_dump_json()))
+
+    assert response.approved and len(asked) == 1
+    assert asked[0].requires_human is True
+    assert asked[0].context["experiment_review_id"].endswith(
+        state["experiment_plan_candidate"]["digest"]
+    )
+    assert asked[0].context["experiment_plan"]["review_exhausted"] is True
+    assert state["experiment_runtime"]["phase"] == "execution"
+    assert state["experiment_runtime"]["approved"] is True
+    assert state["experiment_runtime"]["critique"]["verdict"] == "revise"
+    assert state["experiment_runtime"]["human_critique_override"]["decision_source"] == "human"
+    assert state["experiment_plan_candidate"]["status"] == "approved_with_issues"
+    assert state["experiment_plan_fallback_pending"] is False
+
+
+def test_exhausted_revisions_do_not_offer_human_override_for_a_dead_route(monkeypatch):
+    plan = _plan(_task("EXP-1", route="fedot_mas"))
+    state = {
+        "experiment_context": _context(plan),
+        "experiment_plan_revision_count": ExperimentsSettings().max_plan_revisions - 1,
+    }
+    asked = []
+    monkeypatch.setattr(review_mod, "fedot_route_available", lambda *_a, **_k: False)
+
+    async def should_not_ask(request):
+        asked.append(request)
+        raise AssertionError("an unavailable route must not be offered for approval")
+
+    agent = ExperimentReviewSessionAgent(name="Reviewer", review_kind="plan")
+    agent.hitl_handler = SimpleNamespace(handle_request=should_not_ask)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-1")
+
+    response = asyncio.run(agent._review_plan(ctx, plan.model_dump_json()))
+
+    assert not response.approved and response.stop_review_loop
+    assert asked == []
+    assert state["experiment_plan_review_paused"] is True
+    assert state["experiment_plan_candidate"]["status"] == "blocked"
+    assert state["experiment_plan_candidate"]["readiness"]["execution_blockers"]
+    assert state.get("experiment_runtime") is None
+
+
+def test_a_final_schema_failure_offers_the_last_schema_valid_candidate(monkeypatch):
+    plan = _plan(_task("EXP-1", route="react_tools"))
+    state = {
+        "experiment_context": {
+            **_context(plan),
+            "operations": [
+                {"operation_id": "OP-1", "statement": "Prepare input data"},
+                {"operation_id": "OP-2", "statement": "Run the computation"},
+            ],
+        },
+        "experiment_plan_revision_count": ExperimentsSettings().max_plan_revisions - 2,
+    }
+    asked = []
+
+    async def approve(request):
+        asked.append(request)
+        return HITLResponse(
+            action=HITLAction.APPROVE,
+            approved=True,
+            decision_source=HITLDecisionSource.HUMAN,
+        )
+
+    monkeypatch.setattr(review_mod, "record_plan_proposed", lambda *_a, **_k: "PR-1")
+    monkeypatch.setattr(review_mod, "close_plan_record", lambda *_a, **_k: None)
+    monkeypatch.setattr(review_mod, "_publish_approved_plan_to_graph", lambda *_a, **_k: None)
+    agent = ExperimentReviewSessionAgent(name="Reviewer", review_kind="plan")
+    agent.hitl_handler = SimpleNamespace(handle_request=approve)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-1")
+
+    first = asyncio.run(agent._review_plan(ctx, plan.model_dump_json()))
+    assert first.action == HITLAction.EDIT
+    assert state["experiment_plan_candidate"]["status"] == "needs_revision"
+
+    broken = plan.model_dump(mode="json")
+    broken["tasks"][0]["mcp_servers"][0]["url"] = None
+    response = asyncio.run(agent._review_plan(ctx, broken))
+
+    assert response.approved and len(asked) == 1
+    shown = asked[0].context["experiment_plan"]
+    assert shown["recovered_previous_candidate"] is True
+    assert shown["superseded_validation_errors"]
+    assert state["experiment_runtime"]["plan"] == plan.model_dump(mode="json")
+    assert state["experiment_plan_validation_errors"] is None
+
+
+def test_exhausted_plan_is_revalidated_after_the_human_wait(monkeypatch):
+    task = _task("EXP-1", route="react_tools")
+    plan = _plan(task)
+    state = {
+        "experiment_context": {
+            **_context(plan),
+            "operations": [
+                {"operation_id": "OP-1", "statement": "Prepare input data"},
+                {"operation_id": "OP-2", "statement": "Run the computation"},
+            ],
+        },
+        "experiment_plan_revision_count": ExperimentsSettings().max_plan_revisions - 1,
+    }
+
+    async def approve_after_inventory_disappears(_request):
+        state["experiment_context"]["available_mcp_capabilities"] = []
+        return HITLResponse(
+            action=HITLAction.APPROVE,
+            approved=True,
+            decision_source=HITLDecisionSource.HUMAN,
+        )
+
+    monkeypatch.setattr(review_mod, "record_plan_proposed", lambda *_a, **_k: "PR-1")
+    monkeypatch.setattr(review_mod, "close_plan_record", lambda *_a, **_k: None)
+    monkeypatch.setattr(review_mod, "_publish_approved_plan_to_graph", lambda *_a, **_k: None)
+    agent = ExperimentReviewSessionAgent(name="Reviewer", review_kind="plan")
+    agent.hitl_handler = SimpleNamespace(handle_request=approve_after_inventory_disappears)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-1")
+
+    response = asyncio.run(agent._review_plan(ctx, plan.model_dump_json()))
+
+    assert not response.approved and response.stop_review_loop
+    assert response.system_reason == "fallback_candidate_no_longer_executable"
+    assert state["experiment_runtime"]["phase"] == "awaiting_review"
+    assert state["experiment_plan_candidate"]["status"] == "blocked"
+    assert state["experiment_module_outcome"]["status"] == "blocked"
+    assert (
+        state["experiment_module_outcome"]["reason"]
+        == "fallback_candidate_no_longer_executable"
+    )

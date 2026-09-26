@@ -34,6 +34,8 @@ def _automatic_form_values(form: dict[str, Any] | None) -> dict[str, Any] | None
 
 def resolve_auto(request: HITLRequest) -> HITLResponse:
     """Approve immediately with deterministic values for the request shape."""
+    if request.requires_human:
+        return resolve_timeout(reason="human_decision_required")
     selected = None
     action = request.action_type
     instructions = None

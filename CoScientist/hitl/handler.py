@@ -83,7 +83,7 @@ class ConsoleHITLHandler(AbstractHITLHandler):
         # `auto` means nobody is asked — including here. Without this the one
         # mode whose whole point is that it runs unattended blocked on `input()`
         # forever on an interactive CLI run.
-        if _auto_approves():
+        if _auto_approves() and not request.requires_human:
             logging.getLogger(__name__).info(
                 "[HITL] answered by the mode, not a human (HITL__MODE=auto): %s",
                 request.agent_name)

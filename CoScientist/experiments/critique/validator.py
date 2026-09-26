@@ -63,7 +63,40 @@ def _is_narrative_report_task(task: Any) -> bool:
 class PlanValidationError(ValueError):
     def __init__(self, message: str, *, errors: list[dict[str, Any]] | None = None):
         super().__init__(message)
-        self.errors = errors or []
+        self.errors = json_validation_errors(errors or [])
+
+
+def json_validation_errors(errors: Iterable[Any]) -> list[dict[str, Any]]:
+    """Return bounded, JSON-native validation diagnostics for session state.
+
+    Pydantic keeps the original exception raised by a validator in
+    ``error['ctx']['error']``.  That is useful while debugging locally, but it
+    poisons ADK session persistence because a ``ValueError`` is not JSON data.
+    The planner only needs a stable location, code and message to repair its
+    next candidate, so neither the raw exception nor the often very large
+    rejected input belongs in durable state.
+    """
+    out: list[dict[str, Any]] = []
+    for raw in errors:
+        if isinstance(raw, dict):
+            loc = raw.get("loc") or []
+            if not isinstance(loc, (list, tuple)):
+                loc = [str(loc)]
+            out.append({
+                "type": str(raw.get("type") or "validation_error")[:120],
+                "loc": [
+                    item if isinstance(item, (str, int)) else str(item)
+                    for item in loc
+                ][:24],
+                "msg": str(raw.get("msg") or raw.get("message") or "Validation failed")[:2000],
+            })
+        else:
+            out.append({
+                "type": "validation_error",
+                "loc": [],
+                "msg": str(raw)[:2000],
+            })
+    return out[:50]
 
 
 def _issue(n: int, *, category: str, severity: str, message: str, suggestion: str, task_id: str | None = None) -> CritiqueIssue:
@@ -682,7 +715,12 @@ def validate_and_critique_plan(
         plan = ExperimentPlan.model_validate(payload)
     except ValidationError as exc:
         raise PlanValidationError(
-            "ExperimentPlan schema validation failed", errors=exc.errors(include_url=False)
+            "ExperimentPlan schema validation failed",
+            errors=exc.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            ),
         ) from exc
     finally:
         reset_lenient_planner(token)
@@ -697,4 +735,9 @@ def validate_and_critique_plan(
     )
 
 
-__all__ = ["PlanValidationError", "critique_plan", "validate_and_critique_plan"]
+__all__ = [
+    "PlanValidationError",
+    "critique_plan",
+    "json_validation_errors",
+    "validate_and_critique_plan",
+]

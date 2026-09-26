@@ -412,7 +412,8 @@
 
     async function loadSettings() {
       try {
-        const resp = await fetch('/api/settings');
+        const url = (activeUser && activeSession) ? sessionApi('/settings') : '/api/settings';
+        const resp = await fetch(url);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         mergeServerSettings(await resp.json());
         settingsLoadFailed = false;
@@ -1084,7 +1085,8 @@
 
     async function loadAgentsCatalog() {
       try {
-        const resp = await fetch('/api/agents/catalog');
+        const url = (activeUser && activeSession) ? sessionApi('/agents/catalog') : '/api/agents/catalog';
+        const resp = await fetch(url);
         if (!resp.ok) throw new Error(await fetchErrorMessage(resp));
         agentsCatalog = await resp.json();
         agentsCatalogError = '';
@@ -1731,7 +1733,8 @@
       status.className = 'text-[11px] flex-1 min-w-0 truncate text-primary/70 animate-pulse';
 
       try {
-        const resp = await fetch('/api/settings', {
+        const url = (activeUser && activeSession) ? sessionApi('/settings') : '/api/settings';
+        const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),

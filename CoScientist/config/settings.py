@@ -2,8 +2,10 @@
 Application configuration using Pydantic Settings.
 """
 import os as _os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import List, Literal, Optional, Union
+from typing import Iterator, List, Literal, Optional, Union
 
 from dotenv import find_dotenv as _find_dotenv, load_dotenv as _load_dotenv
 from pydantic import BaseModel, Field, model_validator
@@ -681,7 +683,29 @@ class Settings(BaseSettings):
 
 # Global instance
 settings = Settings()
+_settings_context: ContextVar[Settings | None] = ContextVar(
+    "coscientist_settings_context",
+    default=None,
+)
 
 
 def get_settings() -> Settings:
-    return settings
+    """Return this run's settings snapshot, or the process defaults.
+
+    Context variables are inherited by asyncio tasks, which lets concurrent web
+    sessions use different agent selections without mutating the global object.
+    """
+    return _settings_context.get() or settings
+
+
+@contextmanager
+def settings_scope(value: Settings | None) -> Iterator[Settings]:
+    """Temporarily bind ``value`` as :func:`get_settings` in this context."""
+    if value is None:
+        yield settings
+        return
+    token = _settings_context.set(value)
+    try:
+        yield value
+    finally:
+        _settings_context.reset(token)

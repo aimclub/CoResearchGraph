@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -13,10 +14,19 @@ from google.adk.events.event_actions import EventActions
 from google.genai import types
 
 from CoScientist.config import get_settings
-from CoScientist.experiments.critique import PlanValidationError, validate_and_critique_plan
+from CoScientist.experiments.critique import (
+    PlanValidationError,
+    json_validation_errors,
+    validate_and_critique_plan,
+)
 from CoScientist.agents.callbacks.report_language import session_report_language
 from CoScientist.experiments.plan_view import plan_to_view
-from CoScientist.experiments.runtime import approve_plan, initialize_runtime, mark_result_review
+from CoScientist.experiments.runtime import (
+    approve_plan,
+    approve_plan_with_human_override,
+    initialize_runtime,
+    mark_result_review,
+)
 from CoScientist.experiments.runtime.execution_bridge import (
     close_plan_record,
     record_plan_proposed,
@@ -28,10 +38,20 @@ from CoScientist.experiments.runtime.state_machine import (
     medical_route_available,
     session_route_agents,
 )
-from CoScientist.experiments.schemas import CodeRequirement, ExecutionRoute, ExperimentPlan
+from CoScientist.experiments.schemas import (
+    CodeRequirement,
+    ExecutionRoute,
+    ExperimentPlan,
+    PlanCritique,
+)
 from CoScientist.graph.session_scope import session_key
 from CoScientist.hitl.handler import AbstractHITLHandler, DelegatingHITLHandler
-from CoScientist.hitl.models import HITLAction, HITLRequest, HITLResponse
+from CoScientist.hitl.models import (
+    HITLAction,
+    HITLDecisionSource,
+    HITLRequest,
+    HITLResponse,
+)
 from CoScientist.hitl.resolver import resolve_auto, resolve_timeout
 from CoScientist.hitl.session_agent import SessionAgent
 
@@ -187,6 +207,33 @@ def _json_payload(value: Any) -> Any:
     from CoScientist.experiments.runtime.shared import parse_fenced_json
 
     return parse_fenced_json(value)
+
+
+def _plan_digest(plan: ExperimentPlan | dict[str, Any]) -> str:
+    payload = plan.model_dump(mode="json") if isinstance(plan, ExperimentPlan) else plan
+    return hashlib.sha256(
+        json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _execution_blockers(critique: Any) -> list[dict[str, Any]]:
+    """Issues an operator cannot turn into an executable route by consent."""
+    issues = getattr(critique, "issues", None) or []
+    blocked: list[dict[str, Any]] = []
+    for issue in issues:
+        if not getattr(issue, "is_blocking", False):
+            continue
+        # Every blocker is hard. Major completeness/consistency/relevance and
+        # complexity findings describe scientific scope and may be accepted as
+        # an explicitly partial plan; feasibility/security/schema findings do
+        # not create a missing tool, route or permission when accepted.
+        if issue.severity == "blocker" or issue.category in {
+            "feasibility", "security", "schema"
+        }:
+            blocked.append(issue.model_dump(mode="json"))
+    return blocked
 
 
 def _stamp_context_invariants(
@@ -613,6 +660,9 @@ _REVIEW_OWNED_STATE_KEYS = (
     "experiment_plan_view",
     "experiment_plan_critique",
     "experiment_plan_validation_errors",
+    "experiment_plan_candidate",
+    "experiment_plan_fallback_pending",
+    "experiment_module_outcome",
     "experiment_plan_review_paused",
     "experiment_plan_record_id",
     ROUTE_SELECTIONS_STATE_KEY,
@@ -652,9 +702,15 @@ class ExperimentReviewSessionAgent(SessionAgent):
         except Exception:
             return str(output_text)
 
-    def _revise(
+    async def _revise(
         self, *, ctx: InvocationContext, detail: Any, pause_prefix: str, edit_prefix: str,
-        inventory_blocker: bool = False, **_kwargs: Any,
+        inventory_blocker: bool = False,
+        plan: ExperimentPlan | None = None,
+        critique: Any = None,
+        context: dict[str, Any] | None = None,
+        previous: ExperimentPlan | None = None,
+        route_agents: set[str] | None = None,
+        **_kwargs: Any,
     ) -> HITLResponse:
         state = ctx.session.state
         try:
@@ -669,24 +725,280 @@ class ExperimentReviewSessionAgent(SessionAgent):
             hits = 1 if inventory_blocker else 0
         state["experiment_inventory_blocker_hits"] = hits
 
+        candidate: dict[str, Any] | None = None
+        recovered_previous = False
+        if plan is not None and critique is not None:
+            blockers = _execution_blockers(critique)
+            candidate = {
+                "status": "blocked" if blockers else "needs_revision",
+                "reason": "deterministic_critique",
+                "digest": _plan_digest(plan),
+                "plan": plan.model_dump(mode="json"),
+                "critique": critique.model_dump(mode="json"),
+                "readiness": {
+                    "executable": not blockers,
+                    "execution_blockers": blockers,
+                },
+            }
+            # Save every schema-valid version, not just the final attempt. If a
+            # later model turn breaks JSON, the operator can still see and
+            # deliberately select this last executable version.
+            state["experiment_plan_candidate"] = candidate
+        elif isinstance(state.get("experiment_plan_candidate"), dict):
+            saved = state["experiment_plan_candidate"]
+            readiness = saved.get("readiness") or {}
+            try:
+                saved_plan = ExperimentPlan.model_validate(saved.get("plan"))
+                saved_critique = PlanCritique.model_validate(saved.get("critique"))
+            except (ValueError, TypeError):
+                saved_plan = None
+                saved_critique = None
+            expected_run = str((context or {}).get("experiment_run_id") or "")
+            if (
+                saved_plan is not None
+                and saved_critique is not None
+                and readiness.get("executable")
+                and not readiness.get("execution_blockers")
+                and (not expected_run or saved_plan.experiment_run_id == expected_run)
+            ):
+                plan, critique = saved_plan, saved_critique
+                candidate = saved
+                recovered_previous = True
+
         max_rev = get_settings().experiments.max_plan_revisions
         if not (
             revisions >= max_rev
             or hits >= self.max_inventory_blocker_hits
         ):
             return HITLResponse(action=HITLAction.EDIT, approved=False, instructions=f"{edit_prefix} {detail}")
-        state["experiment_plan_review_paused"] = True
         reason = (
             "inventory_blocker_repeated"
             if hits >= self.max_inventory_blocker_hits
             else "max_plan_revisions"
         )
+
+        # A schema-valid current plan with only scope/quality findings is still
+        # useful. Stop spending model turns and ask the operator whether to run
+        # exactly this version with its visible issues.
+        if plan is not None and critique is not None and candidate is not None:
+            blockers = list((candidate.get("readiness") or {}).get("execution_blockers") or [])
+            candidate["status"] = "blocked" if blockers else "awaiting_human"
+            candidate["reason"] = reason
+            state["experiment_plan_candidate"] = candidate
+            if not blockers:
+                return await self._review_exhausted_candidate(
+                    ctx=ctx,
+                    plan=plan,
+                    critique=critique,
+                    reason=reason,
+                    context=context or {},
+                    previous=previous,
+                    route_agents=route_agents or set(),
+                    recovered_previous=recovered_previous,
+                )
+
+        state["experiment_plan_review_paused"] = True
+        state["experiment_plan_fallback_pending"] = False
         state[PAUSE_REASON_STATE_KEY] = reason
+        state["experiment_module_outcome"] = {
+            "status": "blocked",
+            "stage": "plan_review",
+            "reason": reason,
+        }
         _audit(f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason}")
         return HITLResponse(
             action=HITLAction.REJECT, approved=False, stop_review_loop=True,
             instructions=f"{pause_prefix} {detail}",
         )
+
+    async def _review_exhausted_candidate(
+        self,
+        *,
+        ctx: InvocationContext,
+        plan: ExperimentPlan,
+        critique: Any,
+        reason: str,
+        context: dict[str, Any],
+        previous: ExperimentPlan | None,
+        route_agents: set[str],
+        recovered_previous: bool = False,
+    ) -> HITLResponse:
+        """Put the current executable draft before a human exactly once."""
+        state, cfg = ctx.session.state, get_settings().experiments
+        user_id, session_id = session_key(ctx)
+        digest = _plan_digest(plan)
+        review_id = (
+            f"plan-fallback:{plan.experiment_run_id}:{plan.plan_id}:"
+            f"r{plan.revision}:{digest}"
+        )
+        critique_json = critique.model_dump(mode="json")
+        accepted_issue_ids = [
+            issue.issue_id
+            for issue in critique.issues
+            if issue.is_blocking
+        ]
+
+        state["experiment_plan_review_paused"] = False
+        state["experiment_plan_fallback_pending"] = True
+        state[PAUSE_REASON_STATE_KEY] = "plan_revision_budget_exhausted_pending_human"
+        state["experiment_module_outcome"] = {
+            "status": "awaiting_human",
+            "stage": "plan_review",
+            "reason": reason,
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "digest": digest,
+            "review_id": review_id,
+        }
+        candidate = state.get("experiment_plan_candidate") or {}
+        candidate["review_id"] = review_id
+        state["experiment_plan_candidate"] = candidate
+        runtime = initialize_runtime(state, plan, critique=critique_json)
+        view = plan_to_view(plan, critique_json, status="awaiting_human")
+        view["review_exhausted"] = True
+        view["review_exhausted_reason"] = reason
+        view["recovered_previous_candidate"] = recovered_previous
+        if recovered_previous:
+            view["superseded_validation_errors"] = list(
+                state.get("experiment_plan_validation_errors") or []
+            )
+        state["experiment_plan_view"] = view
+        record_id = record_plan_proposed(ctx, self.name, view)
+        state["experiment_plan_record_id"] = record_id
+
+        lang = session_report_language(state)
+        response = await self.hitl_handler.handle_request(self._hitl(
+            message=(
+                "Automatic plan revisions are exhausted. Review the last schema-valid "
+                "executable plan and either approve it with the listed issues or reject it."
+                if recovered_previous else
+                "Automatic plan revisions are exhausted. Review the current executable "
+                "plan and either approve it with the listed issues or reject it."
+            ),
+            kind="plan",
+            plan_id=plan.plan_id,
+            output=render_experiment_plan(plan, lang),
+            user_id=user_id,
+            session_id=session_id,
+            timeout_seconds=cfg.plan_review_timeout_s,
+            plan_view=view,
+            requires_human=True,
+            review_exhausted=True,
+            review_id=review_id,
+        ))
+
+        source = getattr(response.decision_source, "value", response.decision_source)
+        if response.approved and source == HITLDecisionSource.HUMAN.value:
+            # Re-evaluate the exact candidate after the wait. Settings and the
+            # attached route tree may have changed while the card was open.
+            try:
+                checked_plan, checked_critique = validate_and_critique_plan(
+                    plan.model_dump(mode="json"),
+                    settings=cfg,
+                    available_tools=(
+                        context.get("critique_mcp_capabilities")
+                        or context.get("available_mcp_capabilities") or []
+                    ),
+                    preferred_tools=context.get("preferred_mcp_capabilities"),
+                    previous_plan=previous,
+                    hypothesis_refs=context.get("hypothesis_refs") or [],
+                    repo_candidates=context.get("repo_candidates") or [],
+                    operations=context.get("operations") or [],
+                    pipeline_scope=context.get("pipeline_scope"),
+                    fedot_on=fedot_route_available(cfg, route_agents=route_agents),
+                    medical_on=medical_route_available(route_agents=route_agents),
+                )
+                invariant_errors = _context_invariant_errors(checked_plan, context)
+                blockers = _execution_blockers(checked_critique)
+                if invariant_errors or blockers or _plan_digest(checked_plan) != digest:
+                    raise PlanValidationError(
+                        "Plan is no longer executable after review",
+                        errors=invariant_errors or blockers or [{
+                            "type": "candidate_changed", "loc": [],
+                            "msg": "Plan digest changed while awaiting approval",
+                        }],
+                    )
+            except (PlanValidationError, ValueError, TypeError) as exc:
+                errors = json_validation_errors(getattr(exc, "errors", None) or [str(exc)])
+                state["experiment_plan_validation_errors"] = errors
+                state["experiment_plan_review_paused"] = True
+                state["experiment_plan_fallback_pending"] = False
+                state[PAUSE_REASON_STATE_KEY] = "fallback_candidate_no_longer_executable"
+                state["experiment_plan_candidate"]["status"] = "blocked"
+                state["experiment_module_outcome"] = {
+                    "status": "blocked",
+                    "stage": "plan_review",
+                    "reason": "fallback_candidate_no_longer_executable",
+                    "plan_id": plan.plan_id,
+                    "revision": plan.revision,
+                    "digest": digest,
+                    "review_id": review_id,
+                }
+                view["status"] = "blocked"
+                close_plan_record(ctx, record_id, "blocked", reason=str(errors))
+                return HITLResponse(
+                    action=HITLAction.REJECT,
+                    approved=False,
+                    decision_source=HITLDecisionSource.SYSTEM,
+                    system_reason="fallback_candidate_no_longer_executable",
+                    stop_review_loop=True,
+                )
+
+            runtime["critique"] = checked_critique.model_dump(mode="json")
+            state["experiment_runtime"] = runtime
+            approve_plan_with_human_override(
+                state,
+                plan_digest=digest,
+                accepted_issue_ids=accepted_issue_ids,
+                decision_source=source,
+            )
+            state["experiment_plan_fallback_pending"] = False
+            state["experiment_plan_review_paused"] = False
+            state["experiment_plan_validation_errors"] = None
+            state[PAUSE_REASON_STATE_KEY] = None
+            state["experiment_module_outcome"] = {
+                "status": "running",
+                "stage": "execution",
+                "reason": "human_approved_with_issues",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": digest,
+                "review_id": review_id,
+            }
+            view["status"] = "approved_with_issues"
+            _publish_approved_plan_to_graph(ctx, state)
+            close_plan_record(
+                ctx, record_id, "approved", reason="human accepted unresolved critique issues"
+            )
+            _audit(
+                f"EXPERIMENT_REVIEW_APPROVED kind=plan mode=human_override "
+                f"plan_id={plan.plan_id} digest={digest[:12]} phase=execution"
+            )
+            return response
+
+        state["experiment_plan_review_paused"] = True
+        state["experiment_plan_fallback_pending"] = False
+        terminal_reason = (
+            "fallback_review_timeout" if response.timed_out
+            else "fallback_auto_decision_rejected" if source != HITLDecisionSource.HUMAN.value
+            else "fallback_rejected_by_operator"
+        )
+        state[PAUSE_REASON_STATE_KEY] = terminal_reason
+        state["experiment_module_outcome"] = {
+            "status": "blocked",
+            "stage": "plan_review",
+            "reason": terminal_reason,
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "digest": digest,
+            "review_id": review_id,
+        }
+        candidate = state.get("experiment_plan_candidate") or {}
+        candidate["status"] = "timed_out" if response.timed_out else "rejected"
+        state["experiment_plan_candidate"] = candidate
+        view["status"] = candidate["status"]
+        close_plan_record(ctx, record_id, view["status"], reason=terminal_reason)
+        return response.model_copy(update={"stop_review_loop": True})
 
     def _review_window(self, configured: float) -> float | None:
         """The deadline this review waits under, under the run's HITL mode.
@@ -722,6 +1034,9 @@ class ExperimentReviewSessionAgent(SessionAgent):
         self, *, message: str, kind: str, plan_id: Any, output: str,
         user_id: str, session_id: str, timeout_seconds: float | None,
         plan_view: dict[str, Any] | None = None,
+        requires_human: bool = False,
+        review_exhausted: bool = False,
+        review_id: str | None = None,
     ) -> HITLRequest:
         context: dict[str, Any] = {
             "output": output, "experiment_review_kind": kind, "experiment_plan_id": plan_id,
@@ -732,10 +1047,15 @@ class ExperimentReviewSessionAgent(SessionAgent):
             # design matrix and the task cards from this, while ``output`` stays
             # the console's (and any other client's) copy of the same plan.
             context["experiment_plan"] = plan_view
+        if review_exhausted:
+            context["experiment_review_exhausted"] = True
+        if review_id:
+            context["experiment_review_id"] = review_id
         return HITLRequest(
             agent_name=self.name, action_type=HITLAction.APPROVE, message=message,
             context=context,
             invoked_via="internal_loop", timeout_seconds=timeout_seconds,
+            requires_human=requires_human,
         )
 
     @staticmethod
@@ -899,6 +1219,12 @@ class ExperimentReviewSessionAgent(SessionAgent):
             state["experiment_plan_review_paused"] = True
             reason = "repository_route_timeout" if response.timed_out else "repository_route_rejected"
             state[PAUSE_REASON_STATE_KEY] = reason
+            state["experiment_module_outcome"] = {
+                "status": "blocked",
+                "stage": "plan_review",
+                "reason": reason,
+                "task_id": original.id,
+            }
             state[ROUTE_SELECTIONS_STATE_KEY] = cached
             _audit(f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason} task={original.id}")
             return current, response.model_copy(update={"stop_review_loop": True})
@@ -939,10 +1265,27 @@ class ExperimentReviewSessionAgent(SessionAgent):
             runtime = ctx.session.state.get("experiment_runtime") or {}
             if runtime.get("phase") not in {"reporting", "awaiting_result_review"}:
                 _audit(f"EXPERIMENT_REVIEW_PAUSED kind=result phase={runtime.get('phase') or 'missing'}")
+                outcome = ctx.session.state.get("experiment_module_outcome") or {}
+                if outcome.get("stage") == "plan_review":
+                    reason = str(outcome.get("reason") or "plan_not_approved")
+                    if outcome.get("status") == "awaiting_human":
+                        message = (
+                            "Automatic plan revisions are exhausted and the current "
+                            "plan is waiting for a human decision. The experiment has not started."
+                        )
+                    else:
+                        message = (
+                            f"Experiment planning stopped before execution ({reason}). "
+                            "No experiment results were produced."
+                        )
+                else:
+                    message = (
+                        "Experiment result review is paused because execution has not reached reporting."
+                    )
                 yield Event(
                     invocation_id=ctx.invocation_id, author=self.name, branch=ctx.branch,
                     content=types.Content(role="model", parts=[types.Part(
-                        text="Experiment result review is paused because execution has not reached reporting.",
+                        text=message,
                     )]),
                 )
                 return
@@ -968,11 +1311,11 @@ class ExperimentReviewSessionAgent(SessionAgent):
             context = state.get("experiment_context") or {}
             runtime = state.get("experiment_runtime") or {}
             previous = ExperimentPlan.model_validate(runtime["plan"]) if runtime.get("plan") else None
+            route_agents = session_route_agents(getattr(ctx, "agent", None))
             payload = _stamp_context_invariants(_json_payload(output_text), context, previous)
             # Asked of this session's executor, the one start_task hands work to:
             # a route switched on after the session was built must not be
             # approved here and then refused there.
-            route_agents = session_route_agents(getattr(ctx, "agent", None))
             plan, critique = validate_and_critique_plan(
                 payload, settings=cfg,
                 available_tools=(
@@ -990,15 +1333,23 @@ class ExperimentReviewSessionAgent(SessionAgent):
             if errs := _context_invariant_errors(plan, context):
                 raise PlanValidationError("ExperimentPlan context invariants failed", errors=errs)
         except (PlanValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            errors = getattr(exc, "errors", None) or [str(exc)]
+            errors = json_validation_errors(getattr(exc, "errors", None) or [str(exc)])
             state["experiment_plan_validation_errors"] = errors
             _audit("EXPERIMENT_PLAN_REVISE reason=schema errors=" + json.dumps(errors, default=str, ensure_ascii=True))
-            return self._revise(
+            return await self._revise(
                 ctx=ctx, detail=errors,
                 pause_prefix="Plan validation failed repeatedly; experiment remains paused. Last errors:",
                 edit_prefix="Deterministic schema validation failed. Return a complete corrected ExperimentPlan JSON. Errors:",
+                context=context,
+                previous=previous,
+                route_agents=set(route_agents or ()),
             )
 
+        # Diagnostics belong to the candidate that produced them.  A later
+        # schema-valid candidate must not carry an old exception through the
+        # AgentTool boundary merely because deterministic critique still asks
+        # for a revision.
+        state["experiment_plan_validation_errors"] = None
         critique_json = critique.model_dump(mode="json")
         state["experiment_plan_critique"] = critique_json
         if critique.verdict != "approve":
@@ -1008,7 +1359,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
             )
             inv = any("absent from the capability inventory" in (i.message or "") for i in critique.issues)
             _audit("EXPERIMENT_PLAN_REVISE reason=critique issues=" + json.dumps(critique_json["issues"], ensure_ascii=True))
-            return self._revise(
+            return await self._revise(
                 ctx=ctx, detail=issue_text,
                 pause_prefix="PlanCritique kept rejecting the plan; experiment remains paused. Last issues:",
                 edit_prefix=(
@@ -1018,6 +1369,11 @@ class ExperimentReviewSessionAgent(SessionAgent):
                     if inv else "Deterministic PlanCritique requires revision:"
                 ),
                 inventory_blocker=inv,
+                plan=plan,
+                critique=critique,
+                context=context,
+                previous=previous,
+                route_agents=set(route_agents or ()),
             )
 
         # A proven unchanged repository entrypoint is the only ambiguous code
@@ -1057,13 +1413,17 @@ class ExperimentReviewSessionAgent(SessionAgent):
                         "ExperimentPlan context invariants failed", errors=errs
                     )
             except (PlanValidationError, ValueError, TypeError) as exc:
-                errors = getattr(exc, "errors", None) or [str(exc)]
+                errors = json_validation_errors(getattr(exc, "errors", None) or [str(exc)])
                 state["experiment_plan_validation_errors"] = errors
-                return self._revise(
+                return await self._revise(
                     ctx=ctx, detail=errors,
                     pause_prefix="Selected route failed deterministic validation; experiment remains paused:",
                     edit_prefix="Return a corrected plan for the selected repository route:",
+                    context=context,
+                    previous=previous,
+                    route_agents=set(route_agents or ()),
                 )
+            state["experiment_plan_validation_errors"] = None
             critique_json = critique.model_dump(mode="json")
             state["experiment_plan_critique"] = critique_json
             if critique.verdict != "approve":
@@ -1071,13 +1431,28 @@ class ExperimentReviewSessionAgent(SessionAgent):
                     f"{i.severity}/{i.category}: {i.message} Suggestion: {i.suggestion}"
                     for i in critique.issues if i.is_blocking
                 )
-                return self._revise(
+                return await self._revise(
                     ctx=ctx, detail=issue_text,
                     pause_prefix="Selected route failed deterministic critique; experiment remains paused:",
                     edit_prefix="Return a corrected plan for the selected repository route:",
+                    plan=plan,
+                    critique=critique,
+                    context=context,
+                    previous=previous,
+                    route_agents=set(route_agents or ()),
                 )
 
         state["experiment_plan_review_paused"] = False
+        state["experiment_plan_fallback_pending"] = False
+        state["experiment_plan_candidate"] = None
+        state["experiment_module_outcome"] = {
+            "status": "awaiting_human" if not _auto_approve("plan") else "running",
+            "stage": "plan_review" if not _auto_approve("plan") else "execution",
+            "reason": "standard_plan_review",
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "digest": _plan_digest(plan),
+        }
         state[PAUSE_REASON_STATE_KEY] = None
         state["experiment_plan_validation_errors"] = None
         # The budget bounds CONSECUTIVE failures, not a whole session. Until this
@@ -1130,6 +1505,14 @@ class ExperimentReviewSessionAgent(SessionAgent):
         ))
         if response.approved:
             approve_plan(state)
+            state["experiment_module_outcome"] = {
+                "status": "running",
+                "stage": "execution",
+                "reason": "plan_approved",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": _plan_digest(plan),
+            }
             _publish_approved_plan_to_graph(ctx, state)
             _audit(f"EXPERIMENT_REVIEW_APPROVED kind=plan mode=human plan_id={plan.plan_id} phase=execution")
             _audit("EXPERIMENT_DESIGN_MATRIX\n" + render_experiment_plan(plan, "en"))
@@ -1145,6 +1528,14 @@ class ExperimentReviewSessionAgent(SessionAgent):
             # report guard turns that into an honest note instead of a report.
             state["experiment_plan_review_paused"] = True
             state[PAUSE_REASON_STATE_KEY] = "plan_rejected_by_operator"
+            state["experiment_module_outcome"] = {
+                "status": "rejected",
+                "stage": "plan_review",
+                "reason": "plan_rejected_by_operator",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": _plan_digest(plan),
+            }
             _audit(f"EXPERIMENT_REVIEW_REJECTED kind=plan plan_id={plan.plan_id} "
                    f"reason={_clip(response.instructions) or 'no reason given'}")
             view["status"] = "rejected"
@@ -1156,6 +1547,14 @@ class ExperimentReviewSessionAgent(SessionAgent):
             # The record has said "paused" all along (_plan_outcome); state
             # said nothing, so the orchestrator blamed its attempt budget.
             state[PAUSE_REASON_STATE_KEY] = "plan_review_timeout"
+            state["experiment_module_outcome"] = {
+                "status": "blocked",
+                "stage": "plan_review",
+                "reason": "plan_review_timeout",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": _plan_digest(plan),
+            }
             _audit(f"EXPERIMENT_REVIEW_TIMEOUT kind=plan plan_id={plan.plan_id} "
                    f"window_s={_window_word(window)}")
         close_plan_record(ctx, record_id, view["status"],
@@ -1178,6 +1577,13 @@ class ExperimentReviewSessionAgent(SessionAgent):
 
         if _auto_approve("result"):
             result = mark_result_review(state, approved=True)
+            state["experiment_module_outcome"] = {
+                "status": "completed",
+                "stage": "result_review",
+                "reason": "result_auto_approved",
+                "plan_id": runtime.get("plan_id"),
+                "tasks_ok": tasks_ok,
+            }
             _audit(
                 f"EXPERIMENT_REVIEW_APPROVED kind=result mode={_approval_mode()} "
                 f"plan_id={runtime.get('plan_id')} phase={result['phase']} tasks_ok={str(tasks_ok).lower()}"
@@ -1185,6 +1591,13 @@ class ExperimentReviewSessionAgent(SessionAgent):
             return _auto_approve_response()
 
         window = self._review_window(cfg.result_review_timeout_s)
+        state["experiment_module_outcome"] = {
+            "status": "awaiting_human",
+            "stage": "result_review",
+            "reason": "result_review_pending",
+            "plan_id": runtime.get("plan_id"),
+            "tasks_ok": tasks_ok,
+        }
         response = await self.hitl_handler.handle_request(self._hitl(
             message="Accept the experiment results, or reject with feedback to request a redesigned experiment.",
             kind="result", plan_id=runtime.get("plan_id"), output=rendered,
@@ -1192,12 +1605,26 @@ class ExperimentReviewSessionAgent(SessionAgent):
         ))
         if response.timed_out:
             state[PAUSE_REASON_STATE_KEY] = "result_review_timeout"
+            state["experiment_module_outcome"] = {
+                "status": "blocked",
+                "stage": "result_review",
+                "reason": "result_review_timeout",
+                "plan_id": runtime.get("plan_id"),
+                "tasks_ok": tasks_ok,
+            }
             _audit(f"EXPERIMENT_REVIEW_TIMEOUT kind=result "
                    f"plan_id={runtime.get('plan_id')} "
                    f"window_s={_window_word(window)}")
             return response
         if response.approved:
             result = mark_result_review(state, approved=True)
+            state["experiment_module_outcome"] = {
+                "status": "completed",
+                "stage": "result_review",
+                "reason": "result_approved",
+                "plan_id": runtime.get("plan_id"),
+                "tasks_ok": tasks_ok,
+            }
             _audit(
                 f"EXPERIMENT_REVIEW_APPROVED kind=result mode=human "
                 f"plan_id={runtime.get('plan_id')} phase={result['phase']} tasks_ok={str(tasks_ok).lower()}"
@@ -1205,6 +1632,13 @@ class ExperimentReviewSessionAgent(SessionAgent):
             return response
         feedback = response.instructions or response.free_input or "Human requested experiment redesign."
         mark_result_review(state, approved=False, feedback=feedback)
+        state["experiment_module_outcome"] = {
+            "status": "rejected",
+            "stage": "result_review",
+            "reason": "result_rejected_by_operator",
+            "plan_id": runtime.get("plan_id"),
+            "tasks_ok": tasks_ok,
+        }
         return response.model_copy(update={"stop_review_loop": True})
 
     async def _review_decision(self, ctx: InvocationContext, output_text: Any) -> HITLResponse:

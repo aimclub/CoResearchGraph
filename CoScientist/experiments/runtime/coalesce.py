@@ -39,6 +39,8 @@ _TURN_CLEAR_KEYS = (
     "experiment_runtime", "experiment_task_results", "experiment_summary",
     "experiment_artifacts_manifest", "experiment_last_route_response",
     "experiment_active_envelope", "experiment_plan_validation_errors",
+    "experiment_plan_candidate", "experiment_plan_fallback_pending",
+    "experiment_module_outcome",
     "experiment_plan_review_paused", _PAUSE_REASON_STATE_KEY,
     "experiment_plan_revision_count", "experiment_inventory_blocker_hits",
     "experiment_no_matching_tool", "experiment_execution_summary",
@@ -229,6 +231,7 @@ def suppress_experiment_module_after_completed(
 
     runtime = getter("experiment_runtime")
     plan_paused = bool(getter("experiment_plan_review_paused"))
+    fallback_pending = bool(getter("experiment_plan_fallback_pending"))
     is_completed = isinstance(runtime, dict) and runtime.get("phase") == "completed"
     from CoScientist.config import get_settings
     try:
@@ -238,7 +241,9 @@ def suppress_experiment_module_after_completed(
     max_em_runs = get_settings().experiments.max_replans
     budget_exhausted = current_runs >= max_em_runs
 
-    if plan_paused:
+    if fallback_pending:
+        pass
+    elif plan_paused:
         pass
     elif budget_exhausted:
         pass
@@ -254,7 +259,13 @@ def suppress_experiment_module_after_completed(
     if not kept:
         summary = getter("experiment_summary") if callable(getter) else None
         if not isinstance(summary, str) or not summary.strip():
-            if plan_paused:
+            if fallback_pending:
+                summary = (
+                    "Experiment plan is waiting for an explicit human decision "
+                    "after automatic revisions were exhausted; not starting a "
+                    "second planning run. The experiment has not started."
+                )
+            elif plan_paused:
                 why = str(getter(_PAUSE_REASON_STATE_KEY) or "")
                 summary = (
                     "Experiment plan review is paused"
@@ -290,11 +301,13 @@ def suppress_experiment_module_after_completed(
         kept = [types.Part(text=summary)]
     content.parts = kept
     logger.warning(
-        "[%s] suppressed ExperimentModuleAgent: runs=%d/%d plan_paused=%s pause_reason=%s",
+        "[%s] suppressed ExperimentModuleAgent: runs=%d/%d plan_paused=%s "
+        "fallback_pending=%s pause_reason=%s",
         getattr(callback_context, "agent_name", None) or "orchestrator",
         current_runs,
         max_em_runs,
         plan_paused,
+        fallback_pending,
         getter(_PAUSE_REASON_STATE_KEY) or "-",
     )
     return None

@@ -337,12 +337,16 @@
       document.getElementById('active-nickname').textContent = user.nickname;
       document.getElementById('graph-link').href =
         `/graph?user_id=${encodeURIComponent(user.id)}&session_id=${encodeURIComponent(session.id)}`;
+      const agentTreeLink = document.getElementById('agent-tree-link');
+      if (agentTreeLink) agentTreeLink.href =
+        `/agent-tree?user_id=${encodeURIComponent(user.id)}&session_id=${encodeURIComponent(session.id)}`;
       populateUserSelectors();
       populateSessionSelector();
       clearChat();
       // Drop the previous session's attachment; the snapshot brings the new one.
       applyDatasetUrl('');
       applyReportLanguage('');
+      if (typeof loadSettings === 'function') await loadSettings();
       connect();
     }
 

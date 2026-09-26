@@ -1,5 +1,6 @@
 from CoScientist.agents.common import is_proxy_error
 import asyncio
+import copy
 import json
 import logging
 import mimetypes
@@ -36,7 +37,8 @@ from CoScientist.main import CoScientistManager
 from CoScientist.web.handler import WebHITLHandler, hitl_response_event
 from CoScientist.web.session_registry import LocalSessionRegistry
 from CoScientist.agents import agent_system, planner_agent
-from CoScientist.config import ReportConfig
+from CoScientist.config import ReportConfig, settings_scope
+from CoScientist.config.settings import Settings
 from CoScientist.reporting import finalize_report
 from CoScientist.hitl.tool import hitl_toolset
 from CoScientist.config import get_settings
@@ -98,13 +100,14 @@ def _versioned_static_refs(html: str, static_dir: Path) -> str:
     return _STATIC_REF.sub(version, html)
 
 
-def _pipeline_stages() -> list:
+def _pipeline_stages(run_settings: Settings | None = None) -> list:
     """The stages of a linear pipeline (see ``SystemConfig.linear_stages``) —
     the status indicator counts them; [] when the run is not a linear one."""
     try:
-        from CoScientist.assembly.schema import get_config
+        from CoScientist.agents import config_for_mode
 
-        return get_config().linear_stages()
+        with settings_scope(run_settings):
+            return config_for_mode().linear_stages()
     except Exception as exc:  # noqa: BLE001 — a status line must not break the socket
         logging.getLogger(__name__).warning("pipeline stages unavailable: %s", exc)
         return []
@@ -647,6 +650,47 @@ def _current_settings() -> dict:
     }
 
 
+_AGENT_CONFIGURATION_FIELDS = {
+    "general": ("startMode", "contextInitEnabled"),
+    "experimentModule": ("routeFedot", "routeAlembic"),
+    "medicalAgent": ("enabled",),
+    "nirReport": ("enabled",),
+    "taskExecutorAgent": ("fedotFallback",),
+    "agents": ("defaultReasoning", "overrides"),
+}
+
+
+def _agent_configuration_payload(frontend: dict) -> dict:
+    """Only settings that change which agents are built or can be routed to."""
+    result: dict[str, dict[str, Any]] = {}
+    for group, fields in _AGENT_CONFIGURATION_FIELDS.items():
+        source = frontend.get(group)
+        if not isinstance(source, dict):
+            continue
+        selected = {
+            field: copy.deepcopy(source[field])
+            for field in fields
+            if field in source
+        }
+        if selected:
+            result[group] = selected
+    return result
+
+
+def _without_agent_configuration(frontend: dict) -> dict:
+    """Return the process-wide part of a settings form submission."""
+    result = copy.deepcopy(frontend)
+    for group, fields in _AGENT_CONFIGURATION_FIELDS.items():
+        section = result.get(group)
+        if not isinstance(section, dict):
+            continue
+        for field in fields:
+            section.pop(field, None)
+        if not section:
+            result.pop(group, None)
+    return result
+
+
 
 class WebRuntime:
     """Process-local users, ADK sessions, managers, sockets, and event logs."""
@@ -663,10 +707,11 @@ class WebRuntime:
         self.session_service = _web_session_service()
         self.registry = LocalSessionRegistry()
         self.managers: dict[SessionKey, CoScientistManager] = {}
-        # Settings are process-wide, while each manager owns an immutable ADK
-        # agent tree.  A save marks cached trees stale; get_manager rebuilds a
-        # stale tree immediately before the next invocation, preserving the
-        # underlying durable ADK session and research artifacts.
+        # Each session owns a small overlay containing only settings that alter
+        # the agent topology. A manager holds the immutable snapshot used by its
+        # current invocation; a newer desired revision is applied next time.
+        self.session_settings_cache: dict[SessionKey, tuple[int, Settings]] = {}
+        self.manager_agent_revisions: dict[SessionKey, int] = {}
         self.stale_manager_trees: set[SessionKey] = set()
         self.manager_lock = asyncio.Lock()
         self.control_locks: dict[SessionKey, asyncio.Lock] = {}
@@ -711,6 +756,53 @@ class WebRuntime:
         self.checkpoint_hitl = None
         # Run execution times (start to finish) per session
         self.run_times: dict[SessionKey, dict[str, Any]] = {}
+
+    def agent_configuration(self, key: SessionKey) -> tuple[int, dict[str, Any]]:
+        try:
+            session = self.registry.require_session(*key) or {}
+        except KeyError:
+            # Internal/unit callers can exercise the runtime before registering
+            # the public session. HTTP and WebSocket entry points validate it.
+            return 0, {}
+        config = session.get("agent_configuration") or {}
+        return int(config.get("revision") or 0), copy.deepcopy(config.get("settings") or {})
+
+    def settings_snapshot(self, key: SessionKey) -> tuple[int, Settings]:
+        """Effective immutable settings for the next invocation of ``key``."""
+        revision, overlay = self.agent_configuration(key)
+        cached = self.session_settings_cache.get(key)
+        if cached is not None and cached[0] == revision:
+            return cached
+        _startup_settings()
+        snapshot = get_settings().model_copy(deep=True)
+        with settings_scope(snapshot):
+            _apply_frontend_settings(overlay)
+        current = (revision, snapshot)
+        self.session_settings_cache[key] = current
+        return current
+
+    def save_agent_configuration(
+        self,
+        key: SessionKey,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        config = self.registry.set_agent_configuration(*key, settings)
+        self.session_settings_cache.pop(key, None)
+        self.stale_manager_trees.add(key)
+        return config
+
+    def agent_configuration_state(self, key: SessionKey) -> dict[str, Any]:
+        desired_revision, _ = self.agent_configuration(key)
+        active_revision = self.manager_agent_revisions.get(key)
+        running = bool(
+            key in self.active_runs and not self.active_runs[key].done()
+        )
+        return {
+            "desiredRevision": desired_revision,
+            "activeRevision": active_revision,
+            "pending": active_revision is not None and active_revision != desired_revision,
+            "running": running,
+        }
 
     def record_event(self, key: SessionKey, event: dict[str, Any]) -> None:
         """Append a UI event to memory and to the session's on-disk transcript,
@@ -770,6 +862,11 @@ class WebRuntime:
             }
             run_data = dict(data)
             run_data["_run_status_version"] = version
+            agent_revision, run_settings = self.settings_snapshot(key)
+            # Capture before creating the task: saving settings after the user
+            # pressed Send must not alter this already accepted invocation.
+            run_data["_agent_revision"] = agent_revision
+            run_data["_settings_snapshot"] = run_settings
             task = asyncio.create_task(_handle_chat(self, key, run_data))
             self.active_runs[key] = task
 
@@ -854,17 +951,41 @@ class WebRuntime:
             })
         return stopped
 
-    async def get_manager(self, user_id: str, session_id: str) -> CoScientistManager:
+    async def get_manager(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        settings_snapshot: Settings | None = None,
+        agent_revision: int | None = None,
+    ) -> CoScientistManager:
         self.registry.require_session(user_id, session_id)
         key = (user_id, session_id)
+        if settings_snapshot is None or agent_revision is None:
+            desired_revision, desired_settings = self.settings_snapshot(key)
+            if settings_snapshot is None:
+                settings_snapshot = desired_settings
+            if agent_revision is None:
+                agent_revision = desired_revision
+        desired_revision, _ = self.agent_configuration(key)
         manager = self.managers.get(key)
-        if manager is not None and key not in self.stale_manager_trees:
+        if (
+            manager is not None
+            and self.manager_agent_revisions.get(key) == agent_revision
+            and (key not in self.stale_manager_trees or agent_revision != desired_revision)
+        ):
             return manager
         async with self.manager_lock:
             manager = self.managers.get(key)
-            if manager is not None and key in self.stale_manager_trees:
+            if (
+                manager is not None
+                and (
+                    self.manager_agent_revisions.get(key) != agent_revision
+                    or (key in self.stale_manager_trees and agent_revision == desired_revision)
+                )
+            ):
+                manager.settings_override = settings_snapshot
                 await manager.rebuild_agent_tree()
-                self.stale_manager_trees.discard(key)
             elif manager is None:
                 # NOT the place to wipe the session's graphs. A missing manager
                 # means "no manager since this process started", which is a very
@@ -880,10 +1001,16 @@ class WebRuntime:
                     user_id=user_id,
                     session_id=session_id,
                     session_service=self.session_service,
+                    settings_override=settings_snapshot,
                 )
                 await manager.initialize()
                 self.managers[key] = manager
                 self.execution_locks[key] = asyncio.Lock()
+            self.manager_agent_revisions[key] = agent_revision
+            if desired_revision == agent_revision:
+                self.stale_manager_trees.discard(key)
+            else:
+                self.stale_manager_trees.add(key)
         return manager
 
     def invalidate_agent_trees(self) -> int:
@@ -975,7 +1102,8 @@ class WebRuntime:
                     "run_times": self.run_times.get(key),
                     "dataset_url": self.dataset_urls.get(key, ""),
                     "report_language": self.report_languages.get(key, ""),
-                    "pipeline_stages": _pipeline_stages(),
+                    "pipeline_stages": _pipeline_stages(self.settings_snapshot(key)[1]),
+                    "agent_configuration": self.agent_configuration_state(key),
                     "checkpoints": self.list_checkpoints(key),
                 })
             except Exception:
@@ -2559,6 +2687,17 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.get("/agent-tree", response_class=HTMLResponse)
+    async def agent_tree_page():
+        """Visualize the effective multi-agent configuration of one session."""
+        return HTMLResponse(
+            _versioned_static_refs(
+                (WEB_DIR / "templates" / "agent_tree.html").read_text(encoding="utf-8"),
+                _static_dir,
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/api/mcp-tools")
     async def mcp_tools_catalog_api():
         """Return the saved catalogue immediately and refresh it when stale."""
@@ -3076,12 +3215,158 @@ def create_app() -> FastAPI:
             **_settings_payload(),
         })
 
+    @app.get("/api/users/{user_id}/sessions/{session_id}/settings")
+    async def get_session_settings_api(user_id: str, session_id: str):
+        """Return process settings with this session's agent overlay applied."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        with settings_scope(snapshot):
+            payload = _settings_payload()
+        payload["agentConfiguration"] = runtime.agent_configuration_state(key)
+        return JSONResponse(_json_safe(payload))
+
+    @app.post("/api/users/{user_id}/sessions/{session_id}/settings")
+    async def save_session_settings_api(user_id: str, session_id: str, data: dict):
+        """Save agent topology for one session and keep other settings global."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # Existing settings outside agent composition retain their historical
+        # process-wide semantics. Only the fields that can change the topology
+        # are isolated and persisted with the selected session.
+        global_payload = _without_agent_configuration(data)
+        before_global = _current_settings()
+        if global_payload:
+            _apply_frontend_settings(global_payload)
+        global_changed = before_global != _current_settings()
+        if global_changed:
+            runtime.session_settings_cache.clear()
+            runtime.invalidate_agent_trees()
+
+        _, current_snapshot = runtime.settings_snapshot(key)
+        candidate = current_snapshot.model_copy(deep=True)
+        requested_overlay = _agent_configuration_payload(data)
+        with settings_scope(candidate):
+            _apply_frontend_settings(requested_overlay)
+            normalized_overlay = _agent_configuration_payload(_current_settings())
+
+        _, saved_overlay = runtime.agent_configuration(key)
+        if normalized_overlay != saved_overlay:
+            runtime.save_agent_configuration(key, normalized_overlay)
+
+        _, effective = runtime.settings_snapshot(key)
+        with settings_scope(effective):
+            payload = _settings_payload()
+        payload["agentConfiguration"] = runtime.agent_configuration_state(key)
+        await runtime.send(key, {
+            "type": "agent_configuration",
+            **payload["agentConfiguration"],
+        })
+        return JSONResponse(_json_safe({"status": "success", **payload}))
+
     # --- Agent info ---
     @app.get("/api/agents/catalog")
     async def get_agents_catalog():
         """Every agent of the profile with its declared values, for Settings → Agents."""
         from CoScientist.web.agent_settings import agents_catalog
         return JSONResponse(_json_safe(agents_catalog()))
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agents/catalog")
+    async def get_session_agents_catalog(user_id: str, session_id: str):
+        try:
+            runtime.registry.require_session(user_id, session_id)
+            _, snapshot = runtime.settings_snapshot((user_id, session_id))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.web.agent_settings import agents_catalog
+        with settings_scope(snapshot):
+            return JSONResponse(_json_safe(agents_catalog()))
+
+    @app.post("/api/users/{user_id}/sessions/{session_id}/agents/{agent_name}/enabled")
+    async def set_session_agent_enabled(user_id: str, session_id: str, agent_name: str, data: dict):
+        """Atomically change one agent without replacing other session overrides."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if set(data) != {"enabled"} or not isinstance(data["enabled"], bool):
+            raise HTTPException(status_code=422, detail="Ожидается логическое поле enabled.")
+        from CoScientist.web.agent_settings import agent_enabled_patch, agents_catalog
+
+        candidate = snapshot.model_copy(deep=True)
+        with settings_scope(candidate):
+            before = _agent_configuration_payload(_current_settings())
+            try:
+                patch = agent_enabled_patch(agent_name, data["enabled"])
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Агент не найден.") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            _apply_frontend_settings(patch)
+            overlay = _agent_configuration_payload(_current_settings())
+            catalog = agents_catalog()
+        # No await between reading, merging and saving: a concurrent switch
+        # cannot overwrite an unrelated agent, model or reasoning setting.
+        if overlay != before:
+            runtime.save_agent_configuration(key, overlay)
+        state = runtime.agent_configuration_state(key)
+        await runtime.send(key, {"type": "agent_configuration", **state})
+        return JSONResponse(_json_safe({**catalog, "agentConfiguration": state}))
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agent-tree")
+    async def get_session_agent_tree(user_id: str, session_id: str):
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            revision, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        state = runtime.agent_configuration_state(key)
+        from CoScientist.web.agent_tree import project_agent_tree
+
+        payload = project_agent_tree(
+            snapshot,
+            desired_revision=revision,
+            active_revision=state["activeRevision"],
+            running=state["running"],
+        )
+        return JSONResponse(_json_safe(payload), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agents/{agent_name}/tools")
+    async def get_session_agent_tools(user_id: str, session_id: str, agent_name: str):
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.agents import config_for_mode
+        from CoScientist.tools.mcp_catalog import get_catalog
+        from CoScientist.web.agent_tree import agent_tools_payload
+
+        with settings_scope(snapshot):
+            config = config_for_mode()
+        if agent_name not in config.agents:
+            raise HTTPException(status_code=404, detail=f"Unknown agent '{agent_name}'.")
+        session = await runtime.session_service.get_session(
+            app_name=APP_NAME,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        session_state = dict(getattr(session, "state", None) or {}) if session else {}
+        catalog = await get_catalog(refresh_if_stale=False)
+        with settings_scope(snapshot):
+            payload = agent_tools_payload(config, agent_name, session_state, catalog)
+        return JSONResponse(_json_safe(payload), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/agents")
     async def get_agents():
@@ -3427,7 +3712,12 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
         await runtime.send(key, user_event)
 
     try:
-        manager = await runtime.get_manager(user_id, session_id)
+        manager = await runtime.get_manager(
+            user_id,
+            session_id,
+            settings_snapshot=data.get("_settings_snapshot"),
+            agent_revision=data.get("_agent_revision"),
+        )
         # The attachment may predate the ADK session (it is created with the
         # manager), so mirror it into state now that the session exists — this is
         # what puts the link in front of CoderAgent.
@@ -3447,14 +3737,15 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
         execution_lock = runtime.execution_locks[key]
 
         async with execution_lock:
-            await _run_chat_invocation(
-                runtime,
-                key,
-                manager,
-                query,
-                run_status_version=run_status_version,
-                report_language=report_language,
-            )
+            with manager.settings_context():
+                await _run_chat_invocation(
+                    runtime,
+                    key,
+                    manager,
+                    query,
+                    run_status_version=run_status_version,
+                    report_language=report_language,
+                )
 
     except asyncio.CancelledError:
         _cancel_pending_hitl(runtime, key)
@@ -3503,6 +3794,7 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
             }
             await runtime.send(key, error_event)
             runtime.record_event(key, error_event)
+
 
 
 async def _run_chat_invocation(

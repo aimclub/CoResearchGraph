@@ -74,8 +74,8 @@ def test_live_list_is_current_and_registry_difference_is_explicit():
         "indexed_only": ["removed"],
     }
     new_tool = next(tool for tool in result["tools"] if tool["name"] == "new_live")
-    assert new_tool["display_name"]["ru"] == "Инструмент «new_live»"
-    assert new_tool["summary"]["ru"].startswith("Выполняет операцию")
+    assert new_tool["display_name"]["ru"] == "Инструмент"
+    assert new_tool["summary"]["ru"] == "Описание на русском пока не добавлено."
     assert new_tool["display_name"]["en"] == "New live"
 
 

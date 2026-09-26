@@ -1887,6 +1887,7 @@ function planBullets(list) {
 function renderExperimentPlanReview(live, data) {
   const plan = (data.context || {}).experiment_plan;
   const rid = data.request_id;
+  const exhausted = !!plan.review_exhausted;
   planByRequest.set(rid, plan);
 
 
@@ -1923,6 +1924,12 @@ function renderExperimentPlanReview(live, data) {
       <h3 class="font-headline font-bold text-base text-on-surface uppercase tracking-tight">${escHtml(t('plan.title'))}</h3>
     </div>
     <p class="text-[10px] text-outline-variant font-mono mb-2">CTX: ${escHtml(String(rid).slice(0, 8))} · ${escHtml(data.agent_name || '')}</p>
+    ${exhausted ? `<div class="mb-3 rounded-lg border border-tertiary/35 bg-tertiary/10 px-3 py-2">
+      <p class="text-[12px] font-semibold text-tertiary">${escHtml(t('plan.exhausted.title'))}</p>
+      <p class="text-[11px] text-on-surface-variant mt-0.5">${escHtml(t(
+        plan.recovered_previous_candidate ? 'plan.exhausted.previousBody' : 'plan.exhausted.body'
+      ))}</p>
+    </div>` : ''}
     <div class="flex flex-wrap gap-1.5 mb-3">
       ${planChip('', t('plan.revision').replace('{n}', plan.revision), 'text-primary border-primary/30 bg-primary/5')}
       ${planChip('', t('plan.tasks').replace('{n}', plan.task_count))}
@@ -1936,15 +1943,15 @@ function renderExperimentPlanReview(live, data) {
          the operator has answered): the plan stays readable and its task
          cards stay foldable, which is the whole point of drawing it. -->
     <div id="hitl-controls-${escHtml(rid)}" class="mt-4 flex flex-col gap-2">
-      <textarea id="hitl-feedback-${escHtml(rid)}" rows="2" placeholder="${escHtml(t('plan.feedbackPlaceholder'))}"
+      <textarea id="hitl-feedback-${escHtml(rid)}" rows="2" placeholder="${escHtml(t(exhausted ? 'plan.approvalNotePlaceholder' : 'plan.feedbackPlaceholder'))}"
         class="w-full bg-surface-container-high border border-outline-variant/25 rounded-md px-2.5 py-2 text-[13px] text-on-surface placeholder:text-outline-variant focus:outline-none focus:border-primary/50"></textarea>
       <div class="flex flex-wrap gap-3">
         <button onclick="respondHITLApprove('${escJs(rid)}')" class="flex items-center justify-center gap-2 bg-primary text-on-primary px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] shadow-lg shadow-primary/20 hover:brightness-110 active:scale-95 transition-all">
-          <span class="material-symbols-outlined text-base">check_circle</span> ${escHtml(t('plan.accept'))}
+          <span class="material-symbols-outlined text-base">check_circle</span> ${escHtml(t(exhausted ? 'plan.acceptWithIssues' : 'plan.accept'))}
         </button>
-        <button onclick="respondHITLEdit('${escJs(rid)}')" class="flex items-center justify-center gap-2 bg-surface-container-high border border-outline-variant/20 text-on-surface px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] hover:bg-surface-container-highest transition-all">
+        ${exhausted ? '' : `<button onclick="respondHITLEdit('${escJs(rid)}')" class="flex items-center justify-center gap-2 bg-surface-container-high border border-outline-variant/20 text-on-surface px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] hover:bg-surface-container-highest transition-all">
           <span class="material-symbols-outlined text-base">edit_note</span> ${escHtml(t('plan.revise'))}
-        </button>
+        </button>`}
         <button onclick="respondHITL('${escJs(rid)}', false)" class="flex items-center justify-center gap-2 bg-surface-container-high border border-outline-variant/20 text-error px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] hover:bg-error/10 transition-all">
           <span class="material-symbols-outlined text-base">close</span> ${escHtml(t('plan.reject'))}
         </button>

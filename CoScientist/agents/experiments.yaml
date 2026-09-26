@@ -178,6 +178,7 @@ agents:
   # ── The module itself ──────────────────────────────────────────────────────
   ExperimentModuleAgent:
     class: sequential
+    required_for_pipeline: true
     # A composite accepts only before_agent/after_agent — any other callback
     # kind is a build-time crash, not a silent no-op.
     description: >-
@@ -235,6 +236,7 @@ agents:
     prompt: experiment_planner
     output_key: experiment_plan
     hitl: true
+    hitl_tools: false
     callbacks:
       # inject_research_context BEFORE build_experiment_context: the builder
       # reads state["research_context"], and without this callback the planner
@@ -279,6 +281,7 @@ agents:
     prompt: experiment_result_summary
     output_key: experiment_summary
     hitl: true
+    hitl_tools: false
     callbacks:
       before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible]
     options:

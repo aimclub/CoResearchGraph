@@ -273,6 +273,10 @@ class AgentConfig(BaseModel):
     children: List[str] = Field(default_factory=list)
     callbacks: CallbacksConfig = Field(default_factory=CallbacksConfig)
     hitl: bool = False
+    # Dedicated review agents need a handler for their internal review loop,
+    # but must not expose generic request_approval/request_selection tools to
+    # the model as a second, unvalidated approval path.
+    hitl_tools: bool = True
     # Declare a Work Order before acting; a guard enforces it (needs hitl).
     work_order: bool = False
     # Each finished Work Order step is reviewed by the human: sent / expected /
@@ -291,6 +295,12 @@ class AgentConfig(BaseModel):
     # a tool-pipeline stage): the web UI hides it from the activity rail and
     # the agent tree.
     internal: bool = False
+    # Presentation/control policy only.  A required agent remains governed by
+    # the normal assembler semantics, but the session UI must not let an
+    # operator remove it from the pipeline.  Keeping this declarative lets
+    # domain profiles protect their own terminal or execution stages without
+    # teaching the web layer their names.
+    required_for_pipeline: bool = False
     include_contents: Optional[str] = "default"
     mode: Optional[str] = None
     output_key: Optional[str] = None

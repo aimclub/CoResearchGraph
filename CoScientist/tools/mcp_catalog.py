@@ -117,7 +117,10 @@ def _is_stale(payload: Mapping[str, Any]) -> bool:
 
 
 def _public_snapshot(payload: Mapping[str, Any], *, refreshing: bool) -> Dict[str, Any]:
-    result = dict(payload)
+    # A disk snapshot can outlive a presentation-only YAML edit. Reapply the
+    # local labels on the response copy so reads become current immediately;
+    # discovery status, schemas and the cached snapshot remain untouched.
+    result = _reapply_presentation(payload)
     result["refreshing"] = refreshing
     result["stale"] = _is_stale(result)
     return result
@@ -130,6 +133,11 @@ def _load_presentation() -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - catalogue must work without overrides
         logger.warning("MCP catalogue presentation metadata is unavailable: %s", exc)
         return {}
+
+
+def load_presentation() -> Dict[str, Any]:
+    """Load the local, public-safe presentation metadata for catalogue items."""
+    return _load_presentation()
 
 
 def _plain_json(value: Any, *, limit: int = _SCHEMA_LIMIT) -> Any:
@@ -425,6 +433,152 @@ def _localized(value: Any, fallback: str, *, ru_fallback: Optional[str] = None) 
     }
 
 
+def resolve_tool_presentation(
+    name: str,
+    description: str = "",
+    *,
+    server_id: Optional[str] = None,
+    registry_id: Optional[str] = None,
+    registry_key: Optional[str] = None,
+    presentation: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Resolve bilingual display metadata for a built-in or MCP tool.
+
+    Built-in registry entries use ``local_tools[registry_key:name]`` before
+    ``tool_defaults``. MCP entries retain the catalogue's exact registry-id,
+    endpoint-id, then default precedence. Russian fallbacks for built-ins are
+    deliberately neutral so an English implementation description is never
+    presented as Russian text.
+    """
+    payload = presentation if presentation is not None else _load_presentation()
+    payload = payload if isinstance(payload, Mapping) else {}
+    local_tools = payload.get("local_tools") or {}
+    remote_tools = payload.get("tools") or {}
+    tool_defaults = payload.get("tool_defaults") or {}
+    override: Mapping[str, Any] = {}
+
+    if registry_key:
+        candidate = local_tools.get(f"{registry_key}:{name}")
+        if not isinstance(candidate, Mapping):
+            candidate = tool_defaults.get(name)
+        if isinstance(candidate, Mapping):
+            override = candidate
+        english_title = _human_name(name)
+        english_summary = _short_description(description) or english_title
+        return {
+            "display_name": _localized(
+                override.get("display_name"),
+                english_title,
+                ru_fallback="Инструмент",
+            ),
+            "summary": _localized(
+                override.get("description"),
+                english_summary,
+                ru_fallback="Описание на русском пока не добавлено.",
+            ),
+        }
+
+    stable_key = f"{registry_id}:{name}" if registry_id else None
+    candidate = remote_tools.get(stable_key) if stable_key else None
+    if not isinstance(candidate, Mapping):
+        candidate = remote_tools.get(f"{server_id}:{name}") if server_id else None
+    if not isinstance(candidate, Mapping):
+        candidate = tool_defaults.get(name)
+    if isinstance(candidate, Mapping):
+        override = candidate
+    english_title = _human_name(name)
+    english_summary = _short_description(description) or english_title
+    title = _localized(
+        override.get("display_name"),
+        english_title,
+        ru_fallback="Инструмент",
+    )
+    return {
+        "display_name": title,
+        "summary": _localized(
+            override.get("description"),
+            english_summary,
+            ru_fallback="Описание на русском пока не добавлено.",
+        ),
+    }
+
+
+def _reapply_presentation(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """Apply current YAML presentation fields to a response copy of a snapshot."""
+    result = dict(payload)
+    presentation = load_presentation()
+    server_meta = presentation.get("servers") or {}
+    tool_meta = presentation.get("tools") or {}
+    tool_defaults = presentation.get("tool_defaults") or {}
+
+    servers = []
+    for raw in payload.get("servers") or []:
+        item = dict(raw)
+        registry_id = item.get("registry_id")
+        override = server_meta.get(str(registry_id)) or server_meta.get(str(item.get("id"))) or {}
+        if isinstance(override, Mapping):
+            current_title = item.get("display_name") or {}
+            current_description = item.get("description") or {}
+            if "display_name" in override:
+                item["display_name"] = _localized(
+                    override.get("display_name"),
+                    str(current_title.get("en") or _human_name(str(item.get("name") or item.get("id")))),
+                )
+            if "description" in override:
+                item["description"] = _localized(
+                    override.get("description"),
+                    str(current_description.get("en") or _human_name(str(item.get("name") or item.get("id")))),
+                )
+            for field in ("category", "role", "featured", "priority"):
+                if field in override:
+                    item[field] = override[field]
+        servers.append(item)
+    result["servers"] = servers
+
+    server_registry_ids = {
+        str(item.get("id")): item.get("registry_id")
+        for item in servers
+    }
+    tools = []
+    for raw in payload.get("tools") or []:
+        item = dict(raw)
+        name = str(item.get("name") or "")
+        server_id = str(item.get("server_id") or "")
+        registry_id = server_registry_ids.get(server_id)
+        stable_key = f"{registry_id}:{name}" if registry_id else None
+        override = (
+            tool_meta.get(stable_key)
+            or tool_meta.get(f"{server_id}:{name}")
+            or tool_defaults.get(name)
+            or {}
+        )
+        if isinstance(override, Mapping) and override:
+            localized = resolve_tool_presentation(
+                name,
+                str(item.get("original_description") or ""),
+                server_id=server_id,
+                registry_id=registry_id,
+                presentation=presentation,
+            )
+            if "display_name" in override:
+                item["display_name"] = localized["display_name"]
+            if "description" in override:
+                item["summary"] = localized["summary"]
+            for field in ("category", "role", "priority"):
+                if field in override:
+                    item[field] = override[field]
+        else:
+            # Old disk snapshots may still contain the previous machine-name
+            # fallback. Keep their English text, but normalize Russian copy on
+            # read without waiting for a discovery refresh.
+            localized = resolve_tool_presentation(name, str(item.get("original_description") or ""), presentation={})
+            item["display_name"] = {**localized["display_name"], **(item.get("display_name") or {}), "ru": localized["display_name"]["ru"]}
+            item["summary"] = {**localized["summary"], **(item.get("summary") or {}), "ru": localized["summary"]["ru"]}
+        tools.append(item)
+    result["tools"] = tools
+    return result
+
+
 def _assemble_catalog(
     registry: Mapping[str, Any],
     endpoints: List[Mapping[str, Any]],
@@ -434,7 +588,7 @@ def _assemble_catalog(
     checked_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pure merger used by refresh and focused tests."""
-    presentation = _load_presentation()
+    presentation = load_presentation()
     server_meta = presentation.get("servers") or {}
     tool_meta = presentation.get("tools") or {}
     tool_defaults = presentation.get("tool_defaults") or {}
@@ -519,21 +673,15 @@ def _assemble_catalog(
             )
             category = str(override_tool.get("category") or _category(registry_record or endpoint, current))
             role = str(override_tool.get("role") or _role(name))
-            english_title = _human_name(name)
-            title = _localized(
-                override_tool.get("display_name"),
-                english_title,
-                ru_fallback=f"Инструмент «{name}»",
+            localized = resolve_tool_presentation(
+                name,
+                description,
+                server_id=server_id,
+                registry_id=registry_id,
+                presentation=presentation,
             )
-            english_summary = _short_description(description) or english_title
-            summary = _localized(
-                override_tool.get("description"),
-                english_summary,
-                ru_fallback=(
-                    f"Выполняет операцию «{title['ru']}» через MCP-сервер "
-                    f"«{server_title['ru']}»."
-                ),
-            )
+            title = localized["display_name"]
+            summary = localized["summary"]
             source = "live" if name in live else ("registry" if name in indexed_by_name else "snapshot")
             allowed = endpoint.get("tool_filter")
             public_tools.append({
@@ -706,4 +854,11 @@ async def close_catalog() -> None:
             task.cancel()
 
 
-__all__ = ["get_catalog", "request_refresh", "refresh_catalog", "close_catalog"]
+__all__ = [
+    "get_catalog",
+    "request_refresh",
+    "refresh_catalog",
+    "close_catalog",
+    "load_presentation",
+    "resolve_tool_presentation",
+]
