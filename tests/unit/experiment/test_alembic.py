@@ -470,7 +470,7 @@ def _plan_with_a_consumer_of_the_served_mcp():
     return _plan(build, rep, ctl)
 
 
-def test_a_served_mcp_resolves_as_the_artifact_the_planner_named(tmp_path):
+def test_a_served_mcp_resolves_as_the_artifact_the_planner_named(tmp_path, monkeypatch):
     """Run 10 of the blind Informer check: EXP-2 listed EXP-1's expected artifact
     ``informer2020-mcp-server`` as a task_artifact input. The build reported an
     address, no artifact of that name existed, readiness blocked EXP-2 and EXP-3
@@ -478,6 +478,9 @@ def test_a_served_mcp_resolves_as_the_artifact_the_planner_named(tmp_path):
     outputs_file = tmp_path / "family_outputs.json"
     outputs_file.write_text("{}")
     cfg = ExperimentsSettings(route_alembic=True)
+    # The route guard asks the settings singleton, which conftest turns off.
+    from CoScientist.config import get_settings
+    monkeypatch.setattr(get_settings().experiments, "route_alembic", True)
     state = {}
     initialize_runtime(state, _plan_with_a_consumer_of_the_served_mcp(), critique={"verdict": "approve", "issues": [], "summary": "forced"}); approve_plan(state)
     rt = state["experiment_runtime"]
