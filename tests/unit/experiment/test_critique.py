@@ -560,3 +560,15 @@ def test_invented_hypothesis_ids_are_dropped_instead_of_costing_a_revision():
     assert plan.tasks[1].design.hypothesis_ref == "H1"
     assert plan.tasks[1].design.also_tests == []
     assert not any("invents ids" in issue.message for issue in critique.issues)
+
+
+def test_a_directory_named_as_an_artifact_is_refused():
+    """record_result registers files; a required grid_data/ is never found and
+    the tasks that need it are blocked with the producer terminal."""
+    task = _task("EXP-1")
+    task["expected_artifacts"] = [
+        {"name": "grid_data/", "role": "data", "media_type": "text/csv", "required": True, "description": "grid"},
+    ]
+    plan = _plan(task)
+    critique = critique_plan(plan, settings=ExperimentsSettings(route_fedot=True), available_tools=_inventory())
+    assert any("names a directory" in issue.message and issue.severity == "major" for issue in critique.issues)

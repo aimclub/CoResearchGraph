@@ -105,6 +105,7 @@ CLOSED ENUMS (literals only):
    numeric→threshold+metric/operator/target; human→expert)
 - success_criteria[].operator (threshold only): <|<=|==|>=|>|in; else null
 - expected_artifacts[].role: data|model|plot|report|code|log|mcp_server
+- expected_artifacts[].name and input_data[].source_artifact_id: one FILE each (a data grid is one CSV/NPZ), never a directory like grid_data/
 - design.baselines[].kind: method|model|prior_result|external
 - design.metrics[].direction: maximize|minimize|compare
 - design.analysis_artifacts[].role: code|config|metrics_table|report

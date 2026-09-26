@@ -76,6 +76,12 @@ def _issue(n: int, *, category: str, severity: str, message: str, suggestion: st
     )
 
 
+def _looks_like_directory(name: str) -> bool:
+    """``grid_data/`` or ``results\\``: a path a task cannot register as one artifact."""
+    text = str(name or "").strip()
+    return text.endswith("/") or text.endswith("\\")
+
+
 def _tool_output_blob(task: Any) -> str:
     return " ".join(
         str(getattr(tool, a, "") or "")
@@ -645,6 +651,25 @@ def critique_plan(
                        "(role=plot or image/* media_type), but selected MCP tools do not "
                        "document image/* outputs.",
                        "Prefer required=false for viz extras; keep a required role=data artifact.")
+
+    # A directory is not an artifact: record_result registers files, so a
+    # required "grid_data/" is never found, the producing task still records
+    # success, and every task that lists it as input is blocked with the
+    # producer terminal (KM-ARL turn 2, 2026-09-27: EXP-3/EXP-4 never ran).
+    for task in plan.tasks:
+        tid = task.id
+        for art in task.expected_artifacts:
+            if _looks_like_directory(art.name):
+                co("major",
+                   f"{tid} expected_artifacts {art.name!r} names a directory, not a file.",
+                   "Name one file per artifact (a CSV/Parquet/NPZ table for a data grid); "
+                   "a task cannot register a directory and downstream inputs never resolve.",
+                   tid)
+        for ref in task.input_data:
+            if ref.kind == "task_artifact" and _looks_like_directory(str(ref.source_artifact_id or "")):
+                co("major",
+                   f"{tid} input_data source_artifact_id {ref.source_artifact_id!r} names a directory.",
+                   "Reference one upstream file artifact by its exact name.", tid)
 
     has_mcp = any(t.route in _MCP for t in plan.tasks)
     has_evidence = any(t.route in _EVIDENCE_AGENTS for t in plan.tasks)
