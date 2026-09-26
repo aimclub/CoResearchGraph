@@ -923,7 +923,16 @@ class ExperimentReviewSessionAgent(SessionAgent):
                 invoked_via="internal_loop",
                 timeout_seconds=timeout_seconds,
             )
-            response = await self.hitl_handler.handle_request(request)
+            if _auto_approve("route"):
+                # The mode answers here, as it does for the plan and result
+                # cards. The handler is not the place for it: a per-session
+                # agent tree built without HITL__ENABLED carries the
+                # fail-closed handler no web runtime ever wires, and the fork
+                # then "timed out" inside two minutes with nobody asked
+                # (KM-ARL run 3, 2026-09-26).
+                response = resolve_auto(request)
+            else:
+                response = await self.hitl_handler.handle_request(request)
             selected = response.selected_option
             if response.approved and selected in {_ROUTE_CODER_OPTION, _ROUTE_ALEMBIC_OPTION}:
                 route = (
@@ -947,7 +956,10 @@ class ExperimentReviewSessionAgent(SessionAgent):
             reason = "repository_route_timeout" if response.timed_out else "repository_route_rejected"
             state[PAUSE_REASON_STATE_KEY] = reason
             state[ROUTE_SELECTIONS_STATE_KEY] = cached
-            _audit(f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason} task={original.id}")
+            _audit(
+                f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason} task={original.id} "
+                f"system_reason={response.system_reason or '-'}"
+            )
             return current, response.model_copy(update={"stop_review_loop": True})
 
         state[ROUTE_SELECTIONS_STATE_KEY] = cached

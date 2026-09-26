@@ -214,3 +214,27 @@ def test_the_automatic_answer_follows_the_configured_default_side(monkeypatch):
         ))
         assert response is None
         assert selected.tasks[0].route.value == expected, default
+
+
+def test_in_auto_mode_the_fork_is_answered_without_the_handler(monkeypatch):
+    """A per-session agent tree built without HITL__ENABLED carries the
+    fail-closed handler; in mode `auto` the fork must not go through it
+    (KM-ARL run 3, 2026-09-26: "repository_route_timeout" within two minutes,
+    nobody asked)."""
+    monkeypatch.setattr(review_mod, "_auto_approve", lambda kind: True)
+    monkeypatch.setattr(get_settings().experiments, "alembic_route_default", "alembic_build")
+
+    async def _fail_closed(request):
+        return resolve_timeout(reason="no_interactive_reviewer")
+
+    plan = _reuse_plan()
+    state = _state(plan)
+    agent = _agent(monkeypatch, _fail_closed)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-auto-fork")
+    selected, response = asyncio.run(agent._select_repository_routes(
+        plan=plan, ctx=ctx, route_alembic=True, user_id="user", session_id="session",
+        timeout_seconds=0.0,
+    ))
+    assert response is None
+    assert selected.tasks[0].route.value == "alembic_build"
+    assert not state.get("experiment_plan_review_paused")
