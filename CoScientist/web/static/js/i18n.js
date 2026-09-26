@@ -147,7 +147,6 @@ const i18n = {
   'rail.agentFew': { en: 'agents', ru: 'агента' },
   'rail.agentMany': { en: 'agents', ru: 'агентов' },
   'rail.nowWorking': { en: 'Working now:', ru: 'Сейчас работает' },
-  'rail.toolFailed': { en: '{tool} returned an error', ru: '{tool} вернул ошибку' },
   'rail.noTools': { en: 'No tool calls yet', ru: 'Инструменты ещё не вызывались' },
   'rail.toggle': { en: 'Show/hide agent activity', ru: 'Показать/скрыть активность агентов' },
 

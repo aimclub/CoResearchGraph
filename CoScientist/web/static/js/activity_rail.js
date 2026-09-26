@@ -54,9 +54,7 @@
       const external = a.href ? '<span class="material-symbols-outlined text-[14px] ml-auto text-outline-variant/0 group-hover:text-outline-variant" aria-hidden="true">open_in_new</span>' : '';
       const extra = a.name === "CoderSandbox"
         ? `<span id="sandbox-status-dot" class="w-2 h-2 rounded-full bg-outline-variant/60 ml-auto shrink-0" title="Sandbox standby"></span>`
-        : a.name === "ToolsViewer"
-          ? `<span id="nav-tool-errors" class="hidden ml-auto text-[10px] tabular-nums text-error shrink-0"></span>`
-          : external;
+        : external;
       return `
           <button type="button" id="${elemId}" onclick="onAgentClick('${a.name}')"${current}
             class="${navItemClass(a.name)}">
@@ -75,16 +73,6 @@
           <div class="space-y-px">${group.items.map(name => navItem(byName.get(name))).join('')}</div>
         </div>`).join('');
       applyLanguage();
-    }
-
-    // Tool errors of the session, on the "Tool calls" item: the one place to
-    // look when something failed, marked without opening it.
-    function renderNavToolErrors(count) {
-      const el = document.getElementById('nav-tool-errors');
-      if (!el) return;
-      el.textContent = count ? String(count) : '';
-      el.title = count ? t('rail.toolErrors', { count }) : '';
-      el.classList.toggle('hidden', !count);
     }
 
     function onAgentClick(name) {
@@ -334,23 +322,6 @@
             + `${escHtml(t('rail.nowWorking'))} <code translate="no">${escHtml(current.name)}</code>`
           : '';
       }
-
-      // Failed tool calls across every agent, named when there is one.
-      const failed = [];
-      activityAgents.forEach(entry => entry.tools.forEach(tool => {
-        if (tool.errors) failed.push(tool);
-      }));
-      const errors = failed.reduce((sum, tool) => sum + tool.errors, 0);
-      const errorsEl = document.getElementById('activity-summary-errors');
-      if (errorsEl) {
-        errorsEl.classList.toggle('hidden', !errors);
-        errorsEl.innerHTML = !errors ? '' : `<span class="material-symbols-outlined text-[16px]" aria-hidden="true">error</span>`
-          + (failed.length === 1
-            ? t('rail.toolFailed', { tool: `<code translate="no">${escHtml(failed[0].name)}</code>` })
-            : escHtml(t('rail.toolErrors', { count: errors })));
-        errorsEl.title = failed.map(tool => `${tool.name}: ${t('rail.toolErrors', { count: tool.errors })}`).join('\n');
-      }
-      renderNavToolErrors(errors);
     }
 
     function activityAgent(name) {

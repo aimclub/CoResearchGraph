@@ -239,20 +239,6 @@
       text-overflow: ellipsis;
     }
 
-    .rail-summary-chip-error {
-      border-color: rgb(var(--c-error) / 0.35);
-      background: rgb(var(--c-error) / 0.08);
-      color: rgb(var(--c-error));
-    }
-
-    .rail-summary-chip-error code {
-      color: inherit;
-    }
-
-    .rail-summary-chip-error:hover {
-      border-color: rgb(var(--c-error) / 0.6);
-    }
-
     /* Native <select> in dark mode on Windows ignores the page colours. */
     select {
       background-color: rgb(var(--c-surface-container-low));
