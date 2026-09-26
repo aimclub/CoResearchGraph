@@ -190,3 +190,27 @@ def test_unchanged_plan_reuses_the_recorded_route_choice(monkeypatch):
     assert calls == 1
     assert selected.tasks[0].route.value == "alembic_build"
     assert selected_again.tasks[0].route.value == "alembic_build"
+
+
+def test_the_automatic_answer_follows_the_configured_default_side(monkeypatch):
+    """HITL mode `auto` answers the Coder/Alembic fork with the default option.
+    Coder stays the default; a study that exists to leave a tool behind sets
+    EXPERIMENTS__ALEMBIC_ROUTE_DEFAULT=alembic_build and gets the build
+    without a human at the review."""
+    monkeypatch.setattr(review_mod, "_alembic_preflight", lambda: {"available": True, "reason": "ok"})
+
+    async def _auto(request):
+        return resolve_auto(request)
+
+    for default, expected in (("coder", "coder"), ("alembic_build", "alembic_build")):
+        monkeypatch.setattr(get_settings().experiments, "alembic_route_default", default)
+        plan = _reuse_plan()
+        state = _state(plan)
+        agent = _agent(monkeypatch, _auto)
+        ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id=f"inv-{default}")
+        selected, response = asyncio.run(agent._select_repository_routes(
+            plan=plan, ctx=ctx, route_alembic=True, user_id="user", session_id="session",
+            timeout_seconds=600.0,
+        ))
+        assert response is None
+        assert selected.tasks[0].route.value == expected, default

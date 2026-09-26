@@ -881,10 +881,16 @@ class ExperimentReviewSessionAgent(SessionAgent):
                 message=(
                     f"Task {original.id} can reuse {original.repo_url} unchanged. "
                     "Choose direct execution or build a reusable MCP tool. "
-                    "Coder is the default because it avoids the container/build step."
+                    + ("Alembic is the default for this run (EXPERIMENTS__ALEMBIC_ROUTE_DEFAULT)."
+                       if get_settings().experiments.alembic_route_default == "alembic_build"
+                       else "Coder is the default because it avoids the container/build step.")
                 ),
                 options=[_ROUTE_CODER_OPTION, _ROUTE_ALEMBIC_OPTION],
-                default_option=_ROUTE_CODER_OPTION,
+                default_option=(
+                    _ROUTE_ALEMBIC_OPTION
+                    if get_settings().experiments.alembic_route_default == "alembic_build"
+                    else _ROUTE_CODER_OPTION
+                ),
                 context={
                     "experiment_review_kind": "repository_route",
                     "experiment_plan_id": plan.plan_id,

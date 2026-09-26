@@ -491,6 +491,13 @@ class ExperimentsSettings(BaseModel):
     route_fedot: bool = False
     route_coder_mcp: bool = False
     route_alembic: bool = False
+    # Which side of the Coder/Alembic fork a task that reuses a repository
+    # takes when nobody answers the review (HITL mode `auto`, or a timeout):
+    # "coder" runs the code directly, "alembic_build" wraps it as an MCP tool
+    # first. Coder stays the default because it skips the container build;
+    # a study that exists to leave a reusable tool behind sets
+    # EXPERIMENTS__ALEMBIC_ROUTE_DEFAULT=alembic_build.
+    alembic_route_default: Literal["coder", "alembic_build"] = "coder"
     task_max_attempts: int = Field(default=2, ge=1, le=2)
     max_plan_tasks: int = Field(default=8, ge=1, le=20)
     # How many times a rejected result review may send the module back to
