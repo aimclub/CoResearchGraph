@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Iterable
 from uuid import uuid4
@@ -45,6 +46,8 @@ _EXECUTION_ROUTES = {
     ExecutionRoute.CODER,
     ExecutionRoute.ALEMBIC_BUILD,
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _is_narrative_report_task(task: Any) -> bool:
@@ -697,6 +700,44 @@ def critique_plan(
     )
 
 
+def _drop_invented_hypotheses(
+    plan: ExperimentPlan, hypothesis_refs: Iterable[Any],
+) -> tuple[ExperimentPlan, list[str]]:
+    """Remove plan hypothesis ids that the context never issued.
+
+    The planner sees the postponed hypotheses in the research overview and
+    copies them into the plan next to the authoritative ``hypothesis_refs``;
+    the critique then refuses the plan for "invented" ids, and the same ids
+    come back on the next revision (KM-ARL run, 2026-09-26: two of four
+    revisions lost to H2/H3). The ids are dropped here: tasks that tested one
+    of them are moved onto the first authoritative id, ``also_tests`` keeps
+    only known ids. The dropped ids are returned for the audit line.
+    """
+    ctx = _normalize_hypothesis_ids(hypothesis_refs)
+    if not ctx or not plan.hypotheses:
+        return plan, []
+    known = set(ctx)
+    extra = [h.hypothesis_id.strip().upper() for h in plan.hypotheses
+             if h.hypothesis_id.strip().upper() not in known]
+    if not extra:
+        return plan, []
+    fallback = ctx[0]
+    hypotheses = [h for h in plan.hypotheses if h.hypothesis_id.strip().upper() in known]
+    tasks = []
+    for task in plan.tasks:
+        design = task.design
+        ref = design.hypothesis_ref.strip().upper()
+        also = [h for h in design.also_tests if str(h).strip().upper() in known]
+        if ref not in known:
+            ref = fallback
+        also = [h for h in also if h.strip().upper() != ref]
+        if ref != design.hypothesis_ref or also != list(design.also_tests):
+            design = design.model_copy(update={"hypothesis_ref": ref, "also_tests": also})
+            task = task.model_copy(update={"design": design})
+        tasks.append(task)
+    return plan.model_copy(update={"hypotheses": hypotheses, "tasks": tasks}), extra
+
+
 def validate_and_critique_plan(
     payload: Any,
     *,
@@ -726,6 +767,12 @@ def validate_and_critique_plan(
         ) from exc
     finally:
         reset_lenient_planner(token)
+    plan, dropped = _drop_invented_hypotheses(plan, hypothesis_refs)
+    if dropped:
+        logger.warning(
+            "EXPERIMENT_PLAN_HYPOTHESES_DROPPED ids=%s (absent from hypothesis_refs)",
+            ", ".join(dropped),
+        )
     return plan, critique_plan(
         plan, settings=settings, available_tools=inventory,
         preferred_tools=None if preferred_tools is None else list(preferred_tools),

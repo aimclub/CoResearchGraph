@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import os
+import re
 from typing import Any, AsyncGenerator, Literal
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -177,6 +178,24 @@ def _context_invariant_errors(plan: ExperimentPlan, context: dict[str, Any]) -> 
             "msg": "source_request must equal experiment_context.source_request",
         })
     return errors
+
+
+def _truncated_plan_errors(payload: Any) -> list[str]:
+    """The planner's answer was cut by the output limit: the JSON sanitiser
+    then keeps the largest complete object, which is one task, and schema
+    validation reports a missing ``schema_version`` on it. Name the real
+    cause so the revision asks for a shorter plan (KM-ARL run, 2026-09-26)."""
+    if not isinstance(payload, dict) or "tasks" in payload or "schema_version" in payload:
+        return []
+    task_id = str(payload.get("id") or "").strip().upper()
+    if not re.fullmatch(r"EXP-\d+", task_id):
+        return []
+    return [
+        f"The plan JSON was cut off by the output limit: only task {task_id} survived as a "
+        "complete object. Return the whole ExperimentPlan again and make it shorter: "
+        "task description and rationale at most 300 characters each, artifact "
+        "descriptions at most 100, no context text repeated inside tasks."
+    ]
 
 
 def _json_payload(value: Any) -> Any:
@@ -996,7 +1015,10 @@ class ExperimentReviewSessionAgent(SessionAgent):
             context = state.get("experiment_context") or {}
             runtime = state.get("experiment_runtime") or {}
             previous = ExperimentPlan.model_validate(runtime["plan"]) if runtime.get("plan") else None
-            payload = _stamp_context_invariants(_json_payload(output_text), context, previous)
+            payload = _json_payload(output_text)
+            if cut := _truncated_plan_errors(payload):
+                raise PlanValidationError("ExperimentPlan JSON was cut off", errors=cut)
+            payload = _stamp_context_invariants(payload, context, previous)
             # Asked of this session's executor, the one start_task hands work to:
             # a route switched on after the session was built must not be
             # approved here and then refused there.

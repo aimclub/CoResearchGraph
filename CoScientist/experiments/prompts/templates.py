@@ -121,6 +121,9 @@ RULES:
    Never invent example.com/org/net, localhost, s3://artifacts, or dummy files.
    Generators: input_data=[] + launch_params. Prior outputs:
    kind=task_artifact, source_task_id, source_artifact_id + depends_on.
+   Keep free text short: description and rationale ≤ 300 characters each,
+   artifact descriptions ≤ 100, no context text repeated inside tasks. A plan
+   longer than the output limit is cut off and the whole revision is lost.
 3. total_est_duration_min = sum of task durations. Task ids: EXP-1…EXP-n.
    Keep the plan to 1–8 tasks: every extra task is another start_task →
    route → record_result cycle, and measured 2026-09-04 the larger plans

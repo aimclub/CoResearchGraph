@@ -533,3 +533,30 @@ def test_a_conclusion_operation_with_glued_constraints_is_still_reporting():
     )
     assert _is_reporting_operation(statement)
     assert not _is_reporting_operation("Обучи модель и сделай вывод по каждому горизонту.")
+
+
+def test_invented_hypothesis_ids_are_dropped_instead_of_costing_a_revision():
+    """The planner copies postponed hypotheses from the research overview next
+    to the authoritative refs; the plan is normalised, the critique stays
+    about the tasks."""
+    from CoScientist.experiments.critique import validate_and_critique_plan
+
+    payload = _plan(
+        _task("EXP-1", hypothesis_ref="H1"),
+        _task("EXP-2", hypothesis_ref="H2", design={**_design("H2"), "also_tests": ["H1", "H3"]}),
+        hypotheses=[
+            {"hypothesis_id": "H1", "statement": "Authoritative."},
+            {"hypothesis_id": "H2", "statement": "Postponed in the graph."},
+            {"hypothesis_id": "H3", "statement": "Postponed in the graph."},
+        ],
+    ).model_dump(mode="json")
+    plan, critique = validate_and_critique_plan(
+        payload,
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Authoritative."}],
+    )
+    assert [h.hypothesis_id for h in plan.hypotheses] == ["H1"]
+    assert plan.tasks[1].design.hypothesis_ref == "H1"
+    assert plan.tasks[1].design.also_tests == []
+    assert not any("invents ids" in issue.message for issue in critique.issues)
