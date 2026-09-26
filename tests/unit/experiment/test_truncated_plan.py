@@ -15,3 +15,19 @@ def test_a_plan_or_anything_else_passes_through():
     assert _truncated_plan_errors({"id": "EXP-1", "tasks": []}) == []
     assert _truncated_plan_errors({"hypothesis_id": "H1"}) == []
     assert _truncated_plan_errors("text") == []
+
+
+def test_a_stuttered_name_key_on_an_artifact_is_read_as_name():
+    from CoScientist.experiments.schemas.models import ExpectedArtifact
+
+    art = ExpectedArtifact.model_validate({
+        "namename": "reference_values.json", "role": "data",
+        "media_type": "application/json", "required": True, "description": "Reference",
+    })
+    assert art.name == "reference_values.json"
+    art = ExpectedArtifact.model_validate({
+        "namename_removed": True, "name": "x.csv", "role": "data", "description": "d",
+    }) if False else ExpectedArtifact.model_validate({
+        "namename": "x.csv", "namename_removed": True, "role": "data", "description": "d",
+    })
+    assert art.name == "x.csv"

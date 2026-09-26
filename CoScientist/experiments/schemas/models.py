@@ -478,6 +478,27 @@ class ExpectedArtifact(StrictModel):
     required: bool = True
     description: str = Field(min_length=1)
 
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_doubled_name_key(cls, data: Any) -> Any:
+        """GLM-5.3 writes the key of the second artifact of a task as
+        ``namename`` (KM-ARL runs, 2026-09-26/27, same position every time),
+        and its revision then adds ``namename_removed`` next to it. The
+        value is the name; take it and drop the stutter."""
+        if not isinstance(data, dict) or "name" in data:
+            return data
+        stutter = re.compile(r"(?:name){2,}(?:_removed)?")
+        keys = [k for k in data if isinstance(k, str) and stutter.fullmatch(k)]
+        if not keys:
+            return data
+        fixed = {k: v for k, v in data.items() if k not in keys}
+        for k in keys:
+            value = data[k]
+            if isinstance(value, str) and value.strip():
+                fixed["name"] = value
+                break
+        return fixed
+
 
 class HypothesisSpec(StrictModel):
     hypothesis_id: str = Field(min_length=1)
