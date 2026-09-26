@@ -419,6 +419,11 @@ class WebSettings(BaseModel):
     # for latency.
     hypotheses_reasoning: str = _os.getenv("HYPOTHESES__REASONING", "high")
     fedot_fallback_timeout_s: float = float(_os.getenv("EXECUTOR__FEDOT_FALLBACK_TIMEOUT", "900"))
+    # MCP hub (Docker Hub, credentials in .env): searched before a build, optional auto-upload.
+    alembic_hub_search_enabled: bool = _os.getenv("ALEMBIC_HUB__SEARCH_ENABLED", "true").lower() in ("true", "1", "yes")
+    alembic_hub_auto_upload: bool = _os.getenv("ALEMBIC_HUB__AUTO_UPLOAD", "false").lower() in ("true", "1", "yes")
+    # Whether an agent may start a conversion itself; the builds page always can.
+    alembic_agent_build_enabled: bool = _os.getenv("ALEMBIC__AGENT_BUILD_ENABLED", "false").lower() in ("true", "1", "yes")
     sandbox_url: str = _os.getenv("SANDBOX_URL", "")
     coder_workspace_id: _Optional[str] = _os.getenv("CODER_WORKSPACE_ID")
     coder_mode: str = _os.getenv("CODER__MODE", "local")        # "local" | "openhands"

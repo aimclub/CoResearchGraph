@@ -8,6 +8,7 @@ on sys.path to test it — same reasoning as tests/unit/_codegen_loader.py.
 
 import email.message
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -1227,3 +1228,83 @@ def test_publish_result_without_a_call_start_keeps_the_whole_repo_out(tmp_path, 
     written.write_text("x", encoding="utf-8")
 
     assert "out_file_s3" not in s3t.publish_result({"out_file": str(written)}, "prefix", (), repo)
+
+
+# ── shrink_result: a big result goes to S3 whole, the caller gets its shape ──
+
+class _FakePutClient(_FakeUploadClient):
+    """_FakeUploadClient that also records put_object (JSON documents)."""
+
+    def __init__(self):
+        super().__init__()
+        self.puts = []
+
+    def put_object(self, Bucket, Key, Body, ContentType):
+        self.puts.append({"bucket": Bucket, "key": Key, "body": Body})
+
+
+def _descriptor_result(n=1613):
+    return {"smiles": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C", "num_descriptors": n,
+            "descriptor_names": [f"D{i}" for i in range(n)],
+            "values": [i * 0.5 for i in range(n)]}
+
+
+def test_a_big_result_is_stored_whole_and_the_caller_keeps_its_structure(monkeypatch):
+    """mordred's calc_descriptors returned 1613 names and then their values; a
+    client cutting the text for the model's context left the model only names."""
+    _clear_env(monkeypatch)
+    _set_env(monkeypatch)
+    client = _FakePutClient()
+    monkeypatch.setattr(s3t, "_client_factory", lambda *a: client)
+    result = _descriptor_result()
+    prefix = "ephemeral/u/s/alembic_mordred/calc_descriptors/abcd1234"
+
+    short = s3t.shrink_result(result, prefix)
+
+    [put] = client.puts
+    assert put["key"] == f"{prefix}/result/result.json"
+    assert json.loads(put["body"]) == result
+    assert set(short) == set(result) | {"result_truncated", "result_s3"}
+    assert short["num_descriptors"] == 1613
+    assert short["values"] and short["values"] == result["values"][:len(short["values"])]
+    assert short["result_truncated"]["shortened"]["values"]["items"] == 1613
+    assert short["result_s3"]["s3_key"] == put["key"]
+    assert len(json.dumps(short)) <= s3t._DEFAULT_RESULT_MAX_CHARS
+
+
+def test_a_result_that_fits_or_cannot_be_stored_comes_back_unchanged(monkeypatch):
+    """Without the full copy in S3 nothing would lead to what was cut away."""
+    _clear_env(monkeypatch)
+    _set_env(monkeypatch)
+    client = _FakePutClient()
+    monkeypatch.setattr(s3t, "_client_factory", lambda *a: client)
+    small = {"num_descriptors": 3, "values": [1, 2, 3]}
+    assert s3t.shrink_result(small, "p") is small
+    assert client.puts == []
+
+    class _Failing(_FakePutClient):
+        def put_object(self, **kw):
+            raise RuntimeError("endpoint down")
+
+    monkeypatch.setattr(s3t, "_client_factory", lambda *a: _Failing())
+    big = _descriptor_result()
+    assert s3t.shrink_result(big, "p") is big
+
+    _clear_env(monkeypatch)
+    assert s3t.shrink_result(big, "p") is big
+
+
+def test_file_references_survive_the_shortening(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    _set_env(monkeypatch)
+    client = _FakePutClient()
+    monkeypatch.setattr(s3t, "_client_factory", lambda *a: client)
+    table = tmp_path / "table.csv"
+    table.write_text("x", encoding="utf-8")
+    result = {"rows": [{"i": i, "label": "x" * 50} for i in range(500)], "out_file": str(table)}
+
+    short = s3t.publish_result(result, "p", tmp_path / "scratch")
+
+    assert short["out_file_s3"]["s3_key"] == "p/out_file/table.csv"
+    assert "result_s3" in short and len(short["rows"]) < 500
+    assert "out_file_s3" in json.loads(client.puts[0]["body"])

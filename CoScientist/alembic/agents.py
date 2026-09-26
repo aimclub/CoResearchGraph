@@ -19,7 +19,7 @@ from google.adk.models.lite_llm import LiteLlm
 from alembic import config
 from alembic.tools import (
     bash, bash_env, check_venv_compat, clone_repo, invoke_tool_function,
-    read_file, read_output_file, run_tool_tests, search, setup_venv,
+    read_file, read_output_file, run_tool_tests, search, set_sample_args, setup_venv,
     update_file, write_file, write_report,
 )
 from alembic.instructions import (
@@ -111,7 +111,7 @@ debugger_agent = Agent(
     description="Fixes a batch of reported failures — installs missing deps or edits tool/test files — and re-runs them to confirm.",
     instruction=_const(debugger_instruction),
     tools=[read_output_file, update_file, bash, bash_env,
-           invoke_tool_function, run_tool_tests],
+           invoke_tool_function, run_tool_tests, set_sample_args],
 )
 
 wrapper_agent = Agent(

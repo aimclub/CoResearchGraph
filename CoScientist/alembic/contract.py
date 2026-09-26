@@ -154,6 +154,8 @@ class ToolReport:
     invoc_passed: int | None = None
     invoc_total: int | None = None
     error: str = ""                   # last failure detail (debugger input)
+    # Validator calls {args, ok, error}; travels in the image, unlike the build log.
+    invocations: list[dict] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:

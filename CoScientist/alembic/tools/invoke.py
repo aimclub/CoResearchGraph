@@ -378,7 +378,7 @@ def _parse_result(stdout: str) -> dict | None:
         return None
 
 
-async def invoke_tool_function(tool_name: str, args: dict | None = None) -> dict:
+async def invoke_tool_function(tool_name: str, args: dict | str | None = None) -> dict:
     """Invoke a generated tool function (tools/<tool_name>.py) live, in the
     tools venv, and return its result.
 
@@ -393,7 +393,23 @@ async def invoke_tool_function(tool_name: str, args: dict | None = None) -> dict
     return await asyncio.to_thread(_invoke_tool_function_sync, tool_name, args)
 
 
-def _invoke_tool_function_sync(tool_name: str, args: dict | None = None) -> dict:
+def _json_args(args: dict | str | None) -> dict | str:
+    """Keyword args as a dict; an agent often passes them as a JSON string.
+    A string that is not a JSON object comes back as the error message."""
+    if args is None or args == "":
+        return {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError as exc:
+            return f"args are not JSON: {exc}"
+    return args if isinstance(args, dict) else "args must be a JSON object of keyword arguments"
+
+
+def _invoke_tool_function_sync(tool_name: str, args: dict | str | None = None) -> dict:
+    args = _json_args(args)
+    if isinstance(args, str):
+        return {"ok": False, "error": args}
     out_dir = output_dir().resolve()
     python  = tools_python(out_dir)
     if not (out_dir / "tools" / f"{tool_name}.py").exists():
@@ -427,6 +443,39 @@ def _invoke_tool_function_sync(tool_name: str, args: dict | None = None) -> dict
     if parsed.get("ok") and "result" in parsed:
         parsed["result"] = _truncate_large_result(parsed["result"])
     return parsed
+
+
+async def set_sample_args(tool_name: str, args: dict) -> dict:
+    """Replace a tool's sample args in the plan when the code is right and the
+    planned input is not (class E). The tool is called with ``args`` first, and
+    they are saved only when that call returns a result.
+
+    An input file the new args need goes under the output dir's ``samples/``,
+    which ships with the server; pass its absolute path.
+
+    Example:
+        set_sample_args("load_cubes", {"source": "/work/.alembic/iris/output/samples/mesh.nc"})
+    """
+    return await asyncio.to_thread(_set_sample_args_sync, tool_name, args)
+
+
+def _set_sample_args_sync(tool_name: str, args: dict | str) -> dict:
+    from alembic.contract import load_plan, save_plan
+
+    args = _json_args(args)
+    if isinstance(args, str):
+        return {"saved": False, "error": args}
+    plan = load_plan()
+    spec = next((t for t in (plan.tools if plan else []) if t.name == tool_name), None)
+    if spec is None:
+        return {"saved": False, "error": f"the plan has no tool {tool_name!r}"}
+    r = _invoke_tool_function_sync(tool_name, args)
+    if not (r.get("ok") and "result" in r):
+        why = r.get("error") or r.get("reason") or "no result"
+        return {"saved": False, "error": f"not saved, the call with these args gave no result: {why}"[:800]}
+    spec.sample_args = args
+    save_plan(plan)
+    return {"saved": True, "result": str(r["result"])[:300]}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

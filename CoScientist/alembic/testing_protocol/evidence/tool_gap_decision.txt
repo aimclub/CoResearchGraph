@@ -1,0 +1,14 @@
+Applied MCP SSE error-propagation backport (python-sdk PR #2005)
+
+=== A. Ни один готовый инструмент не покрывает задачу ===
+state: {'executor_tool_match': {'matched': False, 'best_score': 0.31}, 'filtered_tools': [], 'filtered_mcps': []}
+LOG: TOOL_GAP_DETECTED best=0.31 inventory=0 → McpBuilderAgent (build from repo) | CoderAgent (one-off)
+decision: escalate — the experiment agent is stopped before the model call
+NO_MATCHING_TOOL: No ready-made MCP tool matches this task (best tool relevance was 0.31, below the bar). This looks like custom engineering — a specific architecture, a named repository/example code, or writing and running code — which no existing tool covers. Do NOT treat a tool that shares only the verb (e.g. 'train a GAN' for a 'train a transformer' request) as a match. Re-issue this step to ONE of:
+  - McpBuilderAgent — when the capability exists as CODE in a scientific repository (the task or its paper names one, or one is easy to find) and the tool would be reused: it builds and serves a validated MCP tool server from that repository, closing this gap for every later task.
+  - CoderAgent — when the work is a one-off computation or there is no repository to build from.
+Do not run this tool pipeline again for this step.
+
+=== B. Подходящий инструмент найден ===
+state: {'executor_tool_match': {'matched': True, 'best_score': 0.88}, 'filtered_tools': [{'name': 'calculate_docking'}], 'filtered_mcps': []}
+decision: continue with the ready-made tools (no escalation)

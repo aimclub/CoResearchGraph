@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -18,10 +19,11 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (JSONResponse, PlainTextResponse, Response,
+                               StreamingResponse)
 
 from CoScientist.alembic.web import artifacts
-from CoScientist.tools import alembic_tools
+from CoScientist.tools import alembic_hub, alembic_tools
 
 
 router = APIRouter()
@@ -35,6 +37,25 @@ def _controls_enabled() -> bool:
     """The start/stop/delete buttons. ALEMBIC_WEB_CONTROLS=0 turns them off on a
     shared deploy, where anyone who reaches the page could press them."""
     return os.getenv("ALEMBIC_WEB_CONTROLS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+# What a build's server does, for the list; a finished report never changes.
+_summaries: dict = {}
+
+
+def _build_summary(build: dict) -> Optional[str]:
+    workdir = build.get("workdir")
+    if workdir in _summaries:
+        return _summaries[workdir]
+    try:
+        summary = alembic_hub.build_summary(workdir, build.get("repo_url"))
+    except Exception as exc:  # noqa: BLE001  the list must load regardless
+        print(f"[builds] could not summarise {build.get('job_id')}: {exc}")
+        summary = None
+    # A running build has no exploration report yet; it is asked again next time.
+    if summary is not None or build.get("status") != "running":
+        _summaries[workdir] = summary
+    return summary
 
 
 def _annotate_container_status(builds: list) -> list:
@@ -58,6 +79,7 @@ def _annotate_container_status(builds: list) -> list:
         b["runnable"] = bool(image)
         b["image_size"] = inv["images"].get(image) if image else None
         b["controls"] = controls
+        b["summary"] = _build_summary(b)
         if image:
             images[b["job_id"]] = image
     # Older builds without a job tag can share one image, and deleting it takes
@@ -71,6 +93,12 @@ def _annotate_container_status(builds: list) -> list:
 
 # ── list + snapshot ────────────────────────────────────────────────────────
 def _list_builds() -> list:
+    # A running server started outside the builds tool gets its record first,
+    # so it is on the list before any agent reuses it.
+    try:
+        alembic_tools.adopt_unclaimed_servers()
+    except Exception as exc:  # noqa: BLE001  the list must load regardless
+        print(f"[builds] recording servers started outside the builds tool failed: {exc}")
     return _annotate_container_status(alembic_tools.web_list_builds())
 
 
@@ -112,7 +140,9 @@ async def api_start_build(payload: dict):
     if not repo_url:
         raise HTTPException(status_code=400, detail="repo_url is required")
     return JSONResponse(
-        await alembic_tools.build_mcp_server(repo_url, force_rebuild=force)
+        await alembic_tools.build_mcp_server(
+            repo_url, force_rebuild=force,
+            hints=payload.get("hints"), task_spec=payload.get("task_spec"))
     )
 
 
@@ -122,7 +152,9 @@ async def api_start_build(payload: dict):
 # answered within 5 s (network.http.network-changed.timeout). A ~9 s restart
 # was dropped that way every time. /api/builds reports progress and outcome.
 _ACTIONS = {"start": "start_build_server", "restart": "restart_build_server",
-            "stop": "stop_build_server", "delete-image": "delete_build_image"}
+            "stop": "stop_build_server", "remove-container": "remove_build_container",
+            "delete-image": "delete_build_image",
+            "hub-upload": "upload_build"}
 _action_state: dict = {}  # job id or _CLEANUP -> {name, running, started_at, finished_at, result}
 _action_tasks: set = set()
 
@@ -171,7 +203,8 @@ async def api_build_action(job_id: str, action: str, include_shared: bool = Fals
     if busy:
         return busy
     options = {"include_shared": True} if action == "delete-image" and include_shared else {}
-    _start_background(job_id, action, getattr(alembic_tools, _ACTIONS[action]), job_id, **options)
+    module = alembic_hub if action == "hub-upload" else alembic_tools
+    _start_background(job_id, action, getattr(module, _ACTIONS[action]), job_id, **options)
     return JSONResponse({"ok": True, "accepted": True, "action": action}, status_code=202)
 
 
@@ -195,7 +228,99 @@ async def api_build(job_id: str):
     if snap is None:
         raise HTTPException(status_code=404, detail=f"unknown build {job_id!r}")
     await asyncio.to_thread(_annotate_container_status, [snap])
+    state = _action_state.get(job_id)
+    if state:
+        snap["action"] = dict(state)
     return JSONResponse(snap)
+
+
+# ── files a tool left in S3 ────────────────────────────────────────────────
+# A tool that writes a file returns it as <field>_s3 {bucket, s3_key, presigned_url}
+# and a shortened result carries result_s3. The page views those files through
+# this route rather than the presigned link: the link is signed for the address
+# the SERVER reaches S3 at, which the browser often cannot, and it expires.
+_S3_VIEW_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _read_s3_object(bucket: str, key: str) -> tuple[bytes, str]:
+    """One object of the configured bucket, with its content type."""
+    from CoScientist.config import get_settings
+    from CoScientist.reporting import s3_upload
+
+    configured = (get_settings().s3.bucket_name or "").strip()
+    if bucket and configured and bucket != configured:
+        raise HTTPException(status_code=403,
+                            detail=f"only objects of the bucket {configured!r} can be read here")
+    service = s3_upload._get_service()
+    if service is None:
+        raise HTTPException(status_code=503, detail="S3 is not configured on this host")
+    client = service.create_s3_client()
+    name = bucket or configured or service.bucket_name
+    try:
+        head = client.head_object(Bucket=name, Key=key)
+        if head.get("ContentLength", 0) > _S3_VIEW_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"the file is {head['ContentLength']} bytes, over the "
+                       f"{_S3_VIEW_MAX_BYTES}-byte viewing limit")
+        body = client.get_object(Bucket=name, Key=key)["Body"].read()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001  botocore raises its own error classes
+        raise HTTPException(status_code=404, detail=f"{type(exc).__name__}: {exc}") from exc
+    return body, (head.get("ContentType") or mimetypes.guess_type(key)[0] or "application/octet-stream")
+
+
+@router.get("/api/s3/object")
+async def api_s3_object(key: str, bucket: str = ""):
+    if not key.strip():
+        raise HTTPException(status_code=400, detail="key is required")
+    body, content_type = await asyncio.to_thread(_read_s3_object, bucket.strip(), key.strip())
+    name = os.path.basename(key).replace('"', "") or "file"
+    return Response(content=body, media_type=content_type,
+                    headers={"Content-Disposition": f'inline; filename="{name}"'})
+
+
+# ── MCP hub ────────────────────────────────────────────────────────────────
+@router.get("/api/hub/config")
+async def api_hub_config():
+    return JSONResponse({**await asyncio.to_thread(alembic_hub.hub_config),
+                         "controls": _controls_enabled()})
+
+
+@router.get("/api/hub")
+async def api_hub(refresh: bool = False):
+    """The servers in the hub namespace, each with the local builds that came from it."""
+    listing = dict(await asyncio.to_thread(alembic_hub.list_servers, refresh))
+    if listing.get("ok"):
+        builds = await asyncio.to_thread(alembic_tools.web_list_builds)
+        local: dict = {}
+        for b in builds:
+            image = (b.get("hub") or {}).get("image")
+            if image:
+                local.setdefault(image, []).append({"job_id": b["job_id"], "origin": b.get("origin"),
+                                                    "status": b.get("status")})
+        listing["servers"] = [{**s, "local_builds": local.get(s["image"], [])}
+                              for s in listing["servers"]]
+    listing["controls"] = _controls_enabled()
+    return JSONResponse(listing)
+
+
+@router.get("/api/hub/{name}/tags")
+async def api_hub_tags(name: str):
+    return JSONResponse(await asyncio.to_thread(alembic_hub.server_tags, name))
+
+
+@router.post("/api/hub/pull")
+async def api_hub_pull(payload: dict):
+    """Pull a hub server and serve it; it shows up in the builds list as a running record."""
+    _require_controls()
+    snap = await asyncio.to_thread(alembic_hub.start_pull, str(payload.get("name") or ""),
+                                   str(payload.get("tag") or "latest"), None,
+                                   payload.get("repo_url") or None)
+    if snap.get("status") != "running":
+        return JSONResponse({"ok": False, "error": snap.get("error")}, status_code=400)
+    return JSONResponse({"ok": True, **snap}, status_code=202)
 
 
 # ── per-job artifact reads ─────────────────────────────────────────────────
@@ -274,14 +399,87 @@ _INVOKE_MARK = "ALEMBIC_INVOKE "
 # image (ENV KEY=), and alembic.config parses some of them as numbers, so the
 # empty ones are dropped before alembic is imported.
 _INVOKE_SCRIPT = (
-    "import json, os, sys\n"
+    "import json, os, subprocess, sys\n"
     "for k in [k for k, v in os.environ.items() if v == '']:\n"
     "    del os.environ[k]\n"
-    "from alembic.tools.paths import set_current_repo\n"
-    "from alembic.tools.invoke import _invoke_tool_function_sync\n"
-    "set_current_repo(sys.argv[1])\n"
-    "res = _invoke_tool_function_sync(sys.argv[2], json.loads(sys.argv[3]))\n"
+    "repo_url, tool, raw = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+    "res = None\n"
+    "try:\n"
+    "    from alembic.tools.paths import set_current_repo\n"
+    "    from alembic.tools.invoke import _invoke_tool_function_sync\n"
+    "    set_current_repo(repo_url)\n"
+    "    res = _invoke_tool_function_sync(tool, json.loads(raw))\n"
+    "except Exception:\n"
+    "    pass\n"
+    # An older image (from the hub) lacks these imports, and may keep its tools in server.py.
+    "if res is None or (not res.get('ok') and 'not found' in str(res.get('error') or '')):\n"
+    "    name = repo_url.rstrip('/').split('/')[-1]\n"
+    "    name = name[:-4] if name.endswith('.git') else name\n"
+    "    out = os.path.join(os.environ.get('ALEMBIC_WORKDIR', '/work/.alembic'), name, 'output')\n"
+    "    order = ('.venv/bin/python', '.venv-server/bin/python')\n"
+    "    if not os.path.exists(os.path.join(out, 'tools', tool + '.py')):\n"
+    "        order = tuple(reversed(order))\n"
+    "    python = next((os.path.join(out, rel) for rel in order\n"
+    "                   if os.path.exists(os.path.join(out, rel))), sys.executable)\n"
+    "    proc = subprocess.run([python, '-c', sys.argv[4], out, tool, raw], capture_output=True,\n"
+    "                          text=True, cwd=out)\n"
+    "    for line in reversed(proc.stdout.splitlines()):\n"
+    f"        if line.startswith({_INVOKE_MARK!r}):\n"
+    f"            res = json.loads(line[len({_INVOKE_MARK!r}):])\n"
+    "            break\n"
+    "    else:\n"
+    "        res = {'ok': False, 'error': 'the tool could not be run in this image',\n"
+    "               'stderr': (proc.stderr or proc.stdout)[-2000:]}\n"
     f"print({_INVOKE_MARK!r} + json.dumps(res, default=str), flush=True)\n"
+)
+
+# Runs in the image's venv without alembic: imports tools/<name>.py (else server.py)
+# with FastMCP stubbed, so the decorator leaves the plain function, and calls it.
+_DIRECT_INVOKE = (
+    "import importlib.util, json, os, sys, traceback, types\n"
+    "out, name, args = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])\n"
+    "path = os.path.join(out, 'tools', name + '.py')\n"
+    "if not os.path.exists(path):\n"
+    "    path = os.path.join(out, 'server.py')\n"
+    "class _Stub:\n"
+    "    def __init__(self, *a, **k): pass\n"
+    "    def tool(self, *a, **k):\n"
+    "        return a[0] if a and callable(a[0]) else (lambda fn: fn)\n"
+    "    def __getattr__(self, attr):\n"
+    "        return lambda *a, **k: None\n"
+    "stub = types.ModuleType('fastmcp')\n"
+    "stub.FastMCP = _Stub\n"
+    "sys.modules['fastmcp'] = stub\n"
+    "def _short(value, depth=0):\n"
+    "    if isinstance(value, list):\n"
+    "        cut = value[:20]\n"
+    "        out = [_short(v, depth + 1) for v in cut]\n"
+    "        return out + ['… %d items in total' % len(value)] if len(value) > 20 else out\n"
+    "    if isinstance(value, dict) and depth < 4:\n"
+    "        return {k: _short(v, depth + 1) for k, v in value.items()}\n"
+    "    if isinstance(value, str) and len(value) > 4000:\n"
+    "        return value[:4000] + '… %d chars in total' % len(value)\n"
+    "    return value\n"
+    "def _say(payload):\n"
+    f"    print({_INVOKE_MARK!r} + json.dumps(payload, default=str), flush=True)\n"
+    "try:\n"
+    "    spec = importlib.util.spec_from_file_location('alembic_tool_module', path)\n"
+    "    module = importlib.util.module_from_spec(spec)\n"
+    "    sys.path.insert(0, os.path.dirname(path))\n"
+    "    spec.loader.exec_module(module)\n"
+    "    fn = getattr(module, name, None)\n"
+    "except Exception as exc:\n"
+    "    _say({'ok': False, 'error': '%s: %s' % (type(exc).__name__, exc),\n"
+    "          'traceback': traceback.format_exc()[-2000:]})\n"
+    "    sys.exit(0)\n"
+    "if not callable(fn):\n"
+    "    _say({'ok': False, 'error': '%s defines no tool %s' % (os.path.basename(path), name)})\n"
+    "    sys.exit(0)\n"
+    "try:\n"
+    "    _say({'ok': True, 'result': _short(fn(**args))})\n"
+    "except Exception as exc:\n"
+    "    _say({'ok': False, 'error': '%s: %s' % (type(exc).__name__, exc),\n"
+    "          'traceback': traceback.format_exc()[-2000:]})\n"
 )
 
 
@@ -290,19 +488,24 @@ def _invoke_in_container(snap: dict, tool: str, args: dict) -> dict:
 
     The tools venv was created in the container and points at container paths,
     so it cannot run on the host. The build's serve container is reused while it
-    runs; otherwise a throwaway container starts from ``alembic-tool:<repo>``,
-    which is the latest build of that repository.
+    runs; otherwise a throwaway container starts from the build's own image.
+    ``alembic-tool:<repo>`` moves to every newer build of the repository, whose
+    tools can differ: an older mordred build's calc_descriptors was looked up in
+    the newer image and was not found.
     """
     repo_url = snap.get("repo_url")
     if not repo_url:
         return {"ok": False, "error": "this build has no repository URL"}
     opts = ["-e", "PYTHONPATH=/app", "-w", "/work"]
-    argv = ["-c", _INVOKE_SCRIPT, repo_url, tool, json.dumps(args)]
+    argv = ["-c", _INVOKE_SCRIPT, repo_url, tool, json.dumps(args), _DIRECT_INVOKE]
     container = snap.get("container")
     if _container_running(container):
         cmd = ["docker", "exec", *opts, container, "python", *argv]
     else:
-        image = f"alembic-tool:{alembic_tools._repo_name(repo_url)}"
+        image = alembic_tools.job_image(snap, alembic_tools.docker_inventory())
+        if not image:
+            return {"ok": False, "error": "this build has no image of its own on this host, "
+                                          "so its tools cannot run in a container"}
         cmd = ["docker", "run", "--rm", *opts, "--entrypoint", "python", image, *argv]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True,

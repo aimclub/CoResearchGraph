@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -68,6 +69,12 @@ _DEFAULT_REGION = "us-east-1"
 _DEFAULT_HTTP_TIMEOUT = 300  # seconds
 _DEFAULT_HTTP_MAX_BYTES = 1024 * 1024 * 1024  # 1 GiB
 _DEFAULT_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024  # 1 GiB
+# A result longer than this (as JSON) goes to S3 whole and the caller gets a
+# shortened copy: a client cutting it for a model's context loses whole fields.
+_DEFAULT_RESULT_MAX_CHARS = 8000
+_PREVIEW_ITEMS = 20       # list items and dict keys kept at first
+_PREVIEW_CHARS = 1000     # characters kept of a long string at first
+_PREVIEW_MAX_NOTES = 50
 _HTTP_CHUNK_SIZE = 1024 * 1024
 
 # Same bounds as CoScientist/paper_parser/s3_connection.py (#349). botocore's
@@ -294,6 +301,13 @@ def _upload_max_bytes() -> int:
         return _DEFAULT_UPLOAD_MAX_BYTES
 
 
+def _result_max_chars() -> int:
+    try:
+        return int(os.environ.get("ALEMBIC_RESULT_MAX_CHARS", _DEFAULT_RESULT_MAX_CHARS))
+    except ValueError:
+        return _DEFAULT_RESULT_MAX_CHARS
+
+
 def _download_dir(scratch_dir: Path) -> Path:
     """A fresh, unique subdirectory of ``scratch_dir`` for ONE download — two
     different keys/URLs that happen to share a basename (``s3://b1/dir1/
@@ -478,20 +492,112 @@ def maybe_upload(local_path: str, prefix: str, field_key: str) -> dict | None:
             safe_name = f"{p.stem}_{digest}{p.suffix}"
         key = f"{prefix}/{safe_component(field_key)}/{safe_name}"
         client.upload_file(local_path, bucket, key)
-        external = _external_endpoint()
-        presigner = _client_factory(external) if external else client
-        expires_in = _presign_expiration()
-        url = presigner.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": key},
-            ExpiresIn=expires_in,
-        )
-        return {"bucket": bucket, "s3_key": key, "presigned_url": url,
-                "expires_in": expires_in}
+        return _presigned(client, bucket, key)
     except Exception as exc:  # noqa: BLE001 - a publish failure must not fail the call
         print(f"[s3] upload failed for {local_path}: {type(exc).__name__}: {str(exc)[:200]}",
               file=sys.stderr)
         return None
+
+
+def _presigned(client, bucket: str, key: str) -> dict:
+    """The durable reference to an uploaded object and a link to download it."""
+    external = _external_endpoint()
+    presigner = _client_factory(external) if external else client
+    expires_in = _presign_expiration()
+    url = presigner.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expires_in,
+    )
+    return {"bucket": bucket, "s3_key": key, "presigned_url": url,
+            "expires_in": expires_in}
+
+
+def upload_json(text: str, prefix: str, field_key: str) -> dict | None:
+    """Upload a JSON document to ``<prefix>/<field_key>/result.json`` and presign
+    it. Same contract as ``maybe_upload``: ``None`` on any failure, logged by
+    exception type only, never raised."""
+    if not s3_enabled():
+        return None
+    try:
+        body = text.encode("utf-8")
+        limit = _upload_max_bytes()
+        if len(body) > limit:
+            print(f"[s3] upload skipped for the {field_key} JSON: {len(body)} bytes is over "
+                  f"the {limit}-byte limit (S3_UPLOAD_MAX_BYTES)", file=sys.stderr)
+            return None
+        client = _client_factory()
+        bucket = _env("BUCKET_NAME")
+        key = f"{prefix}/{safe_component(field_key)}/result.json"
+        client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+        return _presigned(client, bucket, key)
+    except Exception as exc:  # noqa: BLE001 - a publish failure must not fail the call
+        print(f"[s3] upload failed for the {field_key} JSON: {type(exc).__name__}: "
+              f"{str(exc)[:200]}", file=sys.stderr)
+        return None
+
+
+def _preview(value: object, items: int, chars: int, path: str, notes: dict) -> object:
+    """A copy of ``value`` with lists and dicts cut to ``items`` entries and
+    strings to ``chars`` characters; each cut is recorded in ``notes`` under its
+    path. An S3 reference (a dict with ``bucket`` and ``s3_key``) and a
+    ``<field>_s3`` entry are kept whole: they are how the caller reaches the data."""
+    if isinstance(value, dict):
+        if "bucket" in value and "s3_key" in value:
+            return value
+        keys = list(value)
+        kept = keys
+        if len(keys) > items:
+            kept = keys[:items] + [k for k in keys[items:] if str(k).endswith("_s3")]
+            notes[path or "result"] = {"keys": len(keys), "kept": len(kept)}
+        return {k: _preview(value[k], items, chars, f"{path}.{k}" if path else str(k), notes)
+                for k in kept}
+    if isinstance(value, list):
+        if len(value) > items:
+            notes[path or "result"] = {"items": len(value), "kept": items}
+            value = value[:items]
+        return [_preview(v, items, chars, f"{path}[{i}]", notes) for i, v in enumerate(value)]
+    if isinstance(value, str) and len(value) > chars:
+        notes[path or "result"] = {"chars": len(value), "kept": chars}
+        return value[:chars]
+    return value
+
+
+def shrink_result(result: object, prefix: str) -> object:
+    """Put a result over ``ALEMBIC_RESULT_MAX_CHARS`` (as JSON) in S3 whole and
+    return a copy with lists, dicts and strings cut until it fits, plus
+    ``result_truncated`` (what was cut) and ``result_s3`` (the full JSON).
+
+    A result that fits, a non-dict, one already using those names, or a failed
+    upload comes back unchanged."""
+    if not isinstance(result, dict) or "result_s3" in result or "result_truncated" in result:
+        return result
+    limit = _result_max_chars()
+    text = json.dumps(result, ensure_ascii=False, default=str)
+    if len(text) <= limit:
+        return result
+    uploaded = upload_json(text, prefix, "result")
+    if not uploaded:
+        return result
+    items, chars = _PREVIEW_ITEMS, _PREVIEW_CHARS
+    while True:
+        notes: dict = {}
+        short = _preview(result, items, chars, "", notes)
+        listed = dict(list(notes.items())[:_PREVIEW_MAX_NOTES])
+        if len(notes) > len(listed):
+            listed["..."] = f"{len(notes) - len(listed)} more paths shortened"
+        short["result_truncated"] = {
+            "full_chars": len(text),
+            "shortened": listed,
+            "rest": ("The complete result is the JSON file in result_s3. Download it with "
+                     "result_s3.presigned_url, or by bucket and s3_key once the link has "
+                     "expired, and extract only the fields you need."),
+        }
+        short["result_s3"] = uploaded
+        fits = len(json.dumps(short, ensure_ascii=False, default=str)) <= limit
+        if fits or (items == 1 and chars == 100):
+            return short
+        items, chars = max(1, items // 2), max(100, chars // 2)
 
 
 def _is_publishable(key: str, value: object, deny_roots: tuple,
@@ -543,12 +649,21 @@ def publish_result(result: object, prefix: str, deny_roots,
 
     ``deny_roots`` is a single ``Path`` or an iterable of them; files under
     any deny root are never uploaded, and files under ``repo_root`` only when
-    written at or after ``since`` (see ``_is_publishable``)."""
+    written at or after ``since`` (see ``_is_publishable``). A result still
+    over ``ALEMBIC_RESULT_MAX_CHARS`` afterwards is shortened (``shrink_result``)."""
     roots = (deny_roots,) if isinstance(deny_roots, Path) else tuple(deny_roots)
+    # Shortened last, so the full copy in S3 carries the <key>_s3 entries too.
+    # Here and not in server.py: a server generated earlier calls publish_result
+    # and gets this with a new helpers/s3_transfer.py alone.
+    return shrink_result(_publish(result, prefix, roots, repo_root, since), prefix)
+
+
+def _publish(result: object, prefix: str, roots: tuple,
+             repo_root: Path | None, since: float | None) -> object:
     if isinstance(result, dict):
         out = {}
         for key, value in result.items():
-            out[key] = publish_result(value, prefix, roots, repo_root, since)
+            out[key] = _publish(value, prefix, roots, repo_root, since)
             # Guarded against `result` (the tool's own dict), not `out`: dict
             # iteration order means a tool-returned `<key>_s3` sibling could
             # sit either before or after `key` in `result` — checking `out`
@@ -561,7 +676,7 @@ def publish_result(result: object, prefix: str, deny_roots,
                     out[f"{key}_s3"] = uploaded
         return out
     if isinstance(result, list):
-        return [publish_result(item, prefix, roots, repo_root, since) for item in result]
+        return [_publish(item, prefix, roots, repo_root, since) for item in result]
     return result
 
 

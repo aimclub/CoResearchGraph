@@ -114,6 +114,11 @@ const appSettings = {
     defaultReasoning: '',              // AGENTS__DEFAULT_REASONING; '' = as the profile declares
     overrides: {},                     // AGENTS__OVERRIDES; { AgentName: { enabled?, reasoning?, model? } }
   },
+  alembicHub: {
+    searchEnabled: true,
+    autoUpload: false,
+    agentBuildEnabled: false,
+  },
 };
 
 function escHtml(s) {

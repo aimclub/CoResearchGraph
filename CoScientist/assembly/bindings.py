@@ -132,6 +132,11 @@ def _sleep_tool():
     from CoScientist.tools.sleep_tool import sleep_tool
     return [FunctionTool(sleep_tool)]
 
+def _read_result_tool():
+    from google.adk.tools import FunctionTool
+    from CoScientist.tools.read_result_tool import read_result
+    return [FunctionTool(read_result)]
+
 def _web_flag(field: str) -> bool:
     """Read a per-tool switch off ``settings.web`` (set from the web UI)."""
     try:
@@ -594,6 +599,22 @@ REGISTRY.register_tool(ToolEntry(
                 "long-running job (e.g. one that takes hours) instead of "
                 "polling it every turn. Capped at 10 minutes per call; call it "
                 "again afterwards if you need to wait longer."
+            ),
+        ),
+    ),
+))
+
+REGISTRY.register_tool(ToolEntry(
+    key="read_result",
+    factory=_read_result_tool,
+    docs=(
+        ToolDoc(
+            name="read_result",
+            signature="read_result(ref, find=None, keys=None)",
+            purpose=(
+                "Read values from a shortened tool result (result_truncated + "
+                "result_s3) stored whole in S3: ref is the result_s3 link or s3_key, "
+                "find the value names, keys the top-level fields."
             ),
         ),
     ),
@@ -1087,6 +1108,11 @@ def _inject_fedot_candidates():
     return inject_fedot_candidates
 
 
+def _announce_attached_tools():
+    from CoScientist.agents.callbacks import announce_attached_tools
+    return announce_attached_tools
+
+
 def _before_get_task():
     from CoScientist.agents.callbacks import before_get_task
     return before_get_task
@@ -1324,6 +1350,9 @@ _cb("collect_reranked_mcps", "after_agent", factory=lambda ctx: _collect_reranke
 _cb("redirect_when_no_tools", "before_agent", factory=lambda ctx: _redirect_when_no_tools())
 # Reranker fallback: show FedotAgent the candidate pool fedot_tool will receive.
 _cb("inject_fedot_candidates", "before_agent", factory=lambda ctx: _inject_fedot_candidates())
+# State the executor's real tool list, so a catalogue "nothing matched" verdict
+# earlier in the conversation cannot override the tools it is actually holding.
+_cb("announce_attached_tools", "before_model", factory=lambda ctx: _announce_attached_tools())
 # Load active tasks into agent state before the agent runs.
 _cb("before_get_task", "before_agent", factory=lambda ctx: _before_get_task())
 # Project prior MCP CSV columns onto the current tools' input_schema arg names.

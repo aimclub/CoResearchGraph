@@ -463,24 +463,28 @@ agents:
     description: >-
       executes tasks: routes each one to the path that can actually deliver it —
       RUNNING existing ready-made MCP tools/services (property estimation,
-      docking, simulations, inference), or ENGINEERING it in a sandbox (writing
-      and running code, shell/git, data work) when no ready tool covers it.
+      docking, simulations, inference), BUILDING a missing tool from the code of
+      a scientific repository (the Alembic pipeline), or ENGINEERING it in a
+      sandbox (writing and running code, shell/git, data work).
     routing: >-
       for ANY task that must actually be EXECUTED — computed with an existing
-      tool OR built/run as code. It chooses the execution path itself, so you do
-      not have to decide up front whether a ready tool exists. Hallmark:
-      "compute/run X", "write code / clone repo X / assemble a dataset".
+      tool, turned into a new tool from a repository, OR built/run as code. It
+      chooses the execution path itself, so you do not have to decide up front
+      whether a ready tool exists. Hallmark: "compute/run X", "write code /
+      clone repo X / assemble a dataset".
     planning: |-
       Use this as your primary choice for ANY task that must be EXECUTED:
         - computations served by ready-made MCP tools
+        - a capability that exists only as code in a scientific repository and
+          is needed repeatedly → it can build an MCP tool server from that repo
         - engineering work: writing, debugging and running code, ML training and
           evaluation, shell and git operations, collecting/processing data
-      It routes between those two paths internally, so assign it the OUTCOME and
+      It routes between those paths internally, so assign it the OUTCOME and
       let it choose how to reach it.
     # A two-way switch (run a ready tool vs. write code): reasoning stays off
     # (the default) — the thinking belongs to whichever branch it picks.
     prompt: task_router
-    subordinates: [ToolPipelineAgent, CoderAgent]
+    subordinates: [ToolPipelineAgent, CoderAgent, McpBuilderAgent]
     output_key: executor_results
     report_output: true
     callbacks:
@@ -777,13 +781,15 @@ agents:
     # dynamic_tools surfaces the task's selected MCP servers (filtered_tools /
     # deployed_mcps) as native tools, resolved per turn — the same servers
     # FEDOT.MAS used to receive, but the agent calls them itself.
-    tools: [dynamic_tools, sleep, task_tracker, graph, research_graph]
+    tools: [dynamic_tools, read_result, sleep, task_tracker, graph, research_graph]
     output_key: fedot_results
     callbacks:
       # Abstain → recommend CoderAgent when the tool-prep pipeline found no tool
       # that actually matches the task (instead of running a nearest-but-wrong one).
       before_agent: [redirect_when_no_tools, before_get_task, inject_research_context, user_links]
-      before_model: [redact_link_urls]
+      # The tool list attached to this turn decides NO_MATCHING_TOOL, whatever an
+      # earlier catalogue search reported.
+      before_model: [redact_link_urls, announce_attached_tools]
       before_tool: [resolve_link_refs]
       after_model: [expand_link_refs]
       # register_tool_result_links catches a URL an MCP tool returns for the

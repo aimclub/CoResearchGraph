@@ -24,13 +24,17 @@ Run from anywhere:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import ipaddress
+import json
 import os
 import platform
 import random
 import secrets
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -222,6 +226,22 @@ def _s3_endpoint_args(ns: argparse.Namespace) -> tuple[list[str], dict[str, str]
     return ["--add-host", f"{HOST_ALIAS}:host-gateway"], overrides
 
 
+def s3_fingerprint(name: str, value: str) -> str:
+    """``value`` as is, or a SHA-256 fingerprint for an access or secret key, so
+    the settings can be compared and logged without the key itself."""
+    if value and name.endswith(("ACCESS_KEY", "SECRET_KEY")):
+        return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return value
+
+
+def serve_s3_settings(ns: argparse.Namespace) -> dict[str, str]:
+    """The S3 settings (``SERVE_ONLY_ENV``) a serve container started now gets,
+    as serve_image sets them, with keys as fingerprints."""
+    _, overrides = _s3_endpoint_args(ns)
+    values = {**_env_values(ns.env_file, extra_env=SERVE_ONLY_ENV), **overrides}
+    return {name: s3_fingerprint(name, values.get(name, "")) for name in SERVE_ONLY_ENV}
+
+
 def _volume_exists(context: str | None, volume: str) -> bool:
     """True if the named volume is already on the target daemon, so a
     pre-staged one can skip the copy."""
@@ -300,13 +320,11 @@ def build_image(repo_url: str, ns: argparse.Namespace) -> str:
         sys.exit(r.returncode)
 
     # ── Pre-commit cleanup — keep secrets out of the saved image ──────
-    # 1. Wipe pipeline.log inside the container; agent stderr may have
-    #    echoed API keys passed at build time.
-    _run(
-        [*docker_cli(context=ns.context), "exec", cname, "sh", "-c",
-         "rm -f /work/.alembic/*/pipeline.log"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    # 1. Empty pipeline.log; agent stderr may have echoed API keys passed at
+    #    build time. Only needed without a bind-mounted workdir. The container
+    #    has exited by now, so docker cp writes an empty file over the log.
+    if not host_workdir:
+        _blank_pipeline_log(ns, cname, repo)
 
     # 2. Build --change="ENV KEY=" for every sensitive var so it is
     #    blanked in the committed image's Config.Env. Without this,
@@ -327,8 +345,13 @@ def build_image(repo_url: str, ns: argparse.Namespace) -> str:
     for key in sorted(keys_to_scrub):
         change_args += ["--change", f"ENV {key}="]
 
+    # 3. Record where the image came from, so a copy pulled elsewhere still
+    #    names its repository and build and says how its tools validated.
+    label_args = _provenance_labels(repo_url, _validation_counts(ns, cname, repo, host_workdir))
+
     print(f"[start-chain] committing {cname} -> {tool_image}")
-    c = _run([*docker_cli(context=ns.context), "commit", *change_args, cname, tool_image])
+    c = _run([*docker_cli(context=ns.context), "commit", *change_args, *label_args,
+              cname, tool_image])
     if c.returncode != 0:
         sys.exit(c.returncode)
     _run([*docker_cli(context=ns.context), "rm", cname],
@@ -343,6 +366,49 @@ def build_image(repo_url: str, ns: argparse.Namespace) -> str:
         if _run([*docker_cli(context=ns.context), "tag", tool_image, job_image]).returncode == 0:
             return job_image
     return tool_image
+
+
+def _blank_pipeline_log(ns: argparse.Namespace, cname: str, repo: str) -> None:
+    """Write an empty pipeline.log over the one in the exited build container."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        tar.addfile(tarfile.TarInfo("pipeline.log"), io.BytesIO(b""))
+    _run([*docker_cli(context=ns.context), "cp", "-", f"{cname}:/work/.alembic/{repo}"],
+         input=buf.getvalue(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _validation_counts(ns: argparse.Namespace, cname: str, repo: str,
+                       host_workdir: str | None) -> dict:
+    """The validator's counts from reports/validation.json, {} when unreadable."""
+    rel = f"{repo}/reports/validation.json"
+    try:
+        if host_workdir:
+            data = (Path(host_workdir) / rel).read_bytes()
+        else:
+            r = _run([*docker_cli(context=ns.context), "cp", f"{cname}:/work/.alembic/{rel}", "-"],
+                     capture_output=True)
+            if r.returncode != 0:
+                return {}
+            # docker cp to stdout streams a tar holding the one file.
+            with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tar:
+                data = tar.extractfile(tar.next()).read()
+        counts = json.loads(data).get("counts")
+    except (OSError, ValueError, TypeError, AttributeError, tarfile.TarError):
+        return {}
+    return counts if isinstance(counts, dict) else {}
+
+
+def _provenance_labels(repo_url: str, counts: dict) -> list[str]:
+    """--change LABEL arguments naming the repository, the build and its validation."""
+    labels = {"alembic.repo_url": repo_url}
+    job_id = os.environ.get("ALEMBIC_JOB_ID")
+    if job_id:
+        labels["alembic.job_id"] = job_id
+    for key in ("tools_total", "tools_passed", "tools_perfect"):
+        if isinstance(counts.get(key), int):
+            labels[f"alembic.{key}"] = str(counts[key])
+    return [arg for key, value in labels.items()
+            for arg in ("--change", f"LABEL {key}={json.dumps(value)}")]
 
 
 def _return_to_host_user(ns: argparse.Namespace, host_workdir: str) -> None:
@@ -407,7 +473,7 @@ def _stays_up(ns: argparse.Namespace, cname: str) -> bool:
 
 def serve_image(repo_url: str, tool_image: str, ns: argparse.Namespace) -> None:
     repo  = get_repo_name(repo_url)
-    port  = _random_port()
+    port  = getattr(ns, "port", None) or _random_port()
     cname = f"alembic-serve-{repo}-{secrets.token_hex(3)}"
 
     cmd = [*docker_cli(context=ns.context), "run", "-d", "--name", cname,
@@ -488,6 +554,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--image", default=None,
                     help="Image to serve with --serve-only. Default: "
                          "alembic-tool:<repo>.")
+    ap.add_argument("--port", type=int, default=None,
+                    help="Host port to publish the MCP server on. Default: a random one.")
+    ap.add_argument("--serve-env", action="store_true",
+                    help="Print, as JSON, the S3 settings a serve container started "
+                         "now would get (keys as fingerprints), and exit.")
     ap.add_argument("--context", default=None,
                     help="Docker context to build and serve on (a remote daemon). "
                          "Default: the local daemon.")
@@ -513,6 +584,9 @@ def main() -> None:
     ns = parse_args()
     global _API_VERSION
     _API_VERSION = ns.api_version
+    if ns.serve_env:
+        print(json.dumps(serve_s3_settings(ns)))
+        return
     if ns.platform is None:
         ns.platform = _default_platform()
         if ns.platform:

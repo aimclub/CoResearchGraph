@@ -23,9 +23,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ARG REPO_NAME
 WORKDIR /work
 
-# The cloned repo (needed by the editable install) + the portable code artefacts.
-# Venvs are deliberately excluded and rebuilt below.
+# The cloned repo (needed by the editable install) + the portable code artefacts
+# + the build's reports (plan, validation), so the rebuilt image still shows how
+# its tools were converted and validated. Venvs are excluded and rebuilt below.
 COPY .alembic/${REPO_NAME}/repos            /work/.alembic/${REPO_NAME}/repos
+COPY .alembic/${REPO_NAME}/reports          /work/.alembic/${REPO_NAME}/reports
 COPY .alembic/${REPO_NAME}/output/tools     /work/.alembic/${REPO_NAME}/output/tools
 COPY .alembic/${REPO_NAME}/output/helpers   /work/.alembic/${REPO_NAME}/output/helpers
 COPY .alembic/${REPO_NAME}/output/server.py /work/.alembic/${REPO_NAME}/output/server.py

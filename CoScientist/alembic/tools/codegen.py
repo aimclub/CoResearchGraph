@@ -285,7 +285,9 @@ helpers/s3_transfer.py) a *_path/*_file kwarg given as an s3:// or http(s)://
 URI is downloaded to a per-call scratch dir before the tool runs, and any
 *_path/*_file the tool returns as an existing local file (outside the mounted
 data, and inside the cloned repo only when this call wrote it) is uploaded and
-presigned after it. Without those four variables set
+presigned after it. A result longer than ALEMBIC_RESULT_MAX_CHARS as JSON (8000
+by default) is uploaded whole, and the caller gets a shortened copy of it with
+result_s3 pointing at the full one. Without those four variables set
 the RUNTIME behaves exactly as before S3 support existed — but the tool
 SCHEMA does not: every tool below always declares the trailing
 user_id/session_id params regardless of whether S3 is configured, since that

@@ -6,8 +6,12 @@ tests/unit/_codegen_loader.py exists.
 """
 
 import argparse
+import hashlib
 import importlib.util
+import io
+import json
 import sys
+import tarfile
 import types
 from pathlib import Path
 
@@ -328,3 +332,85 @@ def test_serve_only_defaults_to_the_repo_image(monkeypatch):
 def test_serve_only_without_the_image_fails(monkeypatch):
     with pytest.raises(SystemExit):
         _main(monkeypatch, "--serve-only", image_found=False)
+
+
+def test_the_committed_image_records_where_it_came_from(monkeypatch, tmp_path):
+    """An image that travels (a registry, the hub) has to name its repository
+    and build and say how its tools validated."""
+    ran = []
+    monkeypatch.setattr(sc, "_run", lambda cmd, **kw: ran.append(cmd) or _Ok())
+    monkeypatch.setattr(sc.subprocess, "Popen", _Tar)
+    work = tmp_path / "work"
+    (work / "repo" / "reports").mkdir(parents=True)
+    (work / "repo" / "reports" / "validation.json").write_text(
+        json.dumps({"counts": {"tools_total": 4, "tools_passed": 3, "tools_perfect": 2}}))
+    monkeypatch.setenv("ALEMBIC_HOST_WORKDIR", str(work))
+    monkeypatch.setenv("ALEMBIC_JOB_ID", "repo-abc123")
+
+    sc.build_image("https://github.com/org/repo", _build_ns(tmp_path))
+
+    commit = next(cmd for cmd in ran if "commit" in cmd)
+    labels = {commit[i + 1] for i, arg in enumerate(commit)
+              if arg == "--change" and commit[i + 1].startswith("LABEL ")}
+    assert labels == {'LABEL alembic.repo_url="https://github.com/org/repo"',
+                      'LABEL alembic.job_id="repo-abc123"', 'LABEL alembic.tools_total="4"',
+                      'LABEL alembic.tools_passed="3"', 'LABEL alembic.tools_perfect="2"'}
+
+
+def test_without_a_mounted_workdir_the_pipeline_log_is_emptied_before_the_commit(
+        monkeypatch, tmp_path):
+    """The build container has exited by commit time, so an rm through docker
+    exec did nothing and a hand-run build kept pipeline.log in its image."""
+    ran = []
+    monkeypatch.setattr(sc, "_run", lambda cmd, **kw: ran.append((cmd, kw)) or _Ok())
+    monkeypatch.delenv("ALEMBIC_HOST_WORKDIR", raising=False)
+    monkeypatch.delenv("ALEMBIC_JOB_ID", raising=False)
+
+    sc.build_image("https://github.com/org/repo", _build_ns(tmp_path))
+
+    cmds = [cmd for cmd, _ in ran]
+    assert not any("exec" in cmd for cmd in cmds)
+    blank = next(i for i, cmd in enumerate(cmds) if cmd[-3:-1] == ["cp", "-"])
+    assert cmds[blank][-1].endswith(":/work/.alembic/repo")
+    with tarfile.open(fileobj=io.BytesIO(ran[blank][1]["input"])) as tar:
+        [member] = tar.getmembers()
+    assert (member.name, member.size) == ("pipeline.log", 0)
+    assert blank < next(i for i, cmd in enumerate(cmds) if "commit" in cmd)
+
+
+def test_serve_env_prints_what_a_serve_container_would_get_with_keys_fingerprinted(
+        monkeypatch, tmp_path, capsys):
+    """The builds page compares these with a stopped container's settings. A key
+    itself never leaves start_chain."""
+    for name in sc.SERVE_ONLY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    env = tmp_path / ".env"
+    env.write_text("S3__ENDPOINT_URL=http://localhost:19000\nS3__BUCKET_NAME=agent-vault\n"
+                   "S3__SECRET_KEY=topsecret\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["start_chain", "https://github.com/org/repo",
+                                      "--serve-env", "--env-file", str(env)])
+    monkeypatch.setattr(sc, "detect_gpu", lambda *a, **kw: pytest.fail("asked docker"))
+
+    sc.main()
+
+    out = capsys.readouterr().out
+    settings = json.loads(out)
+    assert settings["S3__ENDPOINT_URL"] == "http://host.docker.internal:19000"
+    assert settings["S3__EXTERNAL_ENDPOINT_URL"] == "http://localhost:19000"
+    assert settings["S3__BUCKET_NAME"] == "agent-vault"
+    assert settings["S3__SECRET_KEY"] == "sha256:" + hashlib.sha256(b"topsecret").hexdigest()[:16]
+    assert "topsecret" not in out
+
+
+def test_serve_image_publishes_the_port_it_is_given(monkeypatch, tmp_path):
+    """A container replaced for new S3 settings keeps its predecessor's port, so
+    the server keeps its address."""
+    ran = []
+    monkeypatch.setattr(sc, "_run", lambda cmd, **kw: ran.append(cmd) or _Ok())
+    monkeypatch.setattr(sc.subprocess, "run", lambda cmd, **kw: _Inspect("true\n"))
+    monkeypatch.setattr(sc, "SERVE_SETTLE_SECONDS", 0.01)
+    monkeypatch.setattr(sc.time, "sleep", lambda s: None)
+
+    sc.serve_image("https://github.com/org/repo", "alembic-tool:repo", _build_ns(tmp_path, port=27969))
+
+    assert "27969:8000" in ran[0]
