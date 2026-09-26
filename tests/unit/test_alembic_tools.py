@@ -80,6 +80,9 @@ def _enable_alembic_for_tool_mechanics(monkeypatch, tmp_path):
     # of this machine nor leave its own fake jobs there for the next process.
     monkeypatch.setattr(alembic_tools, "JOB_METADATA_DIR", tmp_path / "jobs")
     alembic_tools._JOBS.clear()
+    # The daemon probe is the host's business; the mechanics under test are not.
+    monkeypatch.setattr(alembic_tools, "alembic_preflight",
+                        lambda **kw: {"available": True, "reason": "stub"})
 
 
 def _noop_runner(rec):
@@ -786,3 +789,22 @@ def test_a_known_build_serving_from_a_new_container_gets_no_second_record(monkey
 
     assert alembic_tools.adopt_unclaimed_servers() == []
     assert list(alembic_tools._JOBS) == ["mordred-babc36"]
+
+
+def test_an_unreachable_docker_daemon_stops_the_build_before_a_job_exists(monkeypatch, tmp_path):
+    """A DOCKER_HOST that does not resolve (b.dgx:2376 on a machine without the
+    VPN) used to fail minutes into the job; the agent hears it at once and is
+    pointed at the coder route instead of retrying the build."""
+    monkeypatch.setattr(alembic_tools, "alembic_preflight", lambda **kw: {
+        "available": False,
+        "reason": "Docker preflight failed: dial tcp: lookup b.dgx: no such host"})
+    monkeypatch.setenv("DOCKER_HOST", "tcp://b.dgx:2376")
+    started = []
+    monkeypatch.setattr(alembic_tools, "_runner", lambda rec: started.append(rec))
+
+    result = asyncio.run(alembic_tools.build_mcp_server("https://github.com/aimclub/GOLEM"))
+
+    assert result["status"] == "error" and result["error_code"] == "docker_unavailable"
+    assert "b.dgx" in result["error"] and "CoderAgent" in result["note"]
+    assert started == [] and alembic_tools._JOBS == {}
+

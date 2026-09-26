@@ -1117,6 +1117,28 @@ async def build_mcp_server(
     if not re.match(r"^(https?://|git@)\S+/\S+", repo_url):
         return {"status": "error",
                 "error": f"repo_url does not look like a git repository URL: {repo_url!r}"}
+    # The daemon Alembic would use (DOCKER_HOST or the active context) must
+    # answer before anything else: a build, a restart of a served container
+    # and a hub pull all go through it. A DNS name that does not resolve used
+    # to surface minutes into the job; the agent is told at once instead, with
+    # the way out it actually has.
+    preflight = await asyncio.to_thread(alembic_preflight)
+    if not preflight.get("available"):
+        docker_host = os.environ.get("DOCKER_HOST") or "local daemon"
+        return {
+            "status": "error",
+            "error_code": "docker_unavailable",
+            "repo_url": repo_url,
+            "error": f"the Docker daemon Alembic uses is unreachable ({docker_host}): "
+                     f"{preflight.get('reason') or 'docker info failed'}",
+            "note": ("Nothing was built and nothing can be reused or pulled while the "
+                     "daemon is down: this is the host's environment (DOCKER_HOST, VPN, "
+                     "DNS), not the repository. Do not retry the build in this session. "
+                     "If the computation itself is what matters, run the repository as "
+                     "code through CoderAgent (clone it in the sandbox) and say in your "
+                     "answer that no reusable MCP server was made."),
+        }
+
     idempotency_key = (idempotency_key or "").strip() or None
     associations = {
         "idempotency_key": idempotency_key,
