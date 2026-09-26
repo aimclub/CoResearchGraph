@@ -14,10 +14,15 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "CoScientist"))
-
-from alembic import contract  # noqa: E402
-from alembic.contract import EnvSpec, Plan, ToolSpec  # noqa: E402
-from alembic.tools import invoke  # noqa: E402
+try:
+    from alembic import contract  # noqa: E402
+    from alembic.contract import EnvSpec, Plan, ToolSpec  # noqa: E402
+    from alembic.tools import invoke  # noqa: E402
+finally:
+    # The insert makes the container's package layout importable, but leaving
+    # CoScientist/ on sys.path shadows site-packages names for every test that
+    # collects after this one (CoScientist/a2a hides the a2a-sdk package).
+    sys.path.pop(0)
 
 _CDL = {"source": "lib/iris/tests/stock/file_headers/xios_2D_face_half_levels.cdl"}
 _NC = {"source": "/work/.alembic/iris/output/samples/mesh.nc"}
