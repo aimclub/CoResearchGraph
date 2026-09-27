@@ -142,7 +142,8 @@ async def api_start_build(payload: dict):
     return JSONResponse(
         await alembic_tools.build_mcp_server(
             repo_url, force_rebuild=force,
-            hints=payload.get("hints"), task_spec=payload.get("task_spec"))
+            hints=payload.get("hints"), task_spec=payload.get("task_spec"),
+            max_tools=payload.get("max_tools"))
     )
 
 

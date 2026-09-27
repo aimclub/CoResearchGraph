@@ -105,6 +105,15 @@ it with one of two mechanisms, at opposite ends of a strictness spectrum:
     --hints "a train + a predict entry point for the survival model"
   ```
 
+- **Tool count** — by default the explorer proposes 2-5 tools and the plan gate
+  keeps at most 12. `ALEMBIC_MAX_TOOLS=<n>` (1-30) sets both to `n`: the
+  explorer is asked for up to `n` tools and the gate keeps no more. From the
+  web app pass `max_tools` to `build_mcp_server` or to `POST /alembic/api/builds`:
+
+  ```bash
+  ALEMBIC_MAX_TOOLS=8 python CoScientist/alembic/start_chain.py https://github.com/aimclub/FEDOT
+  ```
+
   The two compose: required tools stay pinned while the hint steers the rest.
 
 ---

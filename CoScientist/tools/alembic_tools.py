@@ -96,6 +96,7 @@ _RECORD_FIELDS = frozenset(
         "hub",
         "hints",
         "task_spec",
+        "max_tools",
         "scopes",
         "tools",
     }
@@ -115,7 +116,8 @@ _META_FIELDS = ("job_id", "repo_url", "status", "started_at", "finished_at",
                 "log_file", "workdir", "pid", "mcp_url", "image", "container",
                 "error", "registered", "registration_error", "image_id",
                 "server_id", "served_at", "image_deleted", "origin", "tool_counts", "hub",
-                "hints", "task_spec", "idempotency_key", "run_id", "task_id", "attempt_id")
+                "hints", "task_spec", "max_tools", "idempotency_key", "run_id", "task_id",
+                "attempt_id")
 
 
 def _meta_path(job_id: str) -> Path:
@@ -555,9 +557,10 @@ def _runner(rec: Dict[str, Any]) -> None:
     # What the operator asked for beyond the repository: a soft steer for the
     # explorer, and a task spec that pins the tools the build must produce.
     # start_chain passes both through to the build container.
-    for key, var in (("hints", "ALEMBIC_HINTS"), ("task_spec", "ALEMBIC_TASKS")):
+    for key, var in (("hints", "ALEMBIC_HINTS"), ("task_spec", "ALEMBIC_TASKS"),
+                     ("max_tools", "ALEMBIC_MAX_TOOLS")):
         if rec.get(key):
-            env[var] = rec[key]
+            env[var] = str(rec[key])
     try:
         with open(log_path, "w", encoding="utf-8") as log:
             proc = subprocess.Popen(
@@ -1075,6 +1078,7 @@ async def build_mcp_server(
     force_rebuild: bool = False,
     hints: Optional[str] = None,
     task_spec: Optional[str] = None,
+    max_tools: Optional[int] = None,
     tool_context: Optional[ToolContext] = None,
     idempotency_key: Optional[str] = None,
     run_id: Optional[str] = None,
@@ -1097,6 +1101,9 @@ async def build_mcp_server(
         task_spec: For an operator who already knows the exact tools the server
             must expose: their spec as JSON/YAML text, or a path or link to it.
             Those tools are then required, and the build fails without them.
+        max_tools: The most tools the server may expose (1-30). Unset, the
+            explorer proposes 2-5 and the build keeps at most 12. Applies to a
+            new build only; a reused build keeps the tools it has.
         idempotency_key: Coordinator-supplied operation key. Repeating the same
             key for the same repository always returns the original job.
         run_id: Optional experiment run associated with this build.
@@ -1117,6 +1124,18 @@ async def build_mcp_server(
     if not re.match(r"^(https?://|git@)\S+/\S+", repo_url):
         return {"status": "error",
                 "error": f"repo_url does not look like a git repository URL: {repo_url!r}"}
+    if max_tools is not None and max_tools != "":
+        from CoScientist.alembic.config import MAX_TOOLS_LIMIT as limit
+
+        try:
+            max_tools = int(max_tools)
+        except (TypeError, ValueError):
+            max_tools = 0
+        if not 1 <= max_tools <= limit:
+            return {"status": "error", "repo_url": repo_url,
+                    "error": f"max_tools must be a whole number from 1 to {limit}"}
+    else:
+        max_tools = None
     # The daemon Alembic would use (DOCKER_HOST or the active context) must
     # answer before anything else: a build, a restart of a served container
     # and a hub pull all go through it. A DNS name that does not resolve used
@@ -1263,6 +1282,7 @@ async def build_mcp_server(
                     "origin": "builder",
                     "hints": hints,
                     "task_spec": task_spec,
+                    "max_tools": max_tools,
                     **{
                         key: value
                         for key, value in associations.items()

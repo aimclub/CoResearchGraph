@@ -414,3 +414,19 @@ def test_serve_image_publishes_the_port_it_is_given(monkeypatch, tmp_path):
     sc.serve_image("https://github.com/org/repo", "alembic-tool:repo", _build_ns(tmp_path, port=27969))
 
     assert "27969:8000" in ran[0]
+
+
+def test_a_tool_cap_reaches_the_build_container(monkeypatch, tmp_path):
+    """ALEMBIC_MAX_TOOLS set by the runner has to arrive in the container."""
+    ran = []
+    monkeypatch.setattr(sc, "_run", lambda cmd, **kw: ran.append(cmd) or _Ok())
+    monkeypatch.setenv("ALEMBIC_MAX_TOOLS", "8")
+    ns = argparse.Namespace(
+        platform=None, gpus=None, mount_dir=None, context=None, stage_volume=None,
+        advertise_host=None, env_file=tmp_path / "absent.env", resume=None, until=None,
+        hints=None,
+    )
+
+    sc.build_image("https://github.com/org/repo", ns)
+
+    assert "ALEMBIC_MAX_TOOLS=8" in " ".join(ran[0])
