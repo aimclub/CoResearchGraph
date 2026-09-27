@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import re
 from typing import Any, Mapping, MutableMapping
 from urllib.parse import urlparse
 
 from CoScientist.config.settings import ExperimentsSettings
+from CoScientist.config import get_settings
 from CoScientist.experiments.schemas import ExecutionRoute, ExperimentTask
 from CoScientist.experiments.runtime.shared import audit
 
@@ -444,6 +446,149 @@ def scrub_inputs_of_dropped_scripts(
     return touched
 
 
+_MCP_CLIENT_SNIPPET = """import asyncio, json
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+
+async def call_mcp_tool(url, name, arguments):
+    async with streamablehttp_client(url) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(name, arguments)
+            text = "".join(getattr(c, "text", "") for c in result.content)
+            try:
+                return json.loads(text)
+            except ValueError:
+                return text
+
+
+# result = asyncio.run(call_mcp_tool(MCP_URL, "tool_name", {"arg": value}))
+# Many calls: open one session and loop inside it instead of one asyncio.run per call.
+"""
+
+
+def coder_mcp_servers(task: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The served MCP servers a Coder task may call from its scripts."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(task, Mapping):
+        return out
+    for server in task.get("mcp_servers") or []:
+        if not isinstance(server, dict):
+            continue
+        url = str(server.get("url") or "").strip()
+        if not url.startswith("http"):
+            continue
+        tools = []
+        for tool in server.get("tools") or []:
+            name = str(tool.get("name") if isinstance(tool, dict) else tool or "").strip()
+            if not name or name == _PLACEHOLDER_TOOL:
+                continue
+            entry: dict[str, Any] = {"name": name}
+            if isinstance(tool, dict):
+                if tool.get("description"):
+                    entry["description"] = str(tool["description"])[:300]
+                if tool.get("input_schema"):
+                    entry["input_schema"] = tool["input_schema"]
+            tools.append(entry)
+        out.append({
+            "url": url,
+            "server_id": str(server.get("server_id") or server.get("name") or ""),
+            "source": str(server.get("source") or ""),
+            "tools": tools,
+        })
+    return out
+
+
+def pin_coder_mcp_request(args: dict[str, Any], task_runtime: Mapping[str, Any]) -> bool:
+    """Give the Coder the served MCP servers of its task and a client to call them.
+
+    CoderAgent has no MCP toolset; with EXPERIMENTS__ROUTE_CODER_MCP the
+    module only put the server into state, and the coder re-imported the
+    repository instead (KM-ARL run 9, 2026-09-27: the sweep never touched the
+    server built two tasks earlier). The request now carries the URLs, the
+    tool names with their schemas and a streamable-HTTP client snippet.
+    """
+    task = task_runtime.get("task") if isinstance(task_runtime.get("task"), dict) else {}
+    if str(task.get("route") or "") != ExecutionRoute.CODER.value:
+        return False
+    servers = coder_mcp_servers(task)
+    if not servers:
+        return False
+    raw = args.get("request")
+    payload: dict[str, Any]
+    if isinstance(raw, dict):
+        payload = dict(raw)
+    else:
+        payload = {}
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            payload = parsed if isinstance(parsed, dict) else {"task": raw}
+    payload["mcp_servers"] = servers
+    payload["mcp_client"] = {
+        "install": "pip install mcp",
+        "python": _MCP_CLIENT_SNIPPET,
+        "arguments": "JSON values; a list is a JSON list, inf is the string \"Infinity\".",
+    }
+    names = [t["name"] for srv in servers for t in srv["tools"]]
+    extra = (
+        "The authors' computations are served as MCP tools at mcp_servers[].url"
+        + (f" ({', '.join(names)})" if names else "")
+        + ". Call them from your scripts through mcp_client.python instead of re-importing "
+        "the repository for those computations; write the scripts and the result files to "
+        "disk as the task asks. Install the client with mcp_client.install if the import fails."
+    )
+    prior = str(payload.get("instruction") or "").strip()
+    payload["instruction"] = f"{prior} {extra}".strip()
+    args["request"] = payload
+    return True
+
+
+def attach_server_to_repository_tasks(
+    runtime: dict[str, Any], producer_id: str, server_json: dict[str, Any], repo_url: str | None,
+) -> list[str]:
+    """Every other Coder task of the same repository gets the served server.
+
+    The build belongs to the first reuse task; the simulation, the sweep and
+    the fit that follow run through Coder and should call the tool that was
+    just built rather than import the repository again. Returns the task ids
+    touched (runtime and plan copy alike)."""
+    key = str(repo_url or "").strip().rstrip("/").removesuffix(".git").lower()
+    url = str(server_json.get("url") or "")
+    if not key or not url:
+        return []
+    touched: list[str] = []
+
+    def _attach(dump: dict[str, Any]) -> bool:
+        if str(dump.get("route") or "") != ExecutionRoute.CODER.value:
+            return False
+        task_key = str(dump.get("repo_url") or "").strip().rstrip("/").removesuffix(".git").lower()
+        if task_key != key:
+            return False
+        servers = list(dump.get("mcp_servers") or [])
+        if any(isinstance(s, dict) and str(s.get("url") or "") == url for s in servers):
+            return False
+        servers.append(copy.deepcopy(server_json))
+        dump["mcp_servers"] = servers
+        return True
+
+    for tid, task_runtime in (runtime.get("tasks") or {}).items():
+        if tid == producer_id or not isinstance(task_runtime, dict):
+            continue
+        dump = task_runtime.get("task")
+        if isinstance(dump, dict) and _attach(dump):
+            touched.append(tid)
+    plan = runtime.get("plan")
+    if isinstance(plan, dict):
+        for item in plan.get("tasks") or []:
+            if isinstance(item, dict) and item.get("id") != producer_id:
+                _attach(item)
+    return touched
+
+
 def apply_alembic_success(
     state: MutableMapping[str, Any],
     runtime: dict[str, Any],
@@ -535,6 +680,16 @@ def apply_alembic_success(
         audit(logger, f"EXPERIMENT_ALEMBIC_INPUTS_SCRUBBED producer={updated.id} tasks={','.join(touched)} scripts={','.join(dropped_scripts)}")
 
     server_json = server.model_dump(mode="json")
+    try:
+        coder_mcp = bool(settings.route_coder_mcp) if settings is not None else bool(
+            get_settings().experiments.route_coder_mcp
+        )
+    except Exception:  # noqa: BLE001
+        coder_mcp = False
+    if coder_mcp:
+        attached = attach_server_to_repository_tasks(runtime, updated.id, server_json, task.repo_url)
+        if attached:
+            audit(logger, f"EXPERIMENT_ALEMBIC_SERVER_ATTACHED producer={updated.id} tasks={','.join(attached)} url={server_json.get('url')}")
     deployed = list(state.get("deployed_mcps") or [])
     deployed.append(copy.deepcopy(server_json))
     state["deployed_mcps"] = deployed
@@ -550,6 +705,9 @@ def apply_alembic_success(
 __all__ = [
     "alembic_post_build_context",
     "retarget_task_for_tool_route",
+    "pin_coder_mcp_request",
+    "coder_mcp_servers",
+    "attach_server_to_repository_tasks",
     "retarget_task_for_tool_route_with_dropped",
     "scrub_inputs_of_dropped_scripts",
     "apply_alembic_success",

@@ -635,3 +635,75 @@ def test_downstream_inputs_that_named_a_dropped_script_are_scrubbed():
     assert [r["source_artifact_id"] for r in refs] == ["smoke.json"]
     plan_task = next(t for t in runtime["plan"]["tasks"] if t["id"] == "EXP-2")
     assert [r["source_artifact_id"] for r in plan_task["input_data"]] == ["smoke.json"]
+
+
+def test_the_coder_request_carries_the_served_servers_and_a_client():
+    from CoScientist.experiments.runtime.alembic_bridge import pin_coder_mcp_request
+
+    task = _task("EXP-2", route="coder")
+    task["mcp_servers"] = [{
+        "name": "alembic-km", "server_id": "alembic-km", "url": "http://127.0.0.1:9000/mcp",
+        "source": "alembic", "health": "healthy",
+        "tools": [{"name": "calc_kme_arl", "description": "KM-ARL", "input_schema": {"type": "object"}}],
+    }]
+    args = {"request": '{"task_id": "EXP-2", "goal": "sweep"}'}
+    assert pin_coder_mcp_request(args, {"task": task}) is True
+    payload = args["request"]
+    assert payload["goal"] == "sweep"
+    assert payload["mcp_servers"][0]["url"] == "http://127.0.0.1:9000/mcp"
+    assert payload["mcp_servers"][0]["tools"][0]["name"] == "calc_kme_arl"
+    assert "streamablehttp_client" in payload["mcp_client"]["python"]
+    assert "calc_kme_arl" in payload["instruction"]
+
+    plain = _task("EXP-3", route="coder")
+    args = {"request": "just text"}
+    assert pin_coder_mcp_request(args, {"task": plain}) is False
+    assert args["request"] == "just text"
+
+
+def test_after_the_build_the_repository_coder_tasks_get_the_server(monkeypatch):
+    """EXP-1 builds, EXP-2 (Coder, same repository) should call the built tool
+    from its scripts instead of importing the repository again (run 9)."""
+    from CoScientist.experiments.runtime import alembic_bridge
+
+    monkeypatch.setattr(alembic_bridge, "_served_tool_names", lambda url: ["calc_kme_arl"])
+    producer = _alembic_task()
+    consumer = _task("EXP-2", route="coder", depends_on=["EXP-1"])
+    consumer["repo_url"] = "https://github.com/whitead/synspace.git"
+    consumer["code_assessment"] = {"requirement": "reuse", "evidence": "same repository", "entrypoints": ["x"]}
+    consumer["mcp_servers"] = []
+    plan = _plan(producer, consumer)
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True, route_coder_mcp=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_kme_arl"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    runtime = state["experiment_runtime"]
+    srv = runtime["tasks"]["EXP-2"]["task"]["mcp_servers"]
+    assert [s["url"] for s in srv] == ["http://127.0.0.1:9000/mcp"]
+    plan_task = next(t for t in runtime["plan"]["tasks"] if t["id"] == "EXP-2")
+    assert [s["url"] for s in plan_task["mcp_servers"]] == ["http://127.0.0.1:9000/mcp"]
+
+    # Without the coder-MCP switch the coder tasks are left alone.
+    state2: dict = {}
+    initialize_runtime(state2, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state2)
+    settings2 = ExperimentsSettings(route_alembic=True, route_coder_mcp=False)
+    started2 = start_task(state2, "EXP-1", settings=settings2)
+    mark_route_returned(state2, "McpBuilderAgent")
+    record_result(
+        state2, "EXP-1", started2["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_kme_arl"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings2,
+    )
+    assert state2["experiment_runtime"]["tasks"]["EXP-2"]["task"]["mcp_servers"] == []

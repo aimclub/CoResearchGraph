@@ -386,6 +386,15 @@ def guard_route_agent_tool(
                     "EXPERIMENT_ALEMBIC_POST_BUILD_PIN "
                     f"agent={tool_name} task_id={task_runtime.get('task', {}).get('id')}",
                 )
+        elif tool_name == "CoderAgent":
+            from CoScientist.experiments.runtime.alembic_bridge import pin_coder_mcp_request
+
+            if pin_coder_mcp_request(args, task_runtime):
+                audit(
+                    logger,
+                    "EXPERIMENT_CODER_MCP_PIN "
+                    f"task_id={task_runtime.get('task', {}).get('id')}",
+                )
         _stringify_agent_tool_request(args)
         return None
     if pending is not None and tool_name and tool_name not in _PENDING_RECORD_ALLOWED:
