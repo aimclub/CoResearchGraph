@@ -448,7 +448,10 @@ def scrub_inputs_of_dropped_scripts(
 
 _MCP_CLIENT_SNIPPET = """import asyncio, json
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+try:  # the client function was renamed between mcp releases
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+except ImportError:
+    from mcp.client.streamable_http import streamablehttp_client
 
 
 async def call_mcp_tool(url, name, arguments):
