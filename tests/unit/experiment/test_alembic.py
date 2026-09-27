@@ -497,3 +497,51 @@ def test_a_served_mcp_resolves_as_the_artifact_the_planner_named(tmp_path, monke
     served = [a for a in rt["results"][-1]["artifacts"] if a["role"] == "mcp_server"]
     assert [a["name"] for a in served] == ["informer2020-mcp-server"]
     assert served[0]["external_url"] == "http://127.0.0.1:9000/mcp"
+
+
+def test_a_coder_task_reopened_on_the_tool_route_no_longer_promises_scripts():
+    """The fork converts a Coder task to alembic_build without touching what it
+    promises; the post-build attempt on react_tools then owes a wrapper script
+    and a "file exists" criterion it can never satisfy (KM-ARL run 4)."""
+    task = _alembic_task()
+    task["expected_artifacts"] = [
+        {"name": "km_toolkit_wrapper.py", "role": "code", "media_type": "text/x-python",
+         "required": True, "description": "Wrapper script"},
+        {"name": "smoke_test_output.json", "role": "data", "media_type": "application/json",
+         "required": True, "description": "Four estimates"},
+    ]
+    task["design"]["analysis_artifacts"] = [
+        {"name": "km_toolkit_wrapper.py", "role": "code", "prepare_via": "coder", "path_or_tool": "km_toolkit_wrapper.py"},
+        {"name": "smoke_test_output.json", "role": "metrics_table", "prepare_via": "coder", "path_or_tool": "smoke_test_output.json"},
+    ]
+    task["success_criteria"] = [
+        {"criterion_id": "EXP-1-C1", "description": "km_toolkit_wrapper.py is written to disk.",
+         "kind": "artifact_exists", "verification": "the file km_toolkit_wrapper.py exists"},
+        {"criterion_id": "EXP-1-C2", "description": "All four estimates are finite numbers.",
+         "kind": "execution", "verification": "values in smoke_test_output.json are numbers"},
+    ]
+    plan = _plan(task)
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_KME", "cusum_detect"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    reopened = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]
+    assert reopened["route"] == "react_tools"
+    assert [a["name"] for a in reopened["expected_artifacts"]] == ["smoke_test_output.json"]
+    analysis = reopened["design"]["analysis_artifacts"]
+    assert [a["name"] for a in analysis] == ["smoke_test_output.json"]
+    assert analysis[0]["prepare_via"] == "mcp"
+    assert [c["criterion_id"] for c in reopened["success_criteria"]] == ["EXP-1-C2"]
+    assert any("tool results are the artifacts" in w for w in reopened["warnings"])
+    # The plan copy the module shows to the planner and the reviewer follows.
+    plan_task = next(t for t in state["experiment_runtime"]["plan"]["tasks"] if t["id"] == "EXP-1")
+    assert [a["name"] for a in plan_task["expected_artifacts"]] == ["smoke_test_output.json"]

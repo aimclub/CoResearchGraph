@@ -268,6 +268,88 @@ def stamp_alembic_science_description(
     task["description"] = (f"{desc} {suffix}".strip() if desc else suffix.strip())
 
 
+_SCRIPT_SUFFIXES = (".py", ".ipynb", ".sh", ".r", ".jl", ".m")
+
+
+def _is_script_name(name: str) -> bool:
+    return str(name or "").strip().lower().endswith(_SCRIPT_SUFFIXES)
+
+
+def retarget_task_for_tool_route(task: "ExperimentTask", tool_names: list[str]) -> "ExperimentTask":
+    """Rewrite a task planned for Coder so the post-build attempt on the tool
+    route can succeed.
+
+    The fork converts a Coder task to alembic_build without touching what the
+    task promises, so the attempt on react_tools inherits scripts to write and
+    "file exists" criteria that a tool-calling agent can never satisfy
+    (KM-ARL run 4, 2026-09-27: EXP-1 failed twice after a successful build).
+    Scripts leave expected_artifacts and analysis_artifacts, the rest is
+    prepared via mcp, criteria that only ask for those files go, and one
+    execution criterion on the tool calls is kept when nothing else remains.
+    """
+    dump = task.model_dump(mode="json")
+    dropped_names: list[str] = []
+    kept_artifacts = []
+    for art in dump.get("expected_artifacts") or []:
+        if art.get("role") == "code" or _is_script_name(art.get("name")):
+            dropped_names.append(str(art.get("name") or ""))
+            continue
+        kept_artifacts.append(art)
+    if not kept_artifacts:
+        kept_artifacts = [{
+            "name": f"{task.id.lower()}-tool-results.json",
+            "role": "data", "media_type": "application/json", "required": True,
+            "description": "Results returned by the served MCP tools for this task.",
+        }]
+    dump["expected_artifacts"] = kept_artifacts
+
+    design = dict(dump.get("design") or {})
+    analysis = []
+    for art in design.get("analysis_artifacts") or []:
+        if art.get("role") == "code" or _is_script_name(art.get("name")):
+            continue
+        art = dict(art)
+        if art.get("prepare_via") == "coder":
+            art["prepare_via"] = "mcp"
+            if tool_names and not str(art.get("path_or_tool") or "").strip():
+                art["path_or_tool"] = tool_names[0]
+        analysis.append(art)
+    if not analysis:
+        analysis = [{
+            "name": kept_artifacts[0]["name"], "role": "metrics_table",
+            "prepare_via": "mcp", "path_or_tool": tool_names[0] if tool_names else None,
+        }]
+    design["analysis_artifacts"] = analysis
+    dump["design"] = design
+
+    lowered = [n.lower() for n in dropped_names if n]
+    criteria = []
+    for crit in dump.get("success_criteria") or []:
+        text = " ".join(str(crit.get(k) or "") for k in ("description", "verification")).lower()
+        mentions_dropped = any(n in text for n in lowered)
+        if crit.get("kind") == "artifact_exists" and mentions_dropped:
+            continue
+        if mentions_dropped and any(w in text for w in ("script", "file", "written", "saved", "on disk", "созда", "файл", "скрипт")):
+            continue
+        criteria.append(crit)
+    if not criteria:
+        criteria = [{
+            "criterion_id": f"{task.id}-C-tools",
+            "description": "Every MCP tool the task needs returned a result.",
+            "kind": "execution", "required": True,
+            "verification": "The recorded tool results carry the values the analysis needs.",
+        }]
+    dump["success_criteria"] = criteria
+
+    note = ("Converted from Coder to the tool route after the Alembic build: "
+            "no scripts are written here, the tool results are the artifacts.")
+    warnings = list(dump.get("warnings") or [])
+    if note not in warnings:
+        warnings.append(note)
+    dump["warnings"] = warnings
+    return ExperimentTask.model_validate(dump)
+
+
 def apply_alembic_success(
     state: MutableMapping[str, Any],
     runtime: dict[str, Any],
@@ -323,6 +405,10 @@ def apply_alembic_success(
         "repo_url": task.repo_url,
     })
     updated = ExperimentTask.model_validate(updated.model_dump(mode="json"))
+    if post_route != ExecutionRoute.CODER.value:
+        updated = retarget_task_for_tool_route(
+            updated, [str(getattr(t, "name", "") or "") for t in tool_refs if getattr(t, "name", None)],
+        )
 
     task_runtime["task"] = updated.model_dump(mode="json")
     task_runtime["current_route"] = post_route
@@ -359,6 +445,7 @@ def apply_alembic_success(
 
 __all__ = [
     "alembic_post_build_context",
+    "retarget_task_for_tool_route",
     "apply_alembic_success",
     "compose_alembic_fedot_task",
     "extract_mcp_url",
