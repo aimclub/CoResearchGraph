@@ -196,4 +196,24 @@ def test_resumed_runner_passes_the_stage_and_appends_the_log(monkeypatch, tmp_pa
     at._runner(rec)
 
     assert seen["cmd"][-2:] == ["--resume", "coder"]
-    assert log.read_text(encoding="utf-8").startswith("explorer and environment stages")
+    text = log.read_text(encoding="utf-8")
+    assert text.startswith("explorer and environment stages")
+    assert f"{at._RESUME_MARK} coder" in text
+
+
+def test_resume_clears_the_recovered_mark(failed_build):
+    at, rec, started = failed_build
+    rec["_recovered"] = True
+    rec["pid"] = 999999
+    at.resume_build("FEDOT-abc123", "coder")
+
+    assert "_recovered" not in rec and "pid" not in rec
+
+
+def test_log_status_reads_only_the_resumed_run():
+    from CoScientist.tools import alembic_tools as at
+
+    earlier = 'coder "status": "complete" ... pipeline failed (exit 137)\n'
+    assert at._status_from_log(earlier + f"\n{at._RESUME_MARK} coder\nSTAGE 3") == "running"
+    assert at._status_from_log(earlier + f"\n{at._RESUME_MARK} coder\n{at._SERVE_BANNER}") == "done"
+    assert at._status_from_log(earlier) == "done"

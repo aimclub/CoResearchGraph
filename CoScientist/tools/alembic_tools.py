@@ -158,6 +158,9 @@ _STAGE_RE = re.compile(r"STAGE (\d) — (\S+)")
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # start_chain prints this banner only once the served container stayed up.
 _SERVE_BANNER = "MCP server up."
+# Written into the log when a finished build is resumed. What came before it
+# belongs to the earlier run and says nothing about how this one ends.
+_RESUME_MARK = "[alembic] resumed from stage"
 
 
 # ── Durable job registry ──────────────────────────────────────────────────────
@@ -569,6 +572,9 @@ def _runner(rec: Dict[str, Any]) -> None:
     try:
         # A resumed build appends: the earlier stages' log stays readable.
         with open(log_path, "a" if rec.get("resume_from") else "w", encoding="utf-8") as log:
+            if rec.get("resume_from"):
+                log.write(f"\n{_RESUME_MARK} {rec['resume_from']}\n")
+                log.flush()
             proc = subprocess.Popen(
                 cmd,
                 stdout=log, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT, env=env,
@@ -1731,6 +1737,7 @@ def _recover_repo_url(text: str) -> Optional[str]:
 def _status_from_log(text: str) -> str:
     """Best-effort status for a build we only know from its on-disk log (started
     by another process, so not in this process's _JOBS)."""
+    text = text.rsplit(_RESUME_MARK, 1)[-1]
     if _SERVE_BANNER in text or '"status": "complete"' in text:
         return "done"
     for marker in ("pipeline failed", "Traceback (most recent call last)",
@@ -1785,7 +1792,10 @@ def resume_build(job_id: str, stage: str) -> Dict[str, Any]:
             "started_at": time.time(),
         })
         for key in ("finished_at", "returncode", "error", "mcp_url", "container", "image",
-                    "image_id", "registered", "registration_error"):
+                    "image_id", "registered", "registration_error", "pid",
+                    # This process watches the resumed run; a record left marked
+                    # as recovered had its status guessed from the old log.
+                    "_recovered"):
             rec.pop(key, None)
         _persist_quietly(rec)
     threading.Thread(target=_runner, args=(rec,), daemon=True,
