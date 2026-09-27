@@ -27,7 +27,7 @@ SCIENCE_RESULT = json.dumps({
     "scientific_mcp_calls": [
         {"tool": name, "args": {}, "result": {"answer": {"n_reconstructed": 225}}}
         for name in (
-            "dataset_overview_heracleum_tox", "butina_clustering",
+            "dataset_overview_heracleum_tox", "chemical_space_clustering",
             "predict_ld50", "predict_molecule_profile",
         )
     ],

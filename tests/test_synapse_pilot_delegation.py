@@ -58,7 +58,7 @@ def test_pilot_accepts_extra_calls_and_required_delegations_in_any_order():
         _event("retrieve_tools"),
         _event("HypothesesAgent"),
         _event("TaskExecutorAgent", result=_science_result(
-            "dataset_overview_heracleum_tox", "butina_clustering",
+            "dataset_overview_heracleum_tox", "chemical_space_clustering",
             "predict_ld50", "predict_molecule_profile"
         )),
         _event("ResearchAgent"),
@@ -68,6 +68,129 @@ def test_pilot_accepts_extra_calls_and_required_delegations_in_any_order():
     assert "Pilot report" not in result.content.parts[0].text
 
 
+def test_pilot_blocks_executor_handoff_that_drops_retrieved_science_tools():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")), remote_subagents=True)
+    orchestrator = pilot.root
+    executor = next(tool for tool in orchestrator.tools if getattr(tool, "name", None) == "TaskExecutorAgent")
+    context = SimpleNamespace(state={"accumulated_tools": [
+        {"tool": "predict_ld50", "server_id": "heracleum-server"},
+        {"tool": "chemical_space_clustering", "server_id": "heracleum-server"},
+        {"tool": "butina_clustering", "server_id": "unrelated-server"},
+    ]})
+    args = {"request": "Extract metabolites from the prepared heracleum-tox base"}
+
+    responses = [
+        callback(executor, args, context)
+        for callback in orchestrator.canonical_before_tool_callbacks
+    ]
+
+    assert any(
+        isinstance(response, dict)
+        and "predict_ld50" in response.get("error", "")
+        and "chemical_space_clustering" in response.get("error", "")
+        and "butina_clustering" not in response.get("error", "")
+        for response in responses
+    )
+    assert args["request"] == "Extract metabolites from the prepared heracleum-tox base"
+
+
+def test_pilot_allows_executor_handoff_with_a_retrieved_science_tool():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")), remote_subagents=True)
+    orchestrator = pilot.root
+    executor = next(tool for tool in orchestrator.tools if getattr(tool, "name", None) == "TaskExecutorAgent")
+    context = SimpleNamespace(state={"accumulated_tools": [
+        {"tool": "predict_ld50", "server_id": "heracleum-server"},
+    ]})
+    args = {"request": "Run predict_ld50 on the prepared heracleum-tox MCP server"}
+
+    assert all(
+        callback(executor, args, context) is None
+        for callback in orchestrator.canonical_before_tool_callbacks
+    )
+
+
+def test_pilot_executor_blocks_coder_for_named_ready_mcp_tool():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    executor = pilot.agent("TaskExecutorAgent")
+    coder = next(tool for tool in executor.tools if getattr(tool, "name", None) == "CoderAgent")
+    context = SimpleNamespace(
+        state={},
+        _invocation_context=SimpleNamespace(user_content=types.Content(
+            role="user", parts=[types.Part(text=(
+                "Run predict_ld50 from the prepared heracleum-tox MCP server"
+            ))],
+        )),
+    )
+
+    responses = [
+        callback(coder, {"request": "Clone empiricalbase/heracleum-tox"}, context)
+        for callback in executor.canonical_before_tool_callbacks
+    ]
+    assert any(
+        isinstance(response, dict)
+        and "ToolPipelineAgent" in response.get("error", "")
+        for response in responses
+    )
+
+
+def test_pilot_executor_preserves_explicit_repository_work():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    executor = pilot.agent("TaskExecutorAgent")
+    coder = next(tool for tool in executor.tools if getattr(tool, "name", None) == "CoderAgent")
+    context = SimpleNamespace(
+        state={},
+        _invocation_context=SimpleNamespace(user_content=types.Content(
+            role="user", parts=[types.Part(text=(
+                "Clone https://github.com/example/analysis.git and inspect its source"
+            ))],
+        )),
+    )
+
+    assert all(
+        callback(coder, {"request": "Clone the repository"}, context) is None
+        for callback in executor.canonical_before_tool_callbacks
+    )
+
+
+def test_pilot_executor_keeps_named_mcp_work_out_of_coder_even_with_a_repo_url():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    executor = pilot.agent("TaskExecutorAgent")
+    coder = next(tool for tool in executor.tools if getattr(tool, "name", None) == "CoderAgent")
+    context = SimpleNamespace(
+        state={},
+        _invocation_context=SimpleNamespace(user_content=types.Content(
+            role="user", parts=[types.Part(text=(
+                "Run predict_ld50 using the prepared MCP; the paper source is "
+                "https://github.com/example/analysis.git"
+            ))],
+        )),
+    )
+
+    responses = [
+        callback(coder, {"request": "Clone the paper source"}, context)
+        for callback in executor.canonical_before_tool_callbacks
+    ]
+    assert any(
+        isinstance(response, dict) and "ToolPipelineAgent" in response.get("error", "")
+        for response in responses
+    )
+
+
 def test_pilot_combines_scientific_receipts_across_executor_delegations():
     context = _context(
         _event("retrieve_tools"),
@@ -75,7 +198,7 @@ def test_pilot_combines_scientific_receipts_across_executor_delegations():
         *(
             _event("TaskExecutorAgent", result=_science_result(name))
             for name in (
-                "dataset_overview_heracleum_tox", "butina_clustering",
+                "dataset_overview_heracleum_tox", "chemical_space_clustering",
                 "predict_ld50", "predict_molecule_profile",
             )
         ),
@@ -83,7 +206,7 @@ def test_pilot_combines_scientific_receipts_across_executor_delegations():
     result = require_pilot_delegations(context, _model_response())
     text = result.content.parts[0].text
     assert all(name in text for name in (
-        "dataset_overview_heracleum_tox", "butina_clustering",
+        "dataset_overview_heracleum_tox", "chemical_space_clustering",
         "predict_ld50", "predict_molecule_profile",
     ))
 

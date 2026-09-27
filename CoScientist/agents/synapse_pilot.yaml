@@ -6,11 +6,18 @@ defaults:
 agents:
   HypothesesAgent:
     reasoning: medium
+  TaskExecutorAgent:
+    callbacks:
+      after_model: [attest_executor_science, expand_link_refs, guard_unknown_tools]
+      before_agent: [reset_executor_science_receipt, user_links]
+      before_model: [redact_link_urls]
+      before_tool: [resolve_link_refs, enforce_pilot_executor_route]
+      after_tool: [register_tool_result_links, capture_scientific_pipeline_receipt]
   OrchestratorAgent:
     callbacks:
       before_agent: [before_get_task, inject_graph_root, inject_research_context, user_links]
       before_model: [save_uploaded_artifacts, seed_coder_workspace, redact_link_urls]
-      before_tool: [resolve_link_refs]
+      before_tool: [resolve_link_refs, enforce_pilot_science_handoff]
       after_tool: [register_tool_result_links]
       # The missing-tool patch handles older ADK; ADK 2.9 handles unknown
       # calls natively. guard_unknown_tools would end the turn on prose.

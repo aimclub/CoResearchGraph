@@ -302,6 +302,17 @@ def test_router_prompt_absorbs_the_no_matching_tool_handoff(config, system):
     assert "Send ALL execution to TaskExecutorAgent" in orch
 
 
+def test_ready_mcp_is_prioritized_over_an_ambiguous_resource_label(system):
+    router = system.agent("TaskExecutorAgent").instruction
+    assert router.index("A named ready MCP tool or server") < router.index(
+        "The task needs ENGINEERING"
+    )
+    assert "A prepared MCP server or dataset label is not a repository" in router
+
+    orchestrator = system.agent("OrchestratorAgent").instruction
+    assert "Run matching ready MCP tools before speculative data collection" in orchestrator
+
+
 def test_dataset_collector_is_a_coder_subordinate_sharing_the_sandbox(monkeypatch, config):
     """The DatasetCollectorAgent is wired under CoderAgent, named in the coder's
     prompt, and uses the coder toolset — so it works in the same per-session

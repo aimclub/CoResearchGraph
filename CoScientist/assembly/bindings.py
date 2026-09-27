@@ -1110,8 +1110,14 @@ _cb("hitl_before_tool", "before_tool", factory=lambda ctx: _hitl_before_tool())
 _cb("WebSearchLimiter", "before_tool", factory=lambda ctx: _web_search_limiter())
 # Catch hallucinated tool calls (e.g. `find`) and correct instead of crashing.
 _cb("guard_unknown_tools", "after_model", factory=_guard_unknown_tools)
-from CoScientist.agents.callbacks.pilot_delegation import require_pilot_delegations
+from CoScientist.agents.callbacks.pilot_delegation import (
+    enforce_pilot_executor_route,
+    enforce_pilot_science_handoff,
+    require_pilot_delegations,
+)
 _cb("require_pilot_delegations", "after_model", func=require_pilot_delegations)
+_cb("enforce_pilot_science_handoff", "before_tool", func=enforce_pilot_science_handoff)
+_cb("enforce_pilot_executor_route", "before_tool", func=enforce_pilot_executor_route)
 from CoScientist.agents.callbacks.experiment_execution import (
     attest_executor_science,
     capture_scientific_pipeline_receipt,

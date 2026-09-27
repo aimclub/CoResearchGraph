@@ -6,17 +6,70 @@ been called and returned a successful response in the current invocation.
 """
 
 import json
+import re
 
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
 
 _REQUIRED = ("retrieve_tools", "ResearchAgent", "TaskExecutorAgent")
 _PILOT_SCIENCE_TOOLS = (
     "dataset_overview_heracleum_tox",
-    "butina_clustering",
+    "chemical_space_clustering",
     "predict_ld50",
     "predict_molecule_profile",
 )
+
+
+def enforce_pilot_science_handoff(tool, args, tool_context):
+    """Keep discovered pilot MCP names in the outbound executor request."""
+    if not isinstance(tool, AgentTool) or tool.name != "TaskExecutorAgent":
+        return None
+    request = args.get("request") if isinstance(args, dict) else None
+    if not isinstance(request, str):
+        return None
+    retrieved = tool_context.state.get("accumulated_tools") or []
+    science = {
+        item["tool"]: item.get("server_id")
+        for item in retrieved
+        if isinstance(item, dict) and item.get("tool") in _PILOT_SCIENCE_TOOLS
+    }
+    if not science or any(
+        re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request)
+        for name in science
+    ):
+        return None
+    available = ", ".join(
+        f"{name} (server_id={server_id})" if server_id else name
+        for name, server_id in science.items()
+    )
+    return {"error": (
+        "Pilot scientific handoff: TaskExecutorAgent request omitted the "
+        f"retrieved MCP tools: {available}. Resubmit the computation naming "
+        "the relevant tool and send it through ToolPipelineAgent. "
+        "heracleum-tox is a prepared MCP service, not a GitHub repository."
+    )}
+
+
+def enforce_pilot_executor_route(tool, args, tool_context):
+    """Do not turn a named ready MCP computation into sandbox code."""
+    if not isinstance(tool, AgentTool) or tool.name != "CoderAgent":
+        return None
+    invocation = getattr(tool_context, "_invocation_context", None)
+    content = getattr(invocation, "user_content", None)
+    request = "\n".join(
+        part.text or "" for part in (getattr(content, "parts", None) or [])
+    )
+    if any(
+        re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request)
+        for name in _PILOT_SCIENCE_TOOLS
+    ):
+        return {"error": (
+            "The request names a ready scientific MCP tool. Delegate this "
+            "computation to ToolPipelineAgent; CoderAgent cannot call MCP tools. "
+            "A prepared MCP server label is not a GitHub repository."
+        )}
+    return None
 
 
 def _completed_delegations(callback_context):
