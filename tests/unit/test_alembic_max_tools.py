@@ -105,3 +105,95 @@ def test_runner_passes_the_cap_to_start_chain(monkeypatch, tmp_path):
     at._runner(rec)
 
     assert seen.get("ALEMBIC_MAX_TOOLS") == "8"
+
+
+def test_coder_budget_grows_with_the_plan():
+    assert config.coder_max_steps(0) == config.MAX_STEPS
+    assert config.coder_max_steps(5) == config.MAX_STEPS
+    assert config.coder_max_steps(8) == 8 * config.CODER_STEPS_PER_TOOL
+
+
+# ── resuming a finished build ────────────────────────────────────────────────
+@pytest.fixture
+def failed_build(monkeypatch, tmp_path):
+    from CoScientist.tools import alembic_tools as at
+
+    monkeypatch.setattr(at, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(at, "JOB_METADATA_DIR", tmp_path / "jobs")
+    workdir = tmp_path / "FEDOT-abc123" / "workdir"
+    workdir.mkdir(parents=True)
+    rec = {"job_id": "FEDOT-abc123", "repo_url": "https://github.com/aimclub/FEDOT",
+           "status": "failed", "error": "coder gate", "finished_at": 1.0, "returncode": 1,
+           "log_file": str(tmp_path / "FEDOT-abc123.log"), "workdir": str(workdir),
+           "max_tools": 8}
+    monkeypatch.setattr(at, "_JOBS", {rec["job_id"]: rec})
+    started = []
+    monkeypatch.setattr(at, "_runner", started.append)
+    return at, rec, started
+
+
+def test_resume_reruns_the_build_from_a_stage(failed_build):
+    at, rec, started = failed_build
+    out = at.resume_build("FEDOT-abc123", "coder")
+
+    assert out["ok"] and out["resume_from"] == "coder"
+    assert rec["status"] == "running" and rec["resume_from"] == "coder"
+    assert "error" not in rec and "finished_at" not in rec
+    assert started == [rec]
+
+
+@pytest.mark.parametrize("stage, status, why", [
+    ("compile", "failed", "stage must be one of"),
+    ("coder", "running", "still running"),
+])
+def test_resume_refuses(failed_build, stage, status, why):
+    at, rec, started = failed_build
+    rec["status"] = status
+    out = at.resume_build("FEDOT-abc123", stage)
+
+    assert not out["ok"] and why in out["error"]
+    assert not started
+
+
+def test_resume_needs_the_workdir(failed_build):
+    import shutil
+
+    at, rec, started = failed_build
+    shutil.rmtree(rec["workdir"])
+    out = at.resume_build("FEDOT-abc123", "coder")
+
+    assert not out["ok"] and "workdir" in out["error"]
+
+
+def test_resumed_runner_passes_the_stage_and_appends_the_log(monkeypatch, tmp_path):
+    from CoScientist.tools import alembic_tools as at
+
+    monkeypatch.setattr(at, "LOG_DIR", tmp_path)
+    log = tmp_path / "FEDOT-abc123.log"
+    log.write_text("explorer and environment stages\n", encoding="utf-8")
+    seen = {}
+
+    class _Proc:
+        pid = 1
+
+        def wait(self):
+            return 0
+
+    def _popen(cmd, **kw):
+        seen["cmd"] = cmd
+        return _Proc()
+
+    async def _no_catalogue(*a, **k):
+        return None
+
+    monkeypatch.setattr(at.subprocess, "Popen", _popen)
+    monkeypatch.setattr(at, "_finalize", lambda *a, **k: None)
+    monkeypatch.setattr(at, "_write_job_meta", lambda *a, **k: None)
+    monkeypatch.setattr(at, "_register_in_catalogue", _no_catalogue)
+    rec = {"job_id": "FEDOT-abc123", "repo_url": "https://github.com/aimclub/FEDOT",
+           "status": "running", "log_file": str(log),
+           "workdir": str(tmp_path / "FEDOT-abc123" / "workdir"), "resume_from": "coder"}
+    at._runner(rec)
+
+    assert seen["cmd"][-2:] == ["--resume", "coder"]
+    assert log.read_text(encoding="utf-8").startswith("explorer and environment stages")

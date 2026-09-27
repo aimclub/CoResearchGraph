@@ -195,7 +195,7 @@ def _tool_outcome(name: str, response) -> tuple[bool | None, str]:
 
 
 async def _run_agent_once(agent, runner, session_id, message, required_report,
-                          deadline=None, progress=None):
+                          deadline=None, progress=None, max_steps=None):
     """Run one invocation. Returns (final, wrote_report, steps, tokens, cost_usd,
     transient_fault, tool_calls, failures_by_class, abort_reason)."""
     _transient_provider_fault.set(False)
@@ -255,8 +255,8 @@ async def _run_agent_once(agent, runner, session_id, message, required_report,
                             if progress is not None:
                                 progress["last_failure"] = f"{fr.name}: {_trunc(err_text)}"
 
-            if step >= config.MAX_STEPS:
-                logger.warning(f"[{agent.name}] ABORT: reached {config.MAX_STEPS} steps.")
+            if step >= (max_steps or config.MAX_STEPS):
+                logger.warning(f"[{agent.name}] ABORT: reached {max_steps or config.MAX_STEPS} steps.")
                 return (final, wrote_report, step, total_tokens, total_cost, _fault(), tool_calls, failures_by_class, "max_steps")
 
             if deadline is not None and time.monotonic() >= deadline:
@@ -285,7 +285,7 @@ async def _run_agent_once(agent, runner, session_id, message, required_report,
 
 
 async def run_agent(agent, session_service, session_id, message,
-                    required_report=None, deadline=None, progress=None):
+                    required_report=None, deadline=None, progress=None, max_steps=None):
     """Run an agent, retrying if the write_report guard isn't satisfied.
 
     Returns (final_text, total_steps, total_tokens, stage_metrics) where
@@ -310,7 +310,7 @@ async def run_agent(agent, session_service, session_id, message,
             (final, wrote_report, steps, tokens, cost, transient_fault,
              call_counts, fail_counts, this_abort) = await _run_agent_once(
                 agent, runner, session_id, current_message, required_report,
-                deadline=current_deadline, progress=progress)
+                deadline=current_deadline, progress=progress, max_steps=max_steps)
             total_steps += steps
             total_tokens += tokens
             total_cost += cost

@@ -68,6 +68,10 @@ WRAPPER_CALL_TIMEOUT        = 600   # the fallback wrapper-agent round-trip
 
 # ── Loop breakers ─────────────────────────────────────────────────────────────
 MAX_STEPS         = 120   # hard ceiling on events per agent turn
+# The coder writes a function and a test per tool, so its ceiling grows with
+# the plan: 24 steps a tool is the 120 above spread over the default five.
+# An eight-tool plan of a slow library (FEDOT) ran out at 120 three times.
+CODER_STEPS_PER_TOOL = 24
 MAX_TOOL_REPEATS  = 3     # abort on N identical consecutive tool calls
 MAX_TOOL_CYCLE    = 3     # abort on N identical NON-consecutive calls (set-cycling)
 MAX_GUARD_RETRIES = 3     # re-nudge an agent that missed write_report
@@ -109,6 +113,11 @@ def requested_max_tools(raw: str | None) -> int | None:
 
 MAX_TOOLS_REQUESTED = requested_max_tools(os.environ.get("ALEMBIC_MAX_TOOLS"))
 MAX_TOOLS = MAX_TOOLS_REQUESTED or 12   # hard cap on tools exposed per repo
+
+
+def coder_max_steps(n_tools: int) -> int:
+    """The coder's step ceiling for a plan of ``n_tools`` tools."""
+    return max(MAX_STEPS, CODER_STEPS_PER_TOOL * max(int(n_tools or 0), 0))
 
 
 def explorer_tool_count_rule(requested: int | None = MAX_TOOLS_REQUESTED) -> str:

@@ -97,6 +97,7 @@ _RECORD_FIELDS = frozenset(
         "hints",
         "task_spec",
         "max_tools",
+        "resume_from",
         "scopes",
         "tools",
     }
@@ -116,8 +117,8 @@ _META_FIELDS = ("job_id", "repo_url", "status", "started_at", "finished_at",
                 "log_file", "workdir", "pid", "mcp_url", "image", "container",
                 "error", "registered", "registration_error", "image_id",
                 "server_id", "served_at", "image_deleted", "origin", "tool_counts", "hub",
-                "hints", "task_spec", "max_tools", "idempotency_key", "run_id", "task_id",
-                "attempt_id")
+                "hints", "task_spec", "max_tools", "resume_from", "idempotency_key", "run_id",
+                "task_id", "attempt_id")
 
 
 def _meta_path(job_id: str) -> Path:
@@ -561,10 +562,15 @@ def _runner(rec: Dict[str, Any]) -> None:
                      ("max_tools", "ALEMBIC_MAX_TOOLS")):
         if rec.get(key):
             env[var] = str(rec[key])
+    cmd = _start_chain_cmd(rec["repo_url"])
+    if rec.get("resume_from"):
+        # Same workdir, so the stages before this one are read from disk.
+        cmd += ["--resume", str(rec["resume_from"])]
     try:
-        with open(log_path, "w", encoding="utf-8") as log:
+        # A resumed build appends: the earlier stages' log stays readable.
+        with open(log_path, "a" if rec.get("resume_from") else "w", encoding="utf-8") as log:
             proc = subprocess.Popen(
-                _start_chain_cmd(rec["repo_url"]),
+                cmd,
                 stdout=log, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT, env=env,
             )
             with _LOCK:
@@ -1745,6 +1751,47 @@ def web_build_log_file(job_id: str) -> Optional[Path]:
 
 
 _BUILD_CONTAINER_RE = re.compile(r"--name (alembic-build-\S+)")
+
+
+_RESUMABLE_STAGES = ("explorer", "environment", "coder", "validator", "wrapper")
+
+
+def resume_build(job_id: str, stage: str) -> Dict[str, Any]:
+    """Run a finished build again from ``stage`` in its own workdir.
+
+    The stages before ``stage`` are not repeated: their output (the plan, the
+    venv, the generated tools) is read from the workdir the build left. A
+    FEDOT build that failed in the coder stage kept a 3 GB environment that
+    took 25 minutes to install; resuming at the coder reuses it.
+    """
+    if stage not in _RESUMABLE_STAGES:
+        return {"ok": False, "error": f"stage must be one of {', '.join(_RESUMABLE_STAGES)}"}
+    with _LOCK:
+        rec = _JOBS.get(job_id)
+        if rec is None:
+            meta = _read_job_meta(job_id)
+            if meta is None:
+                return {"ok": False, "error": f"unknown build {job_id}"}
+            rec = dict(meta)
+            _JOBS[job_id] = rec
+        if rec.get("status") == "running":
+            return {"ok": False, "error": f"build {job_id} is still running"}
+        if not rec.get("workdir") or not Path(rec["workdir"]).exists():
+            return {"ok": False, "error": f"build {job_id} has no workdir to resume from"}
+        rec.update({
+            "status": "running",
+            "resume_from": stage,
+            "resumed_at": time.time(),
+            "started_at": time.time(),
+        })
+        for key in ("finished_at", "returncode", "error", "mcp_url", "container", "image",
+                    "image_id", "registered", "registration_error"):
+            rec.pop(key, None)
+        _persist_quietly(rec)
+    threading.Thread(target=_runner, args=(rec,), daemon=True,
+                     name=f"alembic-resume-{job_id}").start()
+    return {"ok": True, "job_id": job_id, "resume_from": stage,
+            "progress_page": f"/alembic/builds/{job_id}"}
 
 
 def cancel_build(job_id: str) -> Dict[str, Any]:

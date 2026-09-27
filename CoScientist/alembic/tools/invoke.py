@@ -168,6 +168,25 @@ def _test_file_errors(name: str, out_dir: Path, python: str) -> list[str]:
     return errs
 
 
+def coder_rollback_paths(errors: dict, out_dir: Path) -> list[Path]:
+    """The files a coder reset removes, given the artefact gate's errors.
+
+    Rolling back every tool threw away the ones that passed. A slow library
+    (FEDOT: minutes per fit) then spent each attempt rewriting the same few
+    tools and ended three attempts with none on disk. A tool that passed is
+    kept, and so is a tool file that compiles and imports while its test is
+    still missing: the next attempt only has to write the test.
+    """
+    paths: list[Path] = []
+    for name, errs in (errors or {}).items():
+        for rel in (f"tools/{name}.py", f"tests/test_{name}.py"):
+            broken = any(str(e).startswith(rel) and not str(e).endswith("is missing")
+                         for e in errs or [])
+            if broken:
+                paths.append(out_dir / rel)
+    return paths
+
+
 def check_tool_artefacts(tool_names: list[str]) -> dict:
     """G3 gate body: every planned tool has a compiling, importable function
     file and a collectable test file. Returns {passed, errors: {tool: [...]}}."""

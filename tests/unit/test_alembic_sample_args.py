@@ -113,3 +113,20 @@ def test_json_and_plain_strings_are_left_alone():
     })
     assert changed is False
     assert args == {"preds": "[317, -1, 240]", "path": "list(of).files", "note": "np.zeros is nice"}
+
+
+# ── coder reset: what a rollback removes ─────────────────────────────────────
+def test_coder_rollback_keeps_passing_and_importable_files(tmp_path):
+    errors = {
+        "fit": ["tests/test_fit.py is missing"],
+        "tune": ["tools/tune.py: SyntaxError: invalid syntax", "tests/test_tune.py is missing"],
+        "save": ["tools/save.py is missing", "tests/test_save.py has no test_smoke_* function"],
+    }
+    paths = {str(p.relative_to(tmp_path)) for p in invoke.coder_rollback_paths(errors, tmp_path)}
+
+    # fit: its tool file imports, only the test is missing, so nothing is removed.
+    assert paths == {"tools/tune.py", "tests/test_save.py"}
+
+
+def test_coder_rollback_without_errors_removes_nothing(tmp_path):
+    assert invoke.coder_rollback_paths({}, tmp_path) == []
