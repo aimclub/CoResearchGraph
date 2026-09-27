@@ -537,9 +537,14 @@ def pin_coder_mcp_request(args: dict[str, Any], task_runtime: Mapping[str, Any])
     extra = (
         "The authors' computations are served as MCP tools at mcp_servers[].url"
         + (f" ({', '.join(names)})" if names else "")
-        + ". Call them from your scripts through mcp_client.python instead of re-importing "
-        "the repository for those computations; write the scripts and the result files to "
-        "disk as the task asks. Install the client with mcp_client.install if the import fails."
+        + ". Rule for this task: every number that one of these tools produces must come "
+        "from a call to the served server through mcp_client.python (open one session per "
+        "batch and loop inside it; a few hundred calls are fine). Generate data locally if "
+        "you must, but do not re-implement or re-import from the repository a function the "
+        "server serves. Import the repository only for functions the server does not expose, "
+        "and name them in your summary together with the number of tool calls made. Write the "
+        "scripts and the result files to disk as the task asks. Install the client with "
+        "mcp_client.install if the import fails."
     )
     prior = str(payload.get("instruction") or "").strip()
     payload["instruction"] = f"{prior} {extra}".strip()
