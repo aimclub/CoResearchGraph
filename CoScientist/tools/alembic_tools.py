@@ -98,6 +98,7 @@ _RECORD_FIELDS = frozenset(
         "task_spec",
         "max_tools",
         "resume_from",
+        "replaces",
         "scopes",
         "tools",
     }
@@ -621,6 +622,7 @@ def _runner(rec: Dict[str, Any]) -> None:
         logger.warning("catalogue registration thread failed: %s", exc)
     _write_job_meta(rec)  # the registration outcome has to outlive this process
     if rec.get("status") == "done":
+        _retire_replaced(rec)
         _auto_upload(rec)
 
 
@@ -1785,6 +1787,11 @@ def resume_build(job_id: str, stage: str) -> Dict[str, Any]:
             return {"ok": False, "error": f"build {job_id} is still running"}
         if not rec.get("workdir") or not Path(rec["workdir"]).exists():
             return {"ok": False, "error": f"build {job_id} has no workdir to resume from"}
+        # The server the earlier run left: retired once the resumed run serves
+        # its own, so the catalogue does not keep two rows for one build.
+        previous = {k: rec[k] for k in ("container", "server_id") if rec.get(k)}
+        if previous:
+            rec["replaces"] = previous
         rec.update({
             "status": "running",
             "resume_from": stage,
@@ -1792,7 +1799,7 @@ def resume_build(job_id: str, stage: str) -> Dict[str, Any]:
             "started_at": time.time(),
         })
         for key in ("finished_at", "returncode", "error", "mcp_url", "container", "image",
-                    "image_id", "registered", "registration_error", "pid",
+                    "image_id", "registered", "registration_error", "server_id", "pid",
                     # This process watches the resumed run; a record left marked
                     # as recovered had its status guessed from the old log.
                     "_recovered"):
@@ -1802,6 +1809,29 @@ def resume_build(job_id: str, stage: str) -> Dict[str, Any]:
                      name=f"alembic-resume-{job_id}").start()
     return {"ok": True, "job_id": job_id, "resume_from": stage,
             "progress_page": f"/alembic/builds/{job_id}"}
+
+
+def _retire_replaced(rec: Dict[str, Any]) -> None:
+    """Stop the server a resumed build replaced and drop its catalogue row.
+
+    Only after the resumed run serves: until then the old server is the one
+    that works. Best effort; what could not be removed is logged.
+    """
+    old = rec.pop("replaces", None)
+    if not isinstance(old, dict):
+        return
+    container = old.get("container")
+    if container and container != rec.get("container"):
+        try:
+            _docker("rm", "-f", container, timeout=60)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not remove the replaced container %s: %s", container, exc)
+    server_id = old.get("server_id")
+    if server_id and server_id != rec.get("server_id"):
+        err = _unregister(server_id)
+        if err:
+            logger.warning("could not unregister the replaced server %s: %s", server_id, err)
+    _persist_quietly(rec)
 
 
 def cancel_build(job_id: str) -> Dict[str, Any]:

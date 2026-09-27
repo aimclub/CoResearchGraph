@@ -217,3 +217,44 @@ def test_log_status_reads_only_the_resumed_run():
     assert at._status_from_log(earlier + f"\n{at._RESUME_MARK} coder\nSTAGE 3") == "running"
     assert at._status_from_log(earlier + f"\n{at._RESUME_MARK} coder\n{at._SERVE_BANNER}") == "done"
     assert at._status_from_log(earlier) == "done"
+
+
+def test_resume_remembers_the_server_it_replaces(failed_build):
+    at, rec, started = failed_build
+    rec.update(status="done", container="alembic-serve-FEDOT-old", server_id="old-row")
+    at.resume_build("FEDOT-abc123", "validator")
+
+    assert rec["replaces"] == {"container": "alembic-serve-FEDOT-old", "server_id": "old-row"}
+    assert "container" not in rec and "server_id" not in rec
+
+
+def test_replaced_server_is_retired_after_the_new_one_serves(monkeypatch, tmp_path):
+    from CoScientist.tools import alembic_tools as at
+
+    monkeypatch.setattr(at, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(at, "JOB_METADATA_DIR", tmp_path / "jobs")
+    removed, unregistered = [], []
+    monkeypatch.setattr(at, "_docker", lambda *a, **k: removed.append(a))
+    monkeypatch.setattr(at, "_unregister", lambda sid: unregistered.append(sid))
+    rec = {"job_id": "FEDOT-abc123", "status": "done", "container": "new-c", "server_id": "new-row",
+           "replaces": {"container": "old-c", "server_id": "old-row"}}
+    at._retire_replaced(rec)
+
+    assert removed == [("rm", "-f", "old-c")]
+    assert unregistered == ["old-row"]
+    assert "replaces" not in rec
+
+
+def test_nothing_is_retired_when_the_server_is_the_same(monkeypatch, tmp_path):
+    from CoScientist.tools import alembic_tools as at
+
+    monkeypatch.setattr(at, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(at, "JOB_METADATA_DIR", tmp_path / "jobs")
+    removed, unregistered = [], []
+    monkeypatch.setattr(at, "_docker", lambda *a, **k: removed.append(a))
+    monkeypatch.setattr(at, "_unregister", lambda sid: unregistered.append(sid))
+    rec = {"job_id": "FEDOT-abc123", "status": "done", "container": "c", "server_id": "row",
+           "replaces": {"container": "c", "server_id": "row"}}
+    at._retire_replaced(rec)
+
+    assert removed == [] and unregistered == []
