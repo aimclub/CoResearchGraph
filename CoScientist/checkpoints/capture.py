@@ -157,7 +157,7 @@ def _external_refs(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _collect_store_parts() -> Dict[str, bytes]:
+def _collect_store_parts(session) -> Dict[str, bytes]:
     """Serialize the module stores from their in-process singletons.
 
     Each store already writes atomically to disk after every mutation, but the
@@ -174,9 +174,18 @@ def _collect_store_parts() -> Dict[str, bytes]:
         logger.warning("checkpoint: task tracker capture failed: %s", exc)
 
     try:
-        from CoScientist.graph.research.store import research_graph
-        with research_graph._lock:
-            parts["research_graph"] = _json_bytes(research_graph._serialize())
+        from CoScientist.graph.research.store import get_research_graph
+        from CoScientist.graph.session_scope import (
+            GRAPH_SCOPE_SESSION_KEY,
+            GRAPH_SCOPE_USER_KEY,
+        )
+
+        graph = get_research_graph(
+            user_id=session.state.get(GRAPH_SCOPE_USER_KEY) or session.user_id,
+            session_id=session.state.get(GRAPH_SCOPE_SESSION_KEY) or session.id,
+        )
+        with graph._lock:
+            parts["research_graph"] = _json_bytes(graph._serialize())
     except Exception as exc:  # noqa: BLE001
         logger.warning("checkpoint: research graph capture failed: %s", exc)
 
@@ -275,7 +284,7 @@ async def capture_checkpoint(
             "session_events": _json_bytes(events),
             "session_state": _json_bytes(state),
         }
-        parts.update(_collect_store_parts())
+        parts.update(_collect_store_parts(session))
 
         saved = store.save(manifest, parts)
         synapse.notify_snapshot_saved(saved)

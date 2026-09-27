@@ -24,3 +24,4 @@ def test_remote_subordinate_resolves_docker_host_without_fetching_card(monkeypat
 
     assert client is not None
     assert remote._agent_card.url == endpoint
+    assert remote._config.request_interceptors

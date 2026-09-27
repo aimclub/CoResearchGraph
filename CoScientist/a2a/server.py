@@ -11,12 +11,12 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from fastapi import FastAPI
-from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.sessions import InMemorySessionService
 
 from CoScientist.assembly.schema import AgentConfig
+from CoScientist.a2a.graph_scope import GraphScopeA2aAgentExecutor
 from CoScientist.checkpoints.runner import CheckpointRunner as Runner
 
 
@@ -159,7 +159,7 @@ def make_a2a_app(
         # first non-None after_tool).
         plugins=plugins,
     )
-    executor = A2aAgentExecutor(runner=runner)
+    executor = GraphScopeA2aAgentExecutor(runner=runner)
     task_store = InMemoryTaskStore()
     handler = DefaultRequestHandler(
         agent_executor=executor,
