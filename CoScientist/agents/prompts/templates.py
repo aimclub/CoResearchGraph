@@ -2776,8 +2776,16 @@ def pilot_task_router(ctx: PromptContext) -> str:
 @_register("pilot_orchestrator")
 def pilot_orchestrator(ctx: PromptContext) -> str:
     """Put the pilot's science handoff contract before the shared prompt."""
+    from CoScientist.agents.callbacks.pilot_delegation import _PILOT_SCIENCE_TOOLS
+
+    required = ", ".join(_PILOT_SCIENCE_TOOLS)
     return (
         "## Scientific pilot handoff\n"
+        f"The final scientific report requires observed results from: {required}. "
+        "Find these tools with retrieve_tools before delegation. If one is "
+        "absent from the discovery results, call retrieve_tools using that exact name. "
+        "Run each required computation; if a tool is unavailable, report its "
+        "actual discovery or execution failure.\n"
         "Run matching ready MCP tools before speculative data collection or "
         "writing code. Collect an input only if the tool's input_schema actually "
         "requires it. A prepared MCP server or dataset name is not a GitHub "

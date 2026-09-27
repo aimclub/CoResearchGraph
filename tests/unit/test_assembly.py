@@ -315,6 +315,11 @@ def test_ready_mcp_is_prioritized_only_in_pilot_profile(system):
 
     orchestrator = pilot.agent("OrchestratorAgent").instruction
     assert "Run matching ready MCP tools before speculative data collection" in orchestrator
+    assert "dataset_overview_heracleum_tox" in orchestrator
+    assert "chemical_space_clustering" in orchestrator
+    assert "predict_ld50" in orchestrator
+    assert "predict_molecule_profile" in orchestrator
+    assert "retrieve_tools using that exact name" in orchestrator
     assert "A named ready MCP tool or server" not in system.agent("TaskExecutorAgent").instruction
     assert "Run matching ready MCP tools before speculative data collection" not in (
         system.agent("OrchestratorAgent").instruction
