@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from CoScientist.config.report import ReportConfig
 from CoScientist.reporting.collect import SOURCES_FILENAME, report_dir_for
 from CoScientist.reporting.latex import render_latex
+from CoScientist.reporting.tool_provenance import with_tool_provenance, without_inline_images
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,11 @@ def finalize_report(
     report_dir = report_dir_for(session_id, report_config.reports_root)
     try:
         report_dir.mkdir(parents=True, exist_ok=True)
+        # The tool a run built from a repository gets its own section: where
+        # it came from, the build stages, its tools and verdicts. Rendered from
+        # the build records, so the aggregator never retells those numbers.
+        final_markdown = with_tool_provenance(
+            final_markdown or "", state or {}, _scope_of(session_id, state or {}))
         # `report.md` is read by people and by LaTeX, neither of which knows the
         # `cos-artifact:` scheme. The graph card keeps the portable form (see
         # publish_report_node); the file on disk gets URLs.
@@ -132,12 +138,14 @@ def finalize_report(
         (report_dir / "report.md").write_text(markdown, encoding="utf-8")
 
         references = _extract_references(state or {})
+        # LaTeX cannot take the inline diagram; it keeps the tables.
         latex_files = render_latex(
-            markdown, report_dir, report_config.latex, references
+            without_inline_images(markdown), report_dir, report_config.latex, references
         )
         nir = _record_nir(report_dir, state or {})
         report_artifact_id = _publish_to_research_graph(
-            session_id, final_markdown or "", state or {}, report_dir / "report.md"
+            session_id, without_inline_images(final_markdown or ""), state or {},
+            report_dir / "report.md",
         )
         promoted = _promote_sources(report_dir)
         manifest = _build_manifest(
