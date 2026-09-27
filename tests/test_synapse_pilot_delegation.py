@@ -1,5 +1,6 @@
 """The pilot verifies observed ADK delegation without directing tool choice."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,16 @@ from CoScientist.agents.callbacks.pilot_delegation import require_pilot_delegati
 
 
 REQUIRED = ("retrieve_tools", "ResearchAgent", "TaskExecutorAgent")
+
+
+def _science_result(*names):
+    return {"result": json.dumps({
+        "status": "computed",
+        "scientific_mcp_calls": [
+            {"tool": name, "args": {}, "result": {"answer": {"n_reconstructed": 225}}}
+            for name in names
+        ],
+    })}
 
 
 def _event(name, *, invocation_id="run-1", result=None, include_call=True):
@@ -46,10 +57,45 @@ def test_pilot_accepts_extra_calls_and_required_delegations_in_any_order():
     context = _context(
         _event("retrieve_tools"),
         _event("HypothesesAgent"),
-        _event("TaskExecutorAgent"),
+        _event("TaskExecutorAgent", result=_science_result(
+            "dataset_overview_heracleum_tox", "butina_clustering",
+            "predict_ld50", "predict_molecule_profile"
+        )),
         _event("ResearchAgent"),
     )
-    assert require_pilot_delegations(context, _model_response()) is None
+    result = require_pilot_delegations(context, _model_response())
+    assert "225" in result.content.parts[0].text
+    assert "Pilot report" not in result.content.parts[0].text
+
+
+def test_pilot_combines_scientific_receipts_across_executor_delegations():
+    context = _context(
+        _event("retrieve_tools"),
+        _event("ResearchAgent"),
+        *(
+            _event("TaskExecutorAgent", result=_science_result(name))
+            for name in (
+                "dataset_overview_heracleum_tox", "butina_clustering",
+                "predict_ld50", "predict_molecule_profile",
+            )
+        ),
+    )
+    result = require_pilot_delegations(context, _model_response())
+    text = result.content.parts[0].text
+    assert all(name in text for name in (
+        "dataset_overview_heracleum_tox", "butina_clustering",
+        "predict_ld50", "predict_molecule_profile",
+    ))
+
+
+def test_pilot_rejects_delegations_without_verified_scientific_computation():
+    context = _context(
+        _event("retrieve_tools"),
+        _event("ResearchAgent"),
+        _event("TaskExecutorAgent", result={"result": "12,654 molecules, four CSV/PNG files"}),
+    )
+    with pytest.raises(RuntimeError, match="scientific computation"):
+        require_pilot_delegations(context, _model_response())
 
 
 def test_pilot_allows_intermediate_tool_calls():

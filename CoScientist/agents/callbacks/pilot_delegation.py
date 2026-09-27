@@ -5,13 +5,24 @@ order. A final answer is valid only after each required tool has actually
 been called and returned a successful response in the current invocation.
 """
 
+import json
+
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
+
 _REQUIRED = ("retrieve_tools", "ResearchAgent", "TaskExecutorAgent")
+_PILOT_SCIENCE_TOOLS = (
+    "dataset_overview_heracleum_tox",
+    "butina_clustering",
+    "predict_ld50",
+    "predict_molecule_profile",
+)
 
 
 def _completed_delegations(callback_context):
     invocation = callback_context._invocation_context
     called = set()
-    completed = set()
+    completed = {}
     for event in invocation.session.events:
         if event.invocation_id != invocation.invocation_id:
             continue
@@ -24,8 +35,36 @@ def _completed_delegations(callback_context):
                 body.get("error") or body.get("status") in {"error", "failed"}
             ):
                 continue
-            completed.add(response.name)
+            completed.setdefault(response.name, []).append(body)
     return completed
+
+
+def _scientific_receipt(bodies):
+    calls = []
+    for body in bodies:
+        if not isinstance(body, dict):
+            continue
+        result = body.get("result")
+        try:
+            receipt = json.loads(result) if isinstance(result, str) else result
+        except ValueError:
+            continue
+        if not isinstance(receipt, dict) or receipt.get("status") != "computed":
+            continue
+        if isinstance(receipt.get("scientific_mcp_calls"), list):
+            calls.extend(receipt["scientific_mcp_calls"])
+    names = {
+        call.get("tool") for call in calls
+        if isinstance(call, dict)
+        and call.get("result") not in (None, "", {})
+        and not (
+            isinstance(call.get("result"), dict)
+            and call["result"].get("truncated")
+        )
+    }
+    if not set(_PILOT_SCIENCE_TOOLS) <= names:
+        return None
+    return {"status": "computed", "scientific_mcp_calls": calls}
 
 
 def require_pilot_delegations(callback_context, llm_response):
@@ -42,4 +81,14 @@ def require_pilot_delegations(callback_context, llm_response):
             "Pilot delegation contract: final response before observed "
             "call and successful response for " + ", ".join(missing)
         )
-    return None
+    receipt = _scientific_receipt(completed["TaskExecutorAgent"])
+    if receipt is None:
+        raise RuntimeError(
+            "Pilot scientific computation contract: TaskExecutorAgent did not "
+            "return verified results for the required MCP tools"
+        )
+    return LlmResponse(content=types.Content(role="model", parts=[types.Part(
+        text="Observed scientific MCP results:\n" + json.dumps(
+            receipt, ensure_ascii=False, indent=2
+        )
+    )]))

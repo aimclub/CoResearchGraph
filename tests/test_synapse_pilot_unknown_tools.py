@@ -1,6 +1,7 @@
 """A scripted ADK run must leave all pilot tools available and observe delegation."""
 
 import asyncio
+import json
 
 from google.adk.agents import LlmAgent
 from google.adk.models.base_llm import BaseLlm
@@ -20,6 +21,17 @@ CALLS = (
     "TaskExecutorAgent",
     "ResearchAgent",
 )
+
+SCIENCE_RESULT = json.dumps({
+    "status": "computed",
+    "scientific_mcp_calls": [
+        {"tool": name, "args": {}, "result": {"answer": {"n_reconstructed": 225}}}
+        for name in (
+            "dataset_overview_heracleum_tox", "butina_clustering",
+            "predict_ld50", "predict_molecule_profile",
+        )
+    ],
+})
 
 
 class PilotModel(BaseLlm):
@@ -80,7 +92,7 @@ def test_synapse_pilot_observes_real_calls_and_responses_without_forcing_order()
 
     async def TaskExecutorAgent(request: str) -> dict:
         seen.append("TaskExecutorAgent")
-        return {"status": "ok"}
+        return {"result": SCIENCE_RESULT}
 
     pilot = load_config(resolve_config_path("synapse_pilot"))
     orchestrator = build_system(pilot, remote_subagents=True).root
@@ -172,7 +184,7 @@ def test_unknown_orchestrator_tool_returns_error_then_model_retries():
 
         async def TaskExecutorAgent(request: str) -> dict:
             seen.append("TaskExecutorAgent")
-            return {"status": "ok"}
+            return {"result": SCIENCE_RESULT}
 
         config = load_config(resolve_config_path(profile))
         orchestrator = build_system(config, remote_subagents=True).root
@@ -218,4 +230,8 @@ def test_unknown_orchestrator_tool_returns_error_then_model_retries():
         assert all(name in str(unknown[0].response) for name in CALLS)
         assert [r.name for r in responses] == ["invented_subagent", *CALLS]
         assert seen == list(CALLS)
-        assert events[-1].content.parts[0].text == "Pilot delegation completed"
+        text = events[-1].content.parts[0].text
+        if profile == "synapse_pilot":
+            assert "225" in text and "Pilot delegation completed" not in text
+        else:
+            assert text == "Pilot delegation completed"
