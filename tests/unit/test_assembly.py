@@ -302,15 +302,23 @@ def test_router_prompt_absorbs_the_no_matching_tool_handoff(config, system):
     assert "Send ALL execution to TaskExecutorAgent" in orch
 
 
-def test_ready_mcp_is_prioritized_over_an_ambiguous_resource_label(system):
-    router = system.agent("TaskExecutorAgent").instruction
+def test_ready_mcp_is_prioritized_only_in_pilot_profile(system):
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    router = pilot.agent("TaskExecutorAgent").instruction
     assert router.index("A named ready MCP tool or server") < router.index(
         "The task needs ENGINEERING"
     )
     assert "A prepared MCP server or dataset label is not a repository" in router
 
-    orchestrator = system.agent("OrchestratorAgent").instruction
+    orchestrator = pilot.agent("OrchestratorAgent").instruction
     assert "Run matching ready MCP tools before speculative data collection" in orchestrator
+    assert "A named ready MCP tool or server" not in system.agent("TaskExecutorAgent").instruction
+    assert "Run matching ready MCP tools before speculative data collection" not in (
+        system.agent("OrchestratorAgent").instruction
+    )
 
 
 def test_dataset_collector_is_a_coder_subordinate_sharing_the_sandbox(monkeypatch, config):

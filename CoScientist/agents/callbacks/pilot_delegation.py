@@ -34,9 +34,9 @@ def enforce_pilot_science_handoff(tool, args, tool_context):
         for item in retrieved
         if isinstance(item, dict) and item.get("tool") in _PILOT_SCIENCE_TOOLS
     }
-    if not science or any(
-        re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request)
-        for name in science
+    if not science or (
+        all(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request) for name in science)
+        and all(server_id in request for server_id in science.values() if server_id)
     ):
         return None
     available = ", ".join(
@@ -44,9 +44,10 @@ def enforce_pilot_science_handoff(tool, args, tool_context):
         for name, server_id in science.items()
     )
     return {"error": (
-        "Pilot scientific handoff: TaskExecutorAgent request omitted the "
-        f"retrieved MCP tools: {available}. Resubmit the computation naming "
-        "the relevant tool and send it through ToolPipelineAgent. "
+        "Pilot scientific handoff: TaskExecutorAgent request must carry all "
+        f"retrieved MCP tool names and server ids: {available}. Resubmit the "
+        "computation naming its target tool and available tools; send it "
+        "through ToolPipelineAgent. "
         "heracleum-tox is a prepared MCP service, not a GitHub repository."
     )}
 
@@ -60,6 +61,19 @@ def enforce_pilot_executor_route(tool, args, tool_context):
     request = "\n".join(
         part.text or "" for part in (getattr(content, "parts", None) or [])
     )
+    subtask = args.get("request") if isinstance(args, dict) else None
+    if isinstance(subtask, str) and not any(
+        re.search(rf"(?<!\w){re.escape(name)}(?!\w)", subtask)
+        for name in _PILOT_SCIENCE_TOOLS
+    ):
+        explicit_repo = re.search(
+            r"\b(?:clone|inspect|read|checkout|check out)\b.{0,100}?"
+            r"(https?://github\.com/[^\s,;)]+)", request, re.IGNORECASE,
+        )
+        if (explicit_repo and explicit_repo.group(1) in subtask
+                and re.search(r"\b(?:clone|inspect|read|checkout|check out)\b",
+                              subtask, re.IGNORECASE)):
+            return None
     if any(
         re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request)
         for name in _PILOT_SCIENCE_TOOLS

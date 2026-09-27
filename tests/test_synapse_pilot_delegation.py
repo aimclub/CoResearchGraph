@@ -107,11 +107,38 @@ def test_pilot_allows_executor_handoff_with_a_retrieved_science_tool():
     context = SimpleNamespace(state={"accumulated_tools": [
         {"tool": "predict_ld50", "server_id": "heracleum-server"},
     ]})
-    args = {"request": "Run predict_ld50 on the prepared heracleum-tox MCP server"}
+    args = {"request": "Run predict_ld50 on the prepared heracleum-tox MCP server "
+                       "(server_id=heracleum-server)"}
 
     assert all(
         callback(executor, args, context) is None
         for callback in orchestrator.canonical_before_tool_callbacks
+    )
+
+
+def test_pilot_handoff_requires_every_discovered_name_and_server_id():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")), remote_subagents=True)
+    executor = next(tool for tool in pilot.root.tools if getattr(tool, "name", None) == "TaskExecutorAgent")
+    context = SimpleNamespace(state={"accumulated_tools": [
+        {"tool": "predict_ld50", "server_id": "heracleum-server"},
+        {"tool": "chemical_space_clustering", "server_id": "heracleum-server"},
+    ]})
+    assert any(
+        "chemical_space_clustering" in response.get("error", "")
+        for callback in pilot.root.canonical_before_tool_callbacks
+        if isinstance(response := callback(executor, {
+            "request": "Run predict_ld50 (server_id=heracleum-server)"
+        }, context), dict)
+    )
+    assert all(
+        callback(executor, {"request": (
+            "Run predict_ld50 (server_id=heracleum-server); available tool "
+            "chemical_space_clustering (server_id=heracleum-server)"
+        )}, context) is None
+        for callback in pilot.root.canonical_before_tool_callbacks
     )
 
 
@@ -188,6 +215,25 @@ def test_pilot_executor_keeps_named_mcp_work_out_of_coder_even_with_a_repo_url()
     assert any(
         isinstance(response, dict) and "ToolPipelineAgent" in response.get("error", "")
         for response in responses
+    )
+
+
+def test_pilot_executor_allows_separate_explicit_repository_subtask():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    executor = pilot.agent("TaskExecutorAgent")
+    coder = next(tool for tool in executor.tools if tool.name == "CoderAgent")
+    url = "https://github.com/example/analysis.git"
+    context = SimpleNamespace(state={}, _invocation_context=SimpleNamespace(
+        user_content=types.Content(role="user", parts=[types.Part(text=(
+            f"Run predict_ld50, then clone {url} and inspect its source"
+        ))]),
+    ))
+    assert all(
+        callback(coder, {"request": f"Clone {url} and inspect its source"}, context) is None
+        for callback in executor.canonical_before_tool_callbacks
     )
 
 

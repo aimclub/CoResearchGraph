@@ -832,30 +832,26 @@ def task_router(ctx: PromptContext) -> str:
     coder_path = "CoderAgent" if ctx.has_subordinate("CoderAgent") else ""
 
     rules: list[str] = []
-    if tools_path:
-        rules.append(
-            "A named ready MCP tool or server takes priority when it produces the\n"
-            "   requested result. A prepared MCP server or dataset label is not a repository;\n"
-            "   never invent a GitHub URL from its name. The result is a value or artifact\n"
-            "   an EXISTING service already produces —\n"
-            "   a standard property, a docking run, a simulation, inference with an\n"
-            f"   available model ⇒ {tools_path}. It discovers, deploys and runs the\n"
-            "   MCP tools itself. If the request named concrete tools or server ids,\n"
-            "   pass those names through verbatim."
-        )
     if coder_path:
         rules.append(
-            "The task needs ENGINEERING — writing/running code, an explicit Git\n"
-            "   repository URL or path to clone and read, a specific architecture,\n"
+            "The task needs ENGINEERING — writing/running code, a named repository,\n"
+            "   URL or example code to clone and read, a specific architecture,\n"
             "   library or training procedure, shell/git work, or collecting and\n"
-            f"   processing data ⇒ {coder_path}, straight away when no ready MCP tool\n"
-            f"   produces the requested result. Note: {coder_path} has NO ability to\n"
-            "   call MCP tools/servers and must NEVER be given tasks meant for MCP."
+            f"   processing data ⇒ {coder_path}, straight away. Note: {coder_path} has NO\n"
+            "   ability to call MCP tools/servers and must NEVER be given tasks meant for MCP."
             + (
                 f"\n   Do NOT run {tools_path} first \"just to check\": a discovery pass on\n"
                 "   work that plainly needs code costs a full pipeline and returns nothing."
                 if tools_path else ""
             )
+        )
+    if tools_path:
+        rules.append(
+            "The result is a value or artifact an EXISTING service already produces —\n"
+            "   a standard property, a docking run, a simulation, inference with an\n"
+            f"   available model ⇒ {tools_path}. It discovers, deploys and runs the\n"
+            "   MCP tools itself. If the request named concrete tools or server ids,\n"
+            "   pass those names through verbatim."
         )
     if tools_path and coder_path:
         rules.append(
@@ -1664,12 +1660,6 @@ def orchestrator(ctx: PromptContext) -> str:
             f"   (e.g. \"molecule generation\", \"inhibitor design\"); if a relevant tool\n"
             f"   exists, {prefer}.{research_clause}"
             f"{discovery_clause}\n"
-            "   Run matching ready MCP tools before speculative data collection or\n"
-            "   writing code. Collect an input only if the tool's input_schema actually\n"
-            "   requires it. A prepared MCP server or dataset name is not a GitHub\n"
-            "   repository. Put the exact retrieved tool names and server ids in each\n"
-            "   scientific TaskExecutorAgent request; the remote executor receives your\n"
-            "   request text, not the retrieve_tools response.\n"
             "   Retrieved tools accumulate — do not repeat near-identical queries, and\n"
             "   never invent server ids (`get_server_info` only takes ids it returned)."
         )
@@ -2766,4 +2756,34 @@ authoritative.
         AGENTS=ctx.render_agents(),
         ROUTING=ctx.render_routing(),
         DIRECT_TOOLS=direct_tools_section,
+    )
+
+
+@_register("pilot_task_router")
+def pilot_task_router(ctx: PromptContext) -> str:
+    """Apply the Heracleum routing rule only to the scientific pilot."""
+    return (
+        "## Scientific pilot routing\n"
+        "A named ready MCP tool or server takes priority when it produces the "
+        "requested result. A prepared MCP server or dataset label is not a repository; "
+        "never invent a GitHub URL from its name. Send a scientific computation "
+        "to ToolPipelineAgent with the exact tool name and server id. Use "
+        "CoderAgent for a separate, explicitly requested Git repository task.\n\n"
+        + task_router(ctx)
+    )
+
+
+@_register("pilot_orchestrator")
+def pilot_orchestrator(ctx: PromptContext) -> str:
+    """Put the pilot's science handoff contract before the shared prompt."""
+    return (
+        "## Scientific pilot handoff\n"
+        "Run matching ready MCP tools before speculative data collection or "
+        "writing code. Collect an input only if the tool's input_schema actually "
+        "requires it. A prepared MCP server or dataset name is not a GitHub "
+        "repository. Put every retrieved pilot science tool name and server id "
+        "in each scientific TaskExecutorAgent request; identify the target tool "
+        "for that computation. The remote executor receives your request text, "
+        "not the retrieve_tools response.\n\n"
+        + orchestrator(ctx)
     )
