@@ -36,6 +36,10 @@ from google.adk.events.event_actions import EventActions
 from CoScientist.checkpoints.capture import collect_pins
 from CoScientist.checkpoints.model import CheckpointManifest
 from CoScientist.checkpoints.store import LocalZipStore, get_default_store
+from CoScientist.graph.session_scope import (
+    GRAPH_SCOPE_SESSION_KEY,
+    GRAPH_SCOPE_USER_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +95,9 @@ def _truncate_dangling_calls(events: List[dict]) -> List[dict]:
     return events
 
 
-def _import_stores(parts: Dict[str, bytes], warnings: List[str]) -> None:
+def _import_stores(
+    parts: Dict[str, bytes], warnings: List[str], graph_scope: tuple[str, str]
+) -> None:
     """Load module-store blobs back into the process singletons. Best-effort:
     each failure is reported as a warning, never fatal."""
     if "task_tracker" in parts:
@@ -104,12 +110,16 @@ def _import_stores(parts: Dict[str, bytes], warnings: List[str]) -> None:
 
     if "research_graph" in parts:
         try:
-            from CoScientist.graph.research.store import research_graph
-            research_graph.reset(archive=True)  # never silently destroy the current graph
-            with research_graph._lock:
-                research_graph._path.parent.mkdir(parents=True, exist_ok=True)
-                research_graph._path.write_bytes(parts["research_graph"])
-                research_graph._load()
+            from CoScientist.graph.research.store import get_research_graph
+
+            graph = get_research_graph(
+                user_id=graph_scope[0], session_id=graph_scope[1]
+            )
+            graph.reset(archive=True)  # never silently destroy the target graph
+            with graph._lock:
+                graph._path.parent.mkdir(parents=True, exist_ok=True)
+                graph._path.write_bytes(parts["research_graph"])
+                graph._load()
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"research graph import failed: {exc}")
 
@@ -183,6 +193,11 @@ async def restore_checkpoint(
 
     events: List[dict] = json.loads(parts["session_events"])
     state: Dict[str, Any] = json.loads(parts["session_state"])
+    # A restore starts a new run. Replayed state must not bind it to the old
+    # graph namespace or make the public A2A continuation appear to hijack a
+    # trusted delegated session.
+    state[GRAPH_SCOPE_USER_KEY] = new_user_id
+    state[GRAPH_SCOPE_SESSION_KEY] = new_context_id
     events = _truncate_dangling_calls(events)
 
     profile = (manifest.pins or {}).get("profile")
@@ -218,7 +233,7 @@ async def restore_checkpoint(
     )
 
     if import_stores:
-        _import_stores(parts, warnings)
+        _import_stores(parts, warnings, (new_user_id, new_context_id))
     warnings.extend(_external_warnings(manifest))
 
     resume_hint = (
