@@ -545,3 +545,55 @@ def test_a_coder_task_reopened_on_the_tool_route_no_longer_promises_scripts():
     # The plan copy the module shows to the planner and the reviewer follows.
     plan_task = next(t for t in state["experiment_runtime"]["plan"]["tasks"] if t["id"] == "EXP-1")
     assert [a["name"] for a in plan_task["expected_artifacts"]] == ["smoke_test_output.json"]
+
+
+def test_builder_tool_labels_with_notes_become_the_served_names(monkeypatch):
+    """The builder reported "estimate_arl_add (унифицированный диспетчер ARL/ADD)";
+    taken whole as a tool name it filtered every served tool out (run 6)."""
+    from CoScientist.experiments.runtime import alembic_bridge
+
+    monkeypatch.setattr(alembic_bridge, "_served_tool_names",
+                        lambda url: ["estimate_arl_add", "kme_arl", "cusum_detect"])
+    plan = _plan(_alembic_task())
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp",
+                     "tools": ["estimate_arl_add (унифицированный диспетчер ARL/ADD, включая flag_less_biased)",
+                               "kme_arl (calc_KME)", "made_up_tool (never served)"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    servers = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]["mcp_servers"]
+    assert [t["name"] for t in servers[0]["tools"]] == ["estimate_arl_add", "kme_arl"]
+    assert servers[0]["tools"][0]["description"].startswith("унифицированный диспетчер")
+    start_task(state, "EXP-1", settings=settings)
+    assert [t["tool"] for t in state["filtered_tools"]] == ["estimate_arl_add", "kme_arl"]
+
+
+def test_builder_names_none_of_which_are_served_fall_back_to_the_served_list(monkeypatch):
+    from CoScientist.experiments.runtime import alembic_bridge
+
+    monkeypatch.setattr(alembic_bridge, "_served_tool_names", lambda url: ["kme_arl", "cusum_detect"])
+    plan = _plan(_alembic_task())
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_KME (guessed)"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    servers = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]["mcp_servers"]
+    assert [t["name"] for t in servers[0]["tools"]] == ["kme_arl", "cusum_detect"]

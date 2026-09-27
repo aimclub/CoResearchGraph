@@ -30,6 +30,35 @@ def _server_id_from_url(repo_url: str | None, mcp_url: str) -> str:
     return f"alembic-{safe}"
 
 
+_TOOL_LABEL_RE = re.compile(r"^\s*[`'\"]?([A-Za-z_][A-Za-z0-9_.-]*)[`'\"]?\s*(.*)$", re.S)
+
+
+def _split_tool_label(label: str) -> tuple[str, str]:
+    """``"kme_arl (calc_KME)"`` -> ``("kme_arl", "calc_KME")``; a bare name keeps an empty note."""
+    match = _TOOL_LABEL_RE.match(str(label or ""))
+    if not match:
+        return "", ""
+    name = match.group(1)
+    note = match.group(2).strip().strip("()[]:-–— ").strip()
+    return name, note
+
+
+def _served_tool_names(mcp_url: str) -> list[str]:
+    """Names the served MCP actually lists; empty when it cannot be asked."""
+    try:
+        from CoScientist.tools.alembic_tools import list_served_mcp_tools
+
+        listed = list_served_mcp_tools(mcp_url.strip())
+    except Exception:  # noqa: BLE001 — the reopen must not depend on a live listing
+        return []
+    names = []
+    for item in listed or []:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
 def _tool_refs_from_outputs(
     outputs: dict[str, Any], *, placeholder: bool = True,
 ) -> list[dict[str, Any]]:
@@ -37,17 +66,29 @@ def _tool_refs_from_outputs(
     tools: list[dict[str, Any]] = []
     if isinstance(raw, list):
         for item in raw:
-            if isinstance(item, str) and (name := item.strip()):
+            if isinstance(item, str) and item.strip():
+                # The builder writes "kme_arl (calc_KME)" or "estimate_arl_add
+                # (унифицированный диспетчер ARL/ADD)"; the name is the
+                # identifier, the rest is its description. Taken whole, the
+                # string became the filter the tool-calling agent's toolset
+                # applied, and no served tool matched it (KM-ARL run 6,
+                # 2026-09-27: "Tool 'estimate_arl_add' not found").
+                name, note = _split_tool_label(item)
+                if not name:
+                    continue
                 tools.append({
                     "name": name,
-                    "description": f"Alembic-built tool {name}",
+                    "description": note or f"Alembic-built tool {name}",
                     "input_schema": None,
                     "required_for_task": True,
                 })
-            elif isinstance(item, dict) and (name := str(item.get("name") or "").strip()):
+            elif isinstance(item, dict) and str(item.get("name") or "").strip():
+                name, note = _split_tool_label(str(item.get("name")))
+                if not name:
+                    continue
                 tools.append({
                     "name": name,
-                    "description": str(item.get("description") or f"Alembic-built tool {name}"),
+                    "description": str(item.get("description") or note or f"Alembic-built tool {name}"),
                     "input_schema": item.get("input_schema"),
                     "required_for_task": bool(item.get("required_for_task", True)),
                 })
@@ -376,11 +417,18 @@ def apply_alembic_success(
     from CoScientist.experiments.schemas.models import MCPServerRef
 
     tool_refs = _tool_refs_from_outputs(outputs, placeholder=False)
-    if not tool_refs:
-        from CoScientist.tools.alembic_tools import list_served_mcp_tools
-
-        listed = list_served_mcp_tools(mcp_url.strip())
-        tool_refs = _tool_refs_from_outputs({"tools": listed}, placeholder=True)
+    # The served list is authoritative: a name the builder reported that the
+    # server does not list would only narrow the agent's toolset to nothing.
+    served = _served_tool_names(mcp_url)
+    if served:
+        known = set(served)
+        matching = [ref for ref in tool_refs if ref["name"] in known]
+        if matching:
+            tool_refs = matching
+        else:
+            tool_refs = _tool_refs_from_outputs({"tools": served}, placeholder=True)
+    elif not tool_refs:
+        tool_refs = _tool_refs_from_outputs({"tools": served}, placeholder=True)
 
     server_id = _server_id_from_url(task.repo_url, mcp_url)
     server = MCPServerRef.model_validate({
