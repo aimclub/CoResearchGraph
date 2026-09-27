@@ -317,6 +317,13 @@ def _is_script_name(name: str) -> bool:
 
 
 def retarget_task_for_tool_route(task: "ExperimentTask", tool_names: list[str]) -> "ExperimentTask":
+    """See :func:`retarget_task_for_tool_route_with_dropped`; returns the task only."""
+    return retarget_task_for_tool_route_with_dropped(task, tool_names)[0]
+
+
+def retarget_task_for_tool_route_with_dropped(
+    task: "ExperimentTask", tool_names: list[str],
+) -> tuple["ExperimentTask", list[str]]:
     """Rewrite a task planned for Coder so the post-build attempt on the tool
     route can succeed.
 
@@ -388,7 +395,53 @@ def retarget_task_for_tool_route(task: "ExperimentTask", tool_names: list[str]) 
     if note not in warnings:
         warnings.append(note)
     dump["warnings"] = warnings
-    return ExperimentTask.model_validate(dump)
+    return ExperimentTask.model_validate(dump), [n for n in dropped_names if n]
+
+
+def scrub_inputs_of_dropped_scripts(
+    runtime: dict[str, Any], producer_id: str, dropped: list[str],
+) -> list[str]:
+    """Downstream tasks stop requiring the scripts the producer no longer writes.
+
+    EXP-2 listed ``EXP-1:km_toolkit_wrapper.py`` as a required input; once the
+    tool route dropped that script from EXP-1, readiness found it missing with
+    the producer terminal and blocked EXP-2 and everything after it (KM-ARL
+    run 8, 2026-09-27). A script is not data a downstream task consumes, so
+    the reference goes, on the runtime copy and on the plan copy alike.
+    Returns the ids of the tasks touched."""
+    if not dropped:
+        return []
+    wanted = set(dropped)
+    touched: list[str] = []
+
+    def _scrub(dump: dict[str, Any]) -> bool:
+        refs = dump.get("input_data") or []
+        kept = [
+            ref for ref in refs
+            if not (
+                isinstance(ref, dict)
+                and ref.get("kind") == "task_artifact"
+                and str(ref.get("source_task_id") or "") == producer_id
+                and str(ref.get("source_artifact_id") or "") in wanted
+            )
+        ]
+        if len(kept) == len(refs):
+            return False
+        dump["input_data"] = kept
+        return True
+
+    for tid, task_runtime in (runtime.get("tasks") or {}).items():
+        if tid == producer_id or not isinstance(task_runtime, dict):
+            continue
+        dump = task_runtime.get("task")
+        if isinstance(dump, dict) and _scrub(dump):
+            touched.append(tid)
+    plan = runtime.get("plan")
+    if isinstance(plan, dict):
+        for item in plan.get("tasks") or []:
+            if isinstance(item, dict) and item.get("id") != producer_id:
+                _scrub(item)
+    return touched
 
 
 def apply_alembic_success(
@@ -453,9 +506,10 @@ def apply_alembic_success(
         "repo_url": task.repo_url,
     })
     updated = ExperimentTask.model_validate(updated.model_dump(mode="json"))
+    dropped_scripts: list[str] = []
     if post_route != ExecutionRoute.CODER.value:
-        updated = retarget_task_for_tool_route(
-            updated, [str(getattr(t, "name", "") or "") for t in tool_refs if getattr(t, "name", None)],
+        updated, dropped_scripts = retarget_task_for_tool_route_with_dropped(
+            updated, [str(t.get("name") or "") for t in tool_refs if isinstance(t, dict) and t.get("name")],
         )
 
     task_runtime["task"] = updated.model_dump(mode="json")
@@ -477,6 +531,8 @@ def apply_alembic_success(
                 tasks[idx] = copy.deepcopy(task_runtime["task"])
                 break
         plan["tasks"] = tasks
+    if touched := scrub_inputs_of_dropped_scripts(runtime, updated.id, dropped_scripts):
+        audit(logger, f"EXPERIMENT_ALEMBIC_INPUTS_SCRUBBED producer={updated.id} tasks={','.join(touched)} scripts={','.join(dropped_scripts)}")
 
     server_json = server.model_dump(mode="json")
     deployed = list(state.get("deployed_mcps") or [])
@@ -494,6 +550,8 @@ def apply_alembic_success(
 __all__ = [
     "alembic_post_build_context",
     "retarget_task_for_tool_route",
+    "retarget_task_for_tool_route_with_dropped",
+    "scrub_inputs_of_dropped_scripts",
     "apply_alembic_success",
     "compose_alembic_fedot_task",
     "extract_mcp_url",

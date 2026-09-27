@@ -238,3 +238,26 @@ def test_in_auto_mode_the_fork_is_answered_without_the_handler(monkeypatch):
     assert response is None
     assert selected.tasks[0].route.value == "alembic_build"
     assert not state.get("experiment_plan_review_paused")
+
+
+def test_the_build_default_applies_once_per_repository(monkeypatch):
+    """Two reuse tasks of one repository: the first takes the build, the
+    second defaults to Coder (it needs code around the built tool)."""
+    monkeypatch.setattr(review_mod, "_auto_approve", lambda kind: True)
+    monkeypatch.setattr(get_settings().experiments, "alembic_route_default", "alembic_build")
+
+    async def _never(request):  # the mode answers, the handler is not consulted
+        raise AssertionError("handler must not be called in mode auto")
+
+    first = _reuse_plan()
+    second_task = first.tasks[0].model_copy(update={"id": "EXP-2", "depends_on": ["EXP-1"]})
+    plan = first.model_copy(update={"tasks": [first.tasks[0], second_task]})
+    state = _state(plan)
+    agent = _agent(monkeypatch, _never)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-once-per-repo")
+    selected, response = asyncio.run(agent._select_repository_routes(
+        plan=plan, ctx=ctx, route_alembic=True, user_id="user", session_id="session",
+        timeout_seconds=0.0,
+    ))
+    assert response is None
+    assert [t.route.value for t in selected.tasks] == ["alembic_build", "coder"]

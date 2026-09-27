@@ -597,3 +597,41 @@ def test_builder_names_none_of_which_are_served_fall_back_to_the_served_list(mon
     )
     servers = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]["mcp_servers"]
     assert [t["name"] for t in servers[0]["tools"]] == ["kme_arl", "cusum_detect"]
+
+
+def test_downstream_inputs_that_named_a_dropped_script_are_scrubbed():
+    """EXP-2 required EXP-1:km_toolkit_wrapper.py; once the tool route dropped
+    that script from EXP-1, readiness blocked EXP-2 for good (run 8)."""
+    producer = _alembic_task()
+    producer["expected_artifacts"] = [
+        {"name": "km_toolkit_wrapper.py", "role": "code", "media_type": "text/x-python",
+         "required": True, "description": "Wrapper script"},
+        {"name": "smoke.json", "role": "data", "media_type": "application/json",
+         "required": True, "description": "Smoke results"},
+    ]
+    consumer = _task("EXP-2", route="coder", depends_on=["EXP-1"])
+    consumer["input_data"] = [
+        {"data_id": "wrapper", "kind": "task_artifact", "source_task_id": "EXP-1",
+         "source_artifact_id": "km_toolkit_wrapper.py", "required": True, "description": "the wrapper"},
+        {"data_id": "smoke", "kind": "task_artifact", "source_task_id": "EXP-1",
+         "source_artifact_id": "smoke.json", "required": True, "description": "smoke results"},
+    ]
+    plan = _plan(producer, consumer)
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_KME"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    runtime = state["experiment_runtime"]
+    refs = runtime["tasks"]["EXP-2"]["task"]["input_data"]
+    assert [r["source_artifact_id"] for r in refs] == ["smoke.json"]
+    plan_task = next(t for t in runtime["plan"]["tasks"] if t["id"] == "EXP-2")
+    assert [r["source_artifact_id"] for r in plan_task["input_data"]] == ["smoke.json"]
