@@ -35,15 +35,15 @@ def test_deterministic_critique_blocks_disabled_and_unknown_routes():
     assert any("absent from the capability inventory" in issue.message for issue in unknown.issues)
 
 
-def test_a_switched_off_medical_task_is_told_to_use_research(monkeypatch):
+def test_a_switched_off_medical_task_is_told_to_use_external_research(monkeypatch):
     """The critique used to approve medical tasks whatever MEDICAL__ENABLED said,
     and start_task then refused them."""
     from CoScientist.config import get_settings
 
     task = _task("EXP-1", route="medical")
     task["design"]["analysis_artifacts"] = [{
-        "name": "pubmed_notes.md", "role": "report",
-        "prepare_via": "medical", "path_or_tool": "search_pubmed",
+        "name": "pico.json", "role": "report",
+        "prepare_via": "medical", "path_or_tool": "get_pico",
     }]
     plan = _plan(task)
     settings = ExperimentsSettings(route_fedot=True)
@@ -54,7 +54,8 @@ def test_a_switched_off_medical_task_is_told_to_use_research(monkeypatch):
     assert off.verdict == "revise"
     blocker = next(i for i in off.issues if "'medical' is switched off" in i.message)
     assert blocker.severity == "blocker"
-    assert "route=research" in blocker.suggestion
+    assert "orchestrator's ResearchAgent" in blocker.suggestion
+    assert "route=research" not in blocker.suggestion
 
 
 def test_a_switched_off_medical_task_gets_one_consistent_answer(monkeypatch):
@@ -75,7 +76,8 @@ def test_a_switched_off_medical_task_gets_one_consistent_answer(monkeypatch):
     # Same order as planner rule 3 with the route off, and never "drop the
     # step" - a task covering a frame operation cannot just go.
     blocker = next(i for i in off.issues if "'medical' is switched off" in i.message)
-    assert "route=research" in blocker.suggestion and "route=coder" in blocker.suggestion
+    assert "orchestrator's ResearchAgent" in blocker.suggestion and "route=coder" in blocker.suggestion
+    assert "route=research" not in blocker.suggestion
     assert "drop" not in blocker.suggestion.lower()
 
     scoped = critique_plan(plan, settings=settings, available_tools=_inventory(),
@@ -90,8 +92,8 @@ def test_the_review_passes_the_sessions_answer_not_the_switch_as_it_is_now():
     approved because the switch went on afterwards - start_task would refuse it."""
     task = _task("EXP-1", route="medical")
     task["design"]["analysis_artifacts"] = [{
-        "name": "pubmed_notes.md", "role": "report",
-        "prepare_via": "medical", "path_or_tool": "search_pubmed",
+        "name": "pico.json", "role": "report",
+        "prepare_via": "medical", "path_or_tool": "get_pico",
     }]
     settings = ExperimentsSettings(route_fedot=True)
     session_without = critique_plan(_plan(task), settings=settings,
@@ -108,7 +110,7 @@ def test_a_coder_task_naming_a_medical_tool_is_left_alone_while_medical_is_off(m
     from CoScientist.config import get_settings
 
     coder = _task("EXP-1", route="coder")
-    coder["description"] = "Search the clinical literature with search_pubmed."
+    coder["description"] = "Extract PICO from the supplied abstract with get_pico."
     settings = ExperimentsSettings(route_fedot=True)
 
     on = critique_plan(_plan(coder), settings=settings, available_tools=_inventory())

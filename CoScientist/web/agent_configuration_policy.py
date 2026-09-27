@@ -9,7 +9,6 @@ available so it can be connected again.
 
 from __future__ import annotations
 
-from functools import lru_cache
 from typing import Any, Dict, Iterable, Optional
 
 from CoScientist.assembly.schema import (
@@ -108,23 +107,28 @@ def agent_control_policy(config: Optional[SystemConfig] = None) -> Dict[str, Dic
         for name in config.agents
     }
 
-    @lru_cache(maxsize=None)
-    def parent_route_active(name: str) -> bool:
-        if name in seeds:
-            return True
-        return any(
-            parent in available
-            and parent_route_active(parent)
-            and effective[parent]
-            for parent in parents.get(name, ())
-        )
+    # Fixed-point reachability is deliberately iterative.  Validated YAML is a
+    # DAG, but workflow projection treats a repeated ancestor defensively and
+    # tests/custom mode transforms may contain a recursive subordinate link.
+    # Recursive memoisation cannot break that cycle before a value is cached.
+    active_routes = {name for name in seeds if name in available}
+    changed = True
+    while changed:
+        changed = False
+        for name in available - active_routes:
+            if any(
+                parent in active_routes and effective[parent]
+                for parent in parents.get(name, ())
+            ):
+                active_routes.add(name)
+                changed = True
 
     result: Dict[str, Dict[str, Any]] = {}
     for name, cfg in config.agents.items():
         in_profile = name in available
         is_required = in_profile and name in required
         is_enabled = effective[name]
-        parent_ready = in_profile and parent_route_active(name)
+        parent_ready = in_profile and name in active_routes
         supported = _switch_supported(cfg)
         can_enable = bool(in_profile and not is_enabled and parent_ready and supported)
         can_disable = bool(in_profile and is_enabled and supported and not is_required)
@@ -196,6 +200,67 @@ def validate_agent_enabled_change(name: str, enabled: bool) -> None:
     allowed = control["canEnable"] if enabled else control["canDisable"]
     if not allowed:
         raise ValueError(control["controlReason"] or "Состав этого этапа нельзя изменить.")
+
+
+def validate_raw_agent_configuration_request(before: Settings, requested: Dict[str, Any]) -> None:
+    """Validate explicitly submitted ``enabled`` overrides before normalising.
+
+    ``apply_agent_settings`` intentionally drops dead overrides for roots,
+    mode-controlled, internal and setting-backed agents.  Without this pass an
+    explicit forbidden flag could disappear during normalisation and the rest
+    of a mixed settings form would still be saved.  Values equal to the current
+    state are accepted so old full-form payloads remain loadable.
+    """
+    agents = requested.get("agents")
+    overrides = agents.get("overrides") if isinstance(agents, dict) else None
+    if not isinstance(overrides, dict):
+        return
+
+    mode_snapshot = before.model_copy(deep=True)
+    general = requested.get("general")
+    mode_changed = False
+    if isinstance(general, dict) and "startMode" in general:
+        requested_mode = general["startMode"]
+        if requested_mode != mode_snapshot.web.start_mode:
+            mode_snapshot.web.start_mode = requested_mode
+            mode_changed = True
+
+    with settings_scope(before):
+        current_policy = agent_control_policy()
+    with settings_scope(mode_snapshot):
+        mode_policy = agent_control_policy()
+        raw_config = load_config()
+
+    for raw_name, value in overrides.items():
+        if not isinstance(value, dict) or not isinstance(value.get("enabled"), bool):
+            continue
+        name = str(raw_name)
+        desired = value["enabled"]
+        current = current_policy.get(name)
+        after_mode = mode_policy.get(name)
+        if current is None or after_mode is None or name not in raw_config.agents:
+            raise ValueError(f"Агент {name} недоступен в текущем профиле.")
+
+        # An unchanged legacy flag is data to preserve, not a new action.  For
+        # mode-controlled agents also accept either side of a simultaneous
+        # start-mode change; the mode itself remains the only effective switch.
+        if desired == current["effectiveEnabled"]:
+            continue
+        if (
+            mode_changed
+            and name in MODE_CONTROLLED_AGENTS
+            and desired == after_mode["effectiveEnabled"]
+        ):
+            continue
+
+        cfg = raw_config.agent(name)
+        if _enabled_ref(cfg) is not None:
+            raise ValueError(
+                "Подключение этого агента изменяется отдельной настройкой, "
+                "а не полем agents.overrides.enabled."
+            )
+        with settings_scope(mode_snapshot):
+            validate_agent_enabled_change(name, desired)
 
 
 def _declared_switch_values(snapshot: Settings) -> Dict[str, bool]:

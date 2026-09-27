@@ -43,14 +43,15 @@ body[data-design="workshop"] .workshop-paper::after { content: ''; position: abs
 .paper-scale { position: absolute; bottom: 18px; left: 24px; font: 10px 'IBM Plex Mono', monospace; line-height: 1.8; color: #accad596; }
 body[data-design="workshop"] #network { left: calc(var(--sheet-left) + 20px); top: 65px; width: calc(100% - var(--sheet-left) - var(--sheet-right) - 40px); height: calc(100% - 131px); }
 body[data-design="workshop"] .agent-node { --role: #3e3429; filter: url(#workshop-shadow); }
-body[data-design="workshop"] .node-card { fill: url(#workshop-ceramic); stroke: #f9f0dd; stroke-width: 1.3; }
+body[data-design="workshop"] .node-card { fill: transparent; stroke: transparent; stroke-width: 1.3; }
+.workshop-material { pointer-events: none; }
 body[data-design="workshop"] .workshop-base { fill: #9d7950; stroke: #725439; stroke-width: 1.5; }
 body[data-design="workshop"] .workshop-glaze { fill: none; stroke: #fff9ea96; stroke-width: 1; pointer-events: none; }
 body[data-design="workshop"] .node-title { fill: #30291f; font-family: Georgia, 'Times New Roman', serif; font-weight: 600; }
 body[data-design="workshop"] .node-icon { stroke: #3e362c; stroke-width: 1.6; }
 body[data-design="workshop"] .agent-node:hover .node-card,
-body[data-design="workshop"] .agent-node:focus-visible .node-card { fill: #fff3d9; stroke: #efd19b; stroke-width: 2; }
-body[data-design="workshop"] .agent-node.selected .node-card { fill: #fff0cd; stroke: #f8ce7e; stroke-width: 3; }
+body[data-design="workshop"] .agent-node:focus-visible .node-card { fill: #fff3d914; stroke: #efd19b; stroke-width: 2; }
+body[data-design="workshop"] .agent-node.selected .node-card { fill: transparent; stroke: #f8ce7e; stroke-width: 2; }
 body[data-design="workshop"] .agent-node.selected .workshop-glaze { stroke: #c4964f; }
 body[data-design="workshop"] .workshop-terminal { pointer-events: none; filter: drop-shadow(1px 2px 1px #08203399); }
 body[data-design="workshop"] .edge { stroke: #d3e6ec; stroke-width: 1.6; }
@@ -122,9 +123,12 @@ body[data-design="workshop"] .badge { background: #e1e7d3; }
 body[data-design="workshop"] .badge.pinned { background: #eddbb4; }
 body[data-design="workshop"] .badge.off, body[data-design="workshop"] .badge.neutral { background: #e8ddca; }
 @media (min-width: 1100px) {
-  body[data-design="workshop"] .canvas-wrap:has(#agent-menu-toggle[aria-expanded="true"]) { --sheet-left: 262px; }
+  body[data-design="workshop"] .canvas-wrap:has(#agent-menu-toggle[aria-expanded="true"]) { --sheet-left: 250px; }
   body[data-design="workshop"] main:has(.details.open) .canvas-wrap { --sheet-right: 305px; }
 }
+body[data-design="workshop"] .agent-menu:has(#agent-menu-toggle[aria-expanded="false"]) { width: 220px; top: 20px; }
+body[data-design="workshop"] .agent-menu:has(#agent-menu-toggle[aria-expanded="false"]) .agent-menu-toggle { padding: 9px 12px; font-size: 14px; }
+body[data-design="workshop"] .agent-menu:has(#agent-menu-toggle[aria-expanded="false"])::before { display: none; }
 @media (max-width: 1250px) {
   body[data-design="workshop"] .design-label { display: none; }
   body[data-design="workshop"] .legend { bottom: 72px; }

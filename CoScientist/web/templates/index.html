@@ -359,6 +359,8 @@
               <kbd>Shift</kbd><kbd>Enter</kbd><span data-i18n="chat.hintNewline">new line</span>
             </span>
             <span class="flex-1"></span>
+            <button type="button" id="pause-run-btn" onclick="RunControl.pause()" class="hidden h-8 px-3 rounded-md border border-outline-variant/25 text-[11px]">Пауза</button>
+            <button type="button" id="resume-run-btn" onclick="RunControl.resume()" class="hidden h-8 px-3 rounded-md border border-primary/40 text-primary text-[11px]">Продолжить</button>
             <button type="button" id="stop-btn" onclick="stopChat()" data-i18n-title="chat.stopTitle" title="Stop agents"
               class="hidden h-8 px-3 rounded-md border border-outline-variant/25 text-on-surface-variant hover:text-error hover:border-error/40 transition-colors flex items-center gap-1.5 text-[11px]">
               <span class="w-2.5 h-2.5 rounded-sm bg-current" aria-hidden="true"></span>
@@ -467,6 +469,7 @@
           <span id="metrics-total" class="text-[14px] font-semibold text-on-surface shrink-0">$0.0000</span>
         </summary>
         <div class="pt-2">
+          <section id="run-control-panel" aria-live="polite" class="hidden mb-3 px-3 py-2 rounded-lg border border-outline-variant/25 bg-surface-container-low text-[12px] leading-relaxed break-words"></section>
           <div id="metrics-summary" class="text-[11px] text-outline-variant mb-3 tabular-nums">no model calls yet</div>
           <div id="metrics-agents" class="space-y-2.5 text-[11px]"></div>
           <div id="metrics-note" class="hidden text-[11px] text-error mt-3 leading-relaxed"></div>
@@ -1069,7 +1072,8 @@
   <script src="/static/js/plan_tracker.js"></script>
   <script src="/static/js/modals/tz.js"></script>
   <script src="/static/js/modals/experiments.js"></script>
-  <script src="/static/js/ws.js"></script>
+    <script src="/static/js/run_control.js"></script>
+    <script src="/static/js/ws.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 

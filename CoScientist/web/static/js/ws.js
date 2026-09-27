@@ -60,6 +60,9 @@
         }
         if (window.TZPanel) window.TZPanel.feed(data);
         switch (data.type) {
+          case 'run_control':
+            if (window.RunControl) RunControl.feed(data);
+            break;
           case 'connected':
             addTelemetry('INIT :: ' + data.message);
             break;
@@ -74,7 +77,7 @@
             applyRunStatus(data.status, data.run_status_version);
             if (typeof RunTimer !== 'undefined') {
               if (data.status === 'processing') RunTimer.start(data.started_at);
-              else RunTimer.finish(data.finished_at);
+              else if (data.status !== 'paused') RunTimer.finish(data.finished_at);
             }
             addTelemetry('STATUS :: ' + data.message);
             break;
@@ -143,7 +146,7 @@
             activityMarkIdle();
             currentPlannerHitlRequest = null;
             updateRoadmapModalButtons();
-            if (typeof RunTimer !== 'undefined') RunTimer.finish();
+            if (typeof RunTimer !== 'undefined' && !window.RunControl?.isActive?.()) RunTimer.finish();
             addTelemetry('COMPLETE :: Final response received');
             break;
           case 'hitl_request':
@@ -161,6 +164,13 @@
             addTelemetry('HITL :: ' + ((window.StatusIndicator && StatusIndicator.agentName) ? StatusIndicator.agentName(data.agent_name) : data.agent_name) + ' requests ' + data.action_type);
             break;
           case 'hitl_timeout':
+            if (data.paused) {
+              // The server is still waiting on the same durable request.
+              // Timeout is not rejection/approval and must not disable input.
+              addSystemMsg(hitlTimeoutSummary(data));
+              addTelemetry('HITL :: paused, awaiting explicit response');
+              break;
+            }
             if (data.agent_name === 'PlannerAgent' && !data.paused) releasePlanGate();
             disableHitlControls(data.request_id);
             if (window.TZPanel) TZPanel.clearRequest(data.request_id, 'Нет ответа — ТЗ принято как есть.');
@@ -239,7 +249,7 @@
             addTelemetry('ERROR :: ' + data.message);
             currentPlannerHitlRequest = null;
             updateRoadmapModalButtons();
-            if (typeof RunTimer !== 'undefined') RunTimer.finish();
+            if (typeof RunTimer !== 'undefined' && !window.RunControl?.isActive?.()) RunTimer.finish();
             break;
           case 'pong':
             break;

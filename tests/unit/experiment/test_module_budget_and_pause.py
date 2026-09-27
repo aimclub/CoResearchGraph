@@ -224,7 +224,7 @@ def test_a_timed_out_plan_review_records_why(monkeypatch):
     from .helpers import _inventory, _plan, _task
     from CoScientist.hitl.models import HITLAction, HITLResponse
 
-    plan = _plan(_task("EXP-1"))
+    plan = _plan(_task("EXP-1", route="react_tools"))
     state = {"experiment_context": {
         "experiment_run_id": plan.experiment_run_id,
         "source_request": plan.source_request,

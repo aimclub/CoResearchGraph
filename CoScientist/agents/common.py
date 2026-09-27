@@ -17,6 +17,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from CoScientist.config import get_settings
+from CoScientist.execution_control import before_model_attempt, before_tool_action
 from CoScientist.hitl.handler import ConsoleHITLHandler, DelegatingHITLHandler
 from CoScientist.utils.selective_proxy import LiteLLMProxy
 
@@ -369,14 +370,25 @@ class RetryingLiteLlm(LiteLlm):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
+        effective_model = getattr(llm_request, "model", None) or getattr(self, "model", "") or ""
+        # The proxy probe is network I/O too.  It does not consume model
+        # budget, but a paused/stopped run must not start it.
+        await before_tool_action(
+            "model_provider_preflight", metadata={"model": effective_model}
+        )
         if not _proxy_verified:
             await verify_proxy_reachable()
-        effective_model = getattr(llm_request, "model", None) or getattr(self, "model", "") or ""
         self._apply_dynamic_openrouter_provider(effective_model)
         attempt = throttle_attempt = 0
         while True:
             yielded = False
             try:
+                # Reserve immediately before each real provider attempt.  This
+                # is inside our retry loop, so failed attempts count too.
+                await before_model_attempt(
+                    "adk_litellm",
+                    metadata={"model": effective_model, "stream": bool(stream)},
+                )
                 if self._deadline_s is None:
                     async for resp in self._stream(llm_request, stream=stream):
                         yielded = True
@@ -620,6 +632,7 @@ def make_llm(
     )
     return RetryingLiteLlm(
         model=model, deadline_s=deadline_s, timeout=REQUEST_TIMEOUT,
+        num_retries=0,
         **kwargs
     )
 
@@ -636,5 +649,6 @@ def make_coder_llm(
         model=CODER_MODEL,
         deadline_s=deadline_s,
         timeout=REQUEST_TIMEOUT,
+        num_retries=0,
         **kwargs
     )

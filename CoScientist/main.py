@@ -232,6 +232,7 @@ class CoScientistManager:
             from CoScientist.agents.loop_guard_plugin import RepeatCallGuardPlugin
             from CoScientist.tools.session_scope_plugin import SessionScopePlugin
             from CoScientist.agents.checkpoint_plugin import CheckpointPlugin
+            from CoScientist.agents.run_control_plugin import RunControlPlugin
 
             # Build the agent system (reads start_mode + tunable params from settings).
             system = build_for_mode()
@@ -243,6 +244,7 @@ class CoScientistManager:
                     # Stage boundary snapshots and deterministic fast-forward
                     # must run before observers and agent-local callbacks.
                     CheckpointPlugin(),
+                    RunControlPlugin(),
                     # First: deterministically refuse training on a fabricated
                     # dataset (before_tool gate) — fabrication buys nothing.
                     ArtifactGatePlugin(),
@@ -385,7 +387,11 @@ class CoScientistManager:
         report_config: Optional[ReportConfig] = None,
     ) -> RunResult:
         with self.settings_context():
-            return await self._run(query, verbose=verbose, report_config=report_config)
+            from CoScientist.execution_control import current_run
+            if current_run() is not None:
+                return await self._run(query, verbose=verbose, report_config=report_config)
+            from CoScientist.execution_cli import run_with_control
+            return await run_with_control(self, query, verbose=verbose, report_config=report_config)
 
     async def _run(
         self,
@@ -438,10 +444,10 @@ class CoScientistManager:
                     user_id=self.user_id,
                     session_id=self.session_id,
                     new_message=msg,
-                    # Lift ADK's 500-LLM-call default so a long autonomous run driven
-                    # by a single prompt isn't cut off mid-work (finite cost backstop).
+                    # One durable provider-attempt quota covers nested runners;
+                    # ADK's independent per-invocation counter cannot do that.
                     run_config=RunConfig(
-                        max_llm_calls=get_settings().orchestrator.max_llm_calls
+                        max_llm_calls=0
                     ),
                 ):
                     if verbose:
@@ -539,6 +545,8 @@ class CoScientistManager:
             pass
 
         # Package the deliverable: report.md + LaTeX (per config) + MANIFEST.json.
+        from CoScientist.execution_control import before_tool_action
+        await before_tool_action("finalize_report")
         return await asyncio.to_thread(
             finalize_report, self.session_id, report_markdown, report_config, state,
         )

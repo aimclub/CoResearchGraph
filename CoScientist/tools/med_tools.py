@@ -28,6 +28,10 @@ _VLM_MAX_POLLS = 60
 # ─── LLM helper ──────────────────────────────────────────────────────────────
 
 async def _llm_json(prompt: str) -> dict:
+    from CoScientist.execution_control import before_model_attempt
+    await before_model_attempt(
+        "medical_agent", metadata={"model": settings.llm.main_model}
+    )
     response = await litellm.acompletion(
         model=settings.llm.main_model,
         api_base=settings.llm.main_url,
@@ -36,6 +40,7 @@ async def _llm_json(prompt: str) -> dict:
         response_format={"type": "json_object"},
         temperature=0.0,
         timeout=settings.llm.request_timeout,
+        num_retries=0,
     )
     record_completion(response, model=settings.llm.main_model, agent="MedicalAgent")
     return json.loads(response.choices[0].message.content)

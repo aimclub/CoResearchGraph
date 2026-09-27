@@ -61,6 +61,10 @@ class HITLResponse(BaseModel):
     """Response from a human to an agent."""
     action: HITLAction = Field(..., description="Action taken by the human")
     selected_option: Optional[str] = Field(default=None, description="Selected option (for SELECT)")
+    selected_task_ids: List[str] = Field(
+        default_factory=list,
+        description="Tasks explicitly selected by the operator for a targeted redo; never inferred from a rejection.",
+    )
     instructions: Optional[str] = Field(default=None, description="Edited content (for EDIT)")
     free_input: Optional[str] = Field(default=None, description="Free-form input")
     form_values: Optional[Dict[str, Any]] = Field(

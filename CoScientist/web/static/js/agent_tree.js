@@ -32,29 +32,32 @@
     economics: ['M3 21h18M6 17v-5M12 17V7M18 17V2'],
     settings: ['M3 6h18M3 12h18M3 18h18M8 3v6M16 9v6M9 15v6'],
   };
-  let current = null, geometry = null, nodes = new Map(), chosen = null, panelSignature = '';
+  let current = null, geometry = null, nodes = new Map(), chosen = null, chosenAgent = null, panelSignature = '';
   let layoutGeneration = 0, fetchGeneration = 0, signature = '', pendingSignature = '';
   let toolGeneration = 0, toolsAbort = null, modalFocus = null, timer = null, destroyed = false;
-  let engine = null;
+  let manualCamera = false, viewport = null, keepSelectedVisible = false;
   const camera = { x: 0, y: -24, scale: 1 };
   const designs = AgentTreeVariants.designs, designCameras = new Map();
-  let design = 'workshop', renderedDesign = 'classic';
+  let design = 'workshop', renderedDesign = null;
   let minimumRevision = 0;
   const agentMenu = AgentTreeMenu({ api,
     onSaving() { clearTimeout(timer); fetchGeneration++; },
     async onSaved(revision) { if (revision !== null) minimumRevision = Math.max(minimumRevision, revision); await refresh(); },
+    onChanged() { if (chosenAgent) details(); },
   });
   try { design = params.get('design') || localStorage.getItem('mas-graph-design') || 'workshop'; } catch (_) { /* Private browsing may disable storage. */ }
   if (!Object.hasOwn(designs, design)) design = 'workshop';
+  document.body.dataset.design = design;
+  try { localStorage.setItem('mas-graph-design', design); } catch (_) { /* Optional persistence. */ }
+  if (params.has('design')) { const url = new URL(location.href); url.searchParams.set('design', design); history.replaceState(null, '', url); }
   function designControls() {
     document.querySelectorAll('.design-options button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.design === design)));
     $('design-description').textContent = designs[design].description;
   }
   designControls();
-  try { if (typeof window.ELK === 'function') engine = new window.ELK(); } catch (_) { /* ordered fallback */ }
   function error(message) { $('error').textContent = message; $('error').classList.toggle('hidden', !message); }
   function header(data) {
-    const modes = { planner: 'Предварительное планирование', init: 'Предварительное планирование', orchestrator: 'Планирование по задаче', orchestrator_planner: 'Планирует координатор' };
+    const modes = { planner: 'Предварительное планирование', init: 'Предварительное планирование', orchestrator: 'Планирование по задаче', orchestrator_planner: 'Планирует координатор', orchestrator_plan: 'Планирует координатор' };
     const profiles = { hypotheses: 'Исследование гипотез', experiments: 'Вычислительные эксперименты', system: 'Базовая система', microfluidics: 'Микрофлюидный синтез' };
     $('context').textContent = `${profiles[data.profile] || 'Исследование'} · ${modes[data.startMode] || 'Настройки профиля'}`;
     $('revision').textContent = `Настройки ${data.desiredRevision} · Запуск ${data.activeRevision ?? 'ещё не начат'}`;
@@ -68,15 +71,17 @@
     svg.dataset.scale = String(camera.scale); $('zoom-value').textContent = `${Math.round(camera.scale * 100)}%`;
   }
   function resetCamera() {
-    camera.scale = 1; camera.x = geometry ? (geometry.w - svg.clientWidth) / 2 : 0; camera.y = -24; applyCamera();
+    camera.scale = 1; camera.x = 0; camera.y = 0; applyCamera();
   }
   function zoom(factor, x = svg.clientWidth / 2, y = svg.clientHeight / 2) {
+    manualCamera = true;
     const old = camera.scale;
     camera.scale = Math.max(.18, Math.min(2.4, old * factor));
     camera.x += x / old - x / camera.scale; camera.y += y / old - y / camera.scale; applyCamera();
   }
   function fit() {
     if (!geometry) return;
+    manualCamera = true;
     camera.scale = Math.max(.18, Math.min(1.6, (svg.clientWidth - 48) / geometry.w, (svg.clientHeight - 72) / geometry.h));
     camera.x = (geometry.w - svg.clientWidth / camera.scale) / 2;
     camera.y = (geometry.h - svg.clientHeight / camera.scale) / 2; applyCamera();
@@ -101,71 +106,20 @@
     const g = el('g', { class: `agent-node role-${node?.icon || 'agent'}`, transform: `translate(${card.x},${card.y})`,
       'data-agent': card.agentId, 'data-view-id': card.id, 'data-x': card.x, 'data-y': card.y,
       tabindex: 0, role: 'button', 'aria-label': title, 'aria-pressed': 'false' });
-    if (renderedDesign !== 'classic') return drawAlternativeCard(g, card, node, title);
-    g.append(el('title', {}, title), el('rect', { class: 'node-card', width: card.w, height: card.h, rx: 12 }),
-      el('rect', { class: 'node-icon-bg', x: 12, y: 14, width: 32, height: 32, rx: 9 }));
-    const icon = el('g', { class: 'node-icon', transform: 'translate(17,19) scale(.9)', 'aria-hidden': true });
-    (icons[node?.icon] || icons.agent).forEach(d => icon.append(el('path', { d }))); g.append(icon);
-    const lines = titleLines(title), y = lines.length === 3 ? 21 : lines.length === 2 ? 28 : 37;
-    lines.forEach((line, i) => g.append(el('text', { class: 'node-title', x: 54, y: y + i * 18 }, line)));
-    const badge = card.agentId === '__mas_session__' ? 'Настройки исследования' : card.agentId === 'NirReportAgent' ? 'По запросу' : 'Подключён';
-    g.append(el('text', { class: 'node-badge', x: 54, y: 77 }, badge)); return g;
-  }
-  const roleNames = { coord: 'Координация', plan: 'Планирование', context: 'Подготовка', document: 'Документы',
-    report: 'Отчёт', search: 'Поиск знаний', idea: 'Гипотезы', execute: 'Выполнение', experiment: 'Эксперимент',
-    review: 'Проверка', tools: 'Инструменты', ml: 'Машинное обучение', code: 'Разработка', data: 'Данные',
-    medical: 'Экспертиза', economics: 'Экономика', settings: 'Настройки' };
-  function drawAlternativeCard(g, card, node, title) {
-    const role = roleNames[node?.icon] || 'Агент', mode = renderedDesign;
-    const circle = mode === 'constellation', blueprint = mode === 'blueprint', atlas = mode === 'atlas';
-    g.dataset.shape = circle ? 'circle' : 'rect'; g.dataset.width = card.w; g.dataset.height = card.h;
+    g.dataset.shape = card.shape || 'rect'; g.dataset.width = card.w; g.dataset.height = card.h;
     g.append(el('title', {}, title));
-    if (mode === 'workshop') return AgentTreeWorkshop.draw({ el, g, card, node, title, icons, titleLines });
-    if (mode === 'architecture') return drawArchitectureCard(g, card, node, title, role);
-    if (circle) {
-      const r = card.w / 2;
-      g.append(el('circle', { class: 'node-card', cx: r, cy: r, r }),
-        el('path', { class: 'node-orbit', d: `M${r * .4},${r * .28} A${r - 7},${r - 7} 0 0 1 ${r * 1.72},${r * .6}` }));
-    } else {
-      g.append(el('rect', { class: 'node-card', width: card.w, height: card.h, rx: blueprint ? 3 : atlas ? 22 : 14 }));
-      if (blueprint) g.append(el('path', { class: 'node-rule', d: `M0,28 H${card.w}` }));
-      else if (!atlas) g.append(el('rect', { class: 'node-accent', x: 0, y: 16, width: 4, height: card.h - 32, rx: 2 }),
-        el('path', { class: 'node-rule', d: `M14,${card.h - 28} H${card.w - 14}` }));
-    }
-    const iconX = circle ? card.w / 2 - 12 : atlas ? 22 : blueprint ? 12 : 18;
-    const iconY = circle ? 23 : atlas ? 33 : blueprint ? 39 : 20;
-    if (!blueprint) g.append(el('rect', { class: 'node-icon-bg', x: iconX - 6, y: iconY - 6, width: 36, height: 36, rx: atlas || circle ? 18 : 11 }));
-    const icon = el('g', { class: 'node-icon', transform: `translate(${iconX},${iconY})`, 'aria-hidden': true });
+    if (renderedDesign === 'workshop') return AgentTreeWorkshop.draw({ el, g, card, node, title, icons, titleLines });
+    g.append(el('rect', { class: 'node-card', width: card.w, height: card.h, rx: 20 }),
+      el('rect', { class: 'node-icon-bg', x: 16, y: 29, width: 40, height: 40, rx: 20 }));
+    const icon = el('g', { class: 'node-icon', transform: 'translate(24,37)', 'aria-hidden': true });
     (icons[node?.icon] || icons.agent).forEach(d => icon.append(el('path', { d }))); g.append(icon);
-    const size = circle ? 14 : blueprint ? 15 : 16;
-    const textX = circle ? card.w / 2 : atlas ? 72 : blueprint ? 46 : 62;
-    const lines = titleLines(title, circle ? card.w - 26 : card.w - textX - 14, size);
-    const y = circle ? 84 - (lines.length - 1) * 8 : blueprint ? 42 : atlas ? 46 - (lines.length - 1) * 9 : 30;
-    lines.forEach((line, i) => g.append(el('text', { class: 'node-title', x: textX, y: y + i * (circle || blueprint ? 16 : 18),
-      'text-anchor': circle ? 'middle' : 'start', style: `font-size:${size}px` }, line)));
-    const labelX = circle ? card.w / 2 : atlas ? 72 : 14;
-    const labelY = circle ? 128 : blueprint ? 19 : card.h - 11;
-    g.append(el('text', { class: 'node-role', x: labelX, y: labelY, 'text-anchor': circle ? 'middle' : 'start' }, role));
-    const badge = card.agentId === '__mas_session__' ? 'Для сессии' : card.agentId === 'NirReportAgent' ? 'По запросу' : 'Подключён';
-    if (circle) g.append(el('circle', { class: 'node-status-dot', cx: card.w / 2, cy: 144, r: 3 }));
-    else if (blueprint) g.append(el('text', { class: 'node-badge', x: 46, y: card.h - 9 }, badge));
-    else g.append(el('circle', { class: 'node-status-dot', cx: card.w - 16, cy: atlas ? 17 : card.h - 15, r: 3.5 }));
-    return g;
-  }
-  function drawArchitectureCard(g, card, node, title, role) {
-    const w = card.w, h = card.h;
-    g.append(el('rect', { class: 'node-card', width: w, height: h, rx: 0 }),
-      el('path', { class: 'plan-wall', d: `M6,24 V6 H${w - 6} V${h - 6} H6 V${h - 30} M0,28 H${w} M52,28 V${h} M0,${h - 24} H52` }),
-      el('path', { class: 'plan-register', d: `M-5,0 H9 M0,-5 V9 M${w - 9},${h} H${w + 5} M${w},${h - 9} V${h + 5}` }));
-    const icon = el('g', { class: 'node-icon', transform: 'translate(14,44)', 'aria-hidden': true });
-    (icons[node?.icon] || icons.agent).forEach(d => icon.append(el('path', { d }))); g.append(icon);
-    g.append(el('text', { class: 'node-role', x: 13, y: 19 }, role),
-      el('text', { class: 'plan-number', x: 26, y: h - 9, 'text-anchor': 'middle' },
-        String(geometry.nodes.findIndex(n => n.id === card.id) + 1).padStart(2, '0')));
-    const lines = titleLines(title, w - 76, 17), y = 62 - (lines.length - 1) * 9;
-    lines.forEach((line, i) => g.append(el('text', { class: 'node-title', x: 65, y: y + i * 19, style: 'font-size:17px' }, line)));
-    g.append(el('text', { class: 'node-badge', x: 65, y: h - 12 },
-      card.agentId === '__mas_session__' ? 'СОСТАВ СЕССИИ' : card.agentId === 'NirReportAgent' ? 'ПО ЗАПРОСУ' : 'АГЕНТ ПОДКЛЮЧЁН'));
+    let fontSize = 16, lines = titleLines(title, card.w - 80, fontSize);
+    while (fontSize > 14 && lines.some(line => line.endsWith('…'))) lines = titleLines(title, card.w - 80, --fontSize);
+    const y = 47 - (lines.length - 1) * 9;
+    lines.forEach((line, i) => g.append(el('text', { class: 'node-title', x: 66, y: y + i * 18, style: `font-size:${fontSize}px` }, line)));
+    g.append(el('text', { class: 'node-role', x: 70, y: card.h - 15 },
+      card.agentId === '__mas_session__' ? 'Состав сессии' : node?.requiredForPipeline ? 'Основной процесс' : 'Подключён'),
+      el('circle', { class: 'node-status-dot', cx: card.w - 16, cy: 17, r: 3 }));
     return g;
   }
   function renderScene() {
@@ -178,22 +132,19 @@
     const groups = el('g', { class: 'groups' }), edges = el('g', { class: 'edges' }), cards = el('g', { class: 'cards' });
     geometry.groups.forEach(group => {
       const g = el('g', { class: `workflow-group ${group.kind}`, 'data-block-id': group.id });
-      g.append(el('rect', { x: group.x, y: group.y, width: group.w, height: group.h, rx: renderedDesign === 'architecture' ? 0 : 16 }));
+      g.append(el('rect', { x: group.x, y: group.y, width: group.w, height: group.h, rx: 16 }));
       const label = group.labelAgentId ? localized(nodes.get(group.labelAgentId)?.title)
         : { delegates: 'Вызываются по задаче', choice: 'Один из вариантов исполнения', parallel: 'Параллельная работа', loop: 'Повторение последовательности' }[group.kind];
       if (label) g.append(el('text', { x: group.x + 22, y: group.y + 20 }, label)); groups.append(g);
     });
     geometry.edges.forEach(edge => {
-      const p = el('path', { d: (edge.straight ? AgentTreeVariants.path : AgentTreeLayout.path)(edge.points), class: `edge ${edge.relation}`, 'data-from': edge.from || '', 'data-to': edge.to || '' });
+      const p = el('path', { d: AgentTreeVariants.path(edge.points), class: `edge ${edge.relation}`, 'data-from': edge.from || '', 'data-to': edge.to || '' });
       if (edge.arrow) p.setAttribute('marker-end', `url(#arrow-${edge.relation})`);
       p.append(el('title', {}, ({ settings: 'Настройки сессии', delegate: 'Может вызвать', choice: 'Вариант исполнения', loop: 'Повторение', parallel: 'Параллельная работа' })[edge.relation] || 'Порядок выполнения')); edges.append(p);
-      if (edge.relation === 'settings' && renderedDesign === 'classic') {
-        const a = edge.points[0], b = edge.points[edge.points.length - 1];
-        edges.append(el('text', { class: 'edge-label', x: (a.x + b.x) / 2, y: a.y - 52, 'text-anchor': 'middle' }, 'Настройки сессии'));
-      }
+
     });
     geometry.nodes.forEach(card => cards.append(drawCard(card)));
-    if (renderedDesign !== 'classic') {
+    {
       const ports = new Map();
       geometry.edges.forEach(edge => {
         [[edge.from, edge.points[0]], [edge.to, edge.points[edge.points.length - 1]]].forEach(([id, p]) => {
@@ -204,7 +155,7 @@
         : el('circle', { class: 'connection-port', cx: p.x, cy: p.y, r: 3.2, 'aria-hidden': true })));
     }
     svg.replaceChildren(defs, groups, edges, cards); svg.dataset.design = renderedDesign;
-    svg.dataset.layout = geometry.variant ? 'compact' : geometry.fallback ? 'fallback' : 'elk'; highlight();
+    svg.dataset.layout = 'compact'; highlight();
   }
   function highlight() {
     svg.querySelectorAll('.agent-node').forEach(n => {
@@ -214,31 +165,43 @@
     svg.querySelectorAll('.edge').forEach(e => e.classList.toggle('selected', !!chosen && (e.dataset.from === chosen || e.dataset.to === chosen)));
   }
   const selectedCard = () => geometry?.nodes.find(card => card.id === chosen);
-  function closeDetails() { panel.classList.remove('open'); document.querySelector('main').classList.add('panel-closed'); }
+  function closeDetails() { panel.classList.remove('open'); document.querySelector('main').classList.add('panel-closed'); keepSelectedVisible = true; }
   function details() {
-    const card = selectedCard(), node = card && nodes.get(card.agentId);
+    const card = selectedCard(), entry = agentMenu.getAgent(chosenAgent);
+    const node = entry ? { ...nodes.get(chosenAgent), ...entry, id: entry.name } : nodes.get(chosenAgent);
     if (!node) return;
-    const configuration = card.agentId === '__mas_session__';
+    const configuration = chosenAgent === '__mas_session__', connected = configuration || (entry ? entry.effectiveEnabled : node.selected !== false);
     const related = configuration ? [] : [...new Set(current.edges.filter(e => e.from === node.id).map(e => e.to))]
       .map(id => nodes.get(id)).filter(n => n && n.selected !== false && n.kind !== 'system');
-    const next = JSON.stringify([card.id, node, related, configuration ? [current.desiredRevision, current.activeRevision] : null]);
+    const next = JSON.stringify([chosenAgent, card?.id, node, related, agentMenu.busy, agentMenu.failureMessage, configuration ? [current.desiredRevision, current.activeRevision] : null]);
     if (panelSignature === next) return;
     panelSignature = next;
-    const location = configuration ? 'Параметры выбранной сессии' : node.stage === 'pre' ? 'Подготовка исследования' : node.stage === 'post' ? 'Завершение исследования' : card.id.endsWith('PlanningPipelineAgent/child/PlannerAgent') ? 'Начальное планирование' : card.id.includes('ExperimentModuleAgent') ? 'Вычислительный эксперимент' : 'Работа по задаче';
+    const location = configuration ? 'Параметры выбранной сессии' : node.stage === 'pre' ? 'Подготовка исследования' : node.stage === 'post' ? 'Завершение исследования' : card?.id.endsWith('PlanningPipelineAgent/child/PlannerAgent') ? 'Начальное планирование' : card?.id.includes('ExperimentModuleAgent') ? 'Вычислительный эксперимент' : 'Работа по задаче';
+    const canToggle = connected ? node.canDisable : node.canEnable;
     panel.innerHTML = `<button id="details-close" class="icon panel-close" aria-label="Закрыть описание">×</button>
       <p class="eyebrow">${esc(location)}</p><h2>${esc(localized(node.title))}</h2>
       <p class="description">${esc(localized(node.descriptionLocalized))}</p>
-      <div class="connection-state">${configuration ? 'Применение со следующего запроса' : 'Подключён к сессии'}</div>
+      <div class="connection-state">${configuration ? 'Применение со следующего запроса' : connected ? 'Подключён к сессии' : 'Отключён'}</div>
+      ${configuration ? '<button class="tool-button" id="open-agent-menu">Открыть состав агентов</button>' : canToggle ? `<button class="agent-toggle" id="agent-toggle" ${agentMenu.busy ? 'disabled' : ''}>${agentMenu.busy ? 'Сохраняем…' : connected ? 'Отключить в этой сессии' : 'Включить'}</button>` : ''}
+      ${!configuration && node.controlReason ? `<p class="control-reason">${esc(node.controlReason)}</p>` : ''}
+      ${agentMenu.failureMessage ? `<p class="action-error" role="alert">${esc(agentMenu.failureMessage)}</p>` : ''}
       ${related.length ? `<h3>Связанные агенты</h3><ul class="related">${related.map(n => `<li>${esc(localized(n.title))}</li>`).join('')}</ul>` : ''}
       ${configuration ? `<dl class="meta"><dt>Настройки</dt><dd>Версия ${current.desiredRevision}</dd><dt>Текущий запуск</dt><dd>${current.activeRevision ?? 'Ещё не начат'}</dd></dl>` : '<button class="tool-button" id="open-tools">Инструменты</button>'}
       <details class="technical"><summary>Технические сведения</summary><dl class="meta"><dt>Идентификатор</dt><dd>${esc(configuration ? sessionId : node.name)}</dd>
-      ${configuration ? '' : `<dt>Класс</dt><dd>${esc(node.class)}</dd><dt>Наборы инструментов</dt><dd>${esc(node.toolKeys.join(', ') || 'Нет')}</dd>`}</dl></details>`;
+      ${configuration ? '' : `<dt>Класс</dt><dd>${esc(node.class)}</dd><dt>Наборы инструментов</dt><dd>${esc(node.toolKeys?.join(', ') || 'Нет')}</dd>`}</dl></details>`;
     panel.classList.remove('empty'); $('details-close').onclick = closeDetails;
     if (!configuration) $('open-tools').onclick = () => openTools(node);
+    if (configuration) $('open-agent-menu').onclick = () => {
+      keepSelectedVisible = true; if (innerWidth < 1100) closeDetails(); agentMenu.open();
+    };
+    if ($('agent-toggle')) $('agent-toggle').onclick = () => agentMenu.save(chosenAgent, !connected);
   }
   function select(id) {
     if (chosen !== id) closeTools(false);
-    chosen = id; document.querySelector('main').classList.remove('panel-closed'); panel.classList.add('open'); details(); highlight();
+    chosen = id; chosenAgent = selectedCard()?.agentId; keepSelectedVisible = true;
+    if (innerWidth < 1100) agentMenu.close();
+    document.querySelector('main').classList.remove('panel-closed'); panel.classList.add('open'); details(); highlight();
+    if (current) draw(current).catch(() => error('Не удалось изменить размещение схемы.'));
   }
   function closeTools(restore = true) {
     toolGeneration++; toolsAbort?.abort(); toolsAbort = null;
@@ -253,7 +216,7 @@
       const response = await fetch(`${api}/agents/${encodeURIComponent(node.name)}/tools`, { cache: 'no-store', signal: toolsAbort.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      if (request !== toolGeneration || selectedCard()?.agentId !== node.id) return;
+      if (request !== toolGeneration || chosenAgent !== node.id) return;
       $('tools-note').textContent = data.dynamic && !data.selectionReady ? 'MCP-инструменты будут определены при подготовке задачи. FEDOT AutoML закреплён первым.'
         : `Инструментов: ${data.tools.length}${data.dynamic ? ' · Выбор MCP относится к последней подготовленной задаче' : ''}${data.catalog?.stale ? ' · Сведения о доступности требуют обновления' : ''}`;
       $('tools-list').innerHTML = data.tools.length ? data.tools.map(tool => {
@@ -268,40 +231,56 @@
       $('tools-note').textContent = 'Не удалось загрузить инструменты. Закройте окно и повторите попытку.';
     }
   }
+  function revealSelected() {
+    const card = selectedCard();
+    if (!keepSelectedVisible || !card) return;
+    const scene = svg.getBoundingClientRect(), inspector = panel.getBoundingClientRect();
+    const visibleWidth = panel.classList.contains('open') && inspector.left > scene.left && inspector.left < scene.right
+      ? inspector.left - scene.left - 12 : scene.width;
+    const width = visibleWidth / camera.scale, height = scene.height / camera.scale, margin = 20 / camera.scale;
+    if (card.x < camera.x + margin) camera.x = card.x - margin;
+    else if (card.x + card.w > camera.x + width - margin) camera.x = card.x + card.w - width + margin;
+    if (card.y < camera.y + margin) camera.y = card.y - margin;
+    else if (card.y + card.h > camera.y + height - margin) camera.y = card.y + card.h - height + margin;
+    keepSelectedVisible = false;
+  }
   async function draw(data) {
-    const width = svg.clientWidth || 1100, requestedDesign = design, bucket = design === 'classic' ? (width >= 900 ? 4 : 3) : 0;
-    const next = JSON.stringify([data.nodes, data.workflow, bucket, requestedDesign]);
-    if (next === signature) {
-      // A resize/configuration may return to the committed state while another
-      // layout is still running. That older result must not replace this scene.
-      if (pendingSignature && pendingSignature !== next) { layoutGeneration++; pendingSignature = ''; svg.setAttribute('aria-busy', 'false'); }
-      return;
+    const requestedDesign = design, switched = renderedDesign !== requestedDesign;
+    document.body.dataset.design = requestedDesign;
+    nodes = new Map(data.nodes.map(node => [node.id, node]));
+    agentMenu.update(data, requestedDesign);
+    const width = svg.clientWidth || 1100, height = svg.clientHeight;
+    const resized = viewport && (viewport.width !== width || viewport.height !== height);
+    if (resized && innerWidth < 1100 && panel.classList.contains('open')) agentMenu.close();
+    if (resized && !switched) {
+      camera.x += (viewport.width - width) / (2 * camera.scale);
+      camera.y += (viewport.height - height) / (2 * camera.scale);
+      keepSelectedVisible = panel.classList.contains('open');
     }
+    viewport = { width, height };
+    const next = JSON.stringify([data.workflow, Math.round(width), requestedDesign]);
+    if (next === signature) { revealSelected(); applyCamera(); return; }
     if (next === pendingSignature) return;
     const generation = ++layoutGeneration; pendingSignature = next; svg.setAttribute('aria-busy', 'true');
     try {
-      const result = requestedDesign === 'classic' ? await AgentTreeLayout.layout(data.workflow, { width, engine })
-        : AgentTreeVariants.layout(data.workflow, requestedDesign);
+      const result = AgentTreeVariants.layout(data.workflow, requestedDesign, { width });
       if (generation !== layoutGeneration || destroyed) return;
-      const initial = !geometry, switched = renderedDesign !== requestedDesign, previous = selectedCard(); geometry = result; signature = next;
-      renderedDesign = requestedDesign; document.body.dataset.design = renderedDesign;
-      nodes = new Map(data.nodes.map(node => [node.id, node]));
+      const initial = !geometry;
+      geometry = result; signature = next; renderedDesign = requestedDesign;
       if (chosen && !geometry.nodes.some(n => n.id === chosen)) {
-        chosen = geometry.nodes.find(n => n.agentId === previous?.agentId)?.id || null; closeTools(false);
-        if (!chosen) { panelSignature = ''; panel.innerHTML = '<div class="empty-copy">Агент больше не подключён. Выберите другого участника на схеме.</div>'; closeDetails(); }
+        chosen = geometry.nodes.find(n => n.agentId === chosenAgent)?.id || null;
       }
+      // The canonical selection survives removal of its last visible card.
+      if (!chosen && chosenAgent) chosen = geometry.nodes.find(n => n.agentId === chosenAgent)?.id || null;
       renderScene();
-      agentMenu.update(data, renderedDesign);
       if (switched) {
         const saved = designCameras.get(renderedDesign);
-        if (saved) { Object.assign(camera, saved); applyCamera(); } else fit();
-      } else if (initial) {
-        // A desktop opens with the whole wide workflow visible; compact screens
-        // retain readable 100% cards and use pan navigation.
-        if (svg.clientWidth >= 1000) fit(); else resetCamera();
-      } else applyCamera();
-      if (chosen) details();
-      $('layout-note').textContent = result.fallback ? 'Упрощённое размещение · порядок работы сохранён' : '';
+        if (saved) { Object.assign(camera, saved.camera); manualCamera = saved.manual; }
+        else { manualCamera = false; resetCamera(); }
+      } else if (initial || (!manualCamera && !resized)) resetCamera();
+      revealSelected(); applyCamera();
+      if (chosenAgent) details();
+      $('layout-note').textContent = '';
     } finally { if (generation === layoutGeneration) { pendingSignature = ''; svg.setAttribute('aria-busy', 'false'); } }
   }
   async function refresh() {
@@ -315,7 +294,7 @@
       if (data.desiredRevision < minimumRevision) return;
       if (!data.workflow) throw new Error('Обновите сервер для отображения схемы процесса.');
       current = data; header(data); await draw(data);
-      if (request === fetchGeneration) { error(''); agentMenu.update(data, renderedDesign); if (chosen) details(); }
+      if (request === fetchGeneration) { error(''); agentMenu.update(data, renderedDesign); if (chosenAgent) details(); }
     } catch (err) {
       if (request !== fetchGeneration || destroyed) return;
       error(`Не удалось обновить схему. ${geometry ? 'Показана последняя загруженная конфигурация. ' : ''}${err.message}`);
@@ -330,7 +309,7 @@
   svg.addEventListener('pointermove', e => {
     if (!drag) return;
     if (!moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 4) { moved = true; svg.setPointerCapture(e.pointerId); }
-    if (moved) { camera.x = drag.cx - (e.clientX - drag.x) / camera.scale; camera.y = drag.cy - (e.clientY - drag.y) / camera.scale; applyCamera(); }
+    if (moved) { manualCamera = true; camera.x = drag.cx - (e.clientX - drag.x) / camera.scale; camera.y = drag.cy - (e.clientY - drag.y) / camera.scale; applyCamera(); }
   });
   svg.addEventListener('pointerup', e => { drag = null; if (svg.hasPointerCapture(e.pointerId)) svg.releasePointerCapture(e.pointerId); });
   svg.addEventListener('pointercancel', () => { drag = null; moved = false; });
@@ -339,7 +318,7 @@
     const card = e.target.closest('.agent-node');
     if (card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); select(card.dataset.viewId); }
     else if (['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-      e.preventDefault();
+      e.preventDefault(); manualCamera = true;
       if (e.key === 'ArrowDown') camera.y += 80 / camera.scale; if (e.key === 'ArrowUp') camera.y -= 80 / camera.scale;
       if (e.key === 'ArrowLeft') camera.x -= 80 / camera.scale; if (e.key === 'ArrowRight') camera.x += 80 / camera.scale; applyCamera();
     }
@@ -347,14 +326,14 @@
   svg.addEventListener('wheel', e => {
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) { const r = svg.getBoundingClientRect(); zoom(Math.exp(-e.deltaY * .002), e.clientX - r.left, e.clientY - r.top); }
-    else { camera.x += (e.shiftKey ? e.deltaY : e.deltaX) / camera.scale; camera.y += (e.shiftKey ? 0 : e.deltaY) / camera.scale; applyCamera(); }
+    else { manualCamera = true; camera.x += (e.shiftKey ? e.deltaY : e.deltaX) / camera.scale; camera.y += (e.shiftKey ? 0 : e.deltaY) / camera.scale; applyCamera(); }
   }, { passive: false });
   $('zoom-in').onclick = () => zoom(1.2); $('zoom-out').onclick = () => zoom(1 / 1.2);
-  $('zoom-reset').onclick = resetCamera; $('fit').onclick = fit; $('tools-close').onclick = () => closeTools();
+  $('zoom-reset').onclick = () => { manualCamera = true; resetCamera(); }; $('fit').onclick = fit; $('tools-close').onclick = () => closeTools();
   document.querySelectorAll('.design-options button').forEach(button => {
     button.onclick = async () => {
       if (design === button.dataset.design) return;
-      if (geometry) designCameras.set(renderedDesign, { ...camera });
+      if (geometry) designCameras.set(renderedDesign, { camera: { ...camera }, manual: manualCamera });
       design = button.dataset.design; designControls();
       try {
         if (current) await draw(current);
@@ -378,15 +357,14 @@
   });
   const observer = new ResizeObserver(() => {
     if (!svg.clientWidth || !svg.clientHeight) return;
-    applyCamera(); if (current) draw(current).catch(() => error('Не удалось изменить размещение схемы.'));
+    if (current) draw(current).catch(() => error('Не удалось изменить размещение схемы.'));
   });
   observer.observe(document.querySelector('.canvas-wrap'));
   observer.observe(svg);
-  window.addEventListener('pagehide', () => { destroyed = true; clearTimeout(timer); observer.disconnect(); toolsAbort?.abort(); engine?.terminateWorker?.(); agentMenu.dispose(); });
+  window.addEventListener('pagehide', () => { destroyed = true; clearTimeout(timer); observer.disconnect(); toolsAbort?.abort(); agentMenu.dispose(); });
   window.addEventListener('pageshow', e => {
     if (!e.persisted) return;
     destroyed = false; pendingSignature = ''; layoutGeneration++; agentMenu.resume();
-    try { engine = typeof window.ELK === 'function' ? new window.ELK() : null; } catch (_) { engine = null; }
     observer.observe(document.querySelector('.canvas-wrap')); observer.observe(svg); refresh();
   });
   (document.fonts?.ready || Promise.resolve()).then(refresh);

@@ -34,6 +34,11 @@ from typing import Any, Dict, List
 
 from google.genai import types
 
+from CoScientist.experiments.outcome.reconciliation import (
+    DispositionKind,
+    reconcile_scientific_outcome,
+)
+
 logger = logging.getLogger(__name__)
 
 #: Ключ состояния, который промпт агрегатора читает через ADK-подстановку
@@ -67,6 +72,12 @@ def _carried_out(state: Any) -> int:
     for row in state.get("experiment_task_results") or []:
         if isinstance(row, dict) and str(row.get("status") or "") in _CARRIED_OUT:
             done += 1
+    if not done:
+        tasks = state.get("_master_active_tasks") or state.get("active_tasks") or []
+        done = sum(
+            1 for row in tasks
+            if isinstance(row, dict) and str(row.get("status") or "").upper() == "DONE"
+        )
     return done
 
 
@@ -82,6 +93,9 @@ def _planned(state: Any) -> int:
         tasks = view.get("tasks")
         if isinstance(tasks, (list, tuple)):
             return len(tasks)
+    tasks = state.get("_master_active_tasks") or state.get("active_tasks") or []
+    if isinstance(tasks, (list, tuple)):
+        return len(tasks)
     return 0
 
 
@@ -176,6 +190,14 @@ _WHAT_NEXT = {
 
 def _what_next(lang: str, state: Any) -> str:
     pause = str(state.get("experiment_review_pause_reason") or "").strip()
+    if pause == "max_plan_revisions":
+        return (
+            "Возобновите этот прогон: сохранённый исполнимый план будет повторно "
+            "проверен и показан для явного решения без нового планирования."
+            if lang == "ru"
+            else "Resume this run to revalidate and explicitly review the saved "
+                 "executable plan without starting planning again."
+        )
     table = _WHAT_NEXT[lang]
     text = table.get(pause) or table[None]
     if state.get("experiment_plan_record_id"):
@@ -195,7 +217,7 @@ _INSTEAD_OF_A_REPORT = {
         "которой не было.\n\n"
         "- **Задач в плане:** {planned}\n"
         "- **Выполнено:** 0\n"
-        "- **Свидетельств в графе:** 0\n"
+        "- **Свидетельств в графе:** {evidence}\n"
         "- **Причина остановки:** {why}\n\n"
         "{next}"
     ),
@@ -206,7 +228,32 @@ _INSTEAD_OF_A_REPORT = {
         "that was not done.\n\n"
         "- **Tasks planned:** {planned}\n"
         "- **Carried out:** 0\n"
-        "- **Evidence in the graph:** 0\n"
+        "- **Evidence in the graph:** {evidence}\n"
+        "- **Why it stopped:** {why}\n\n"
+        "{next}"
+    ),
+}
+
+_UNACCEPTED_PARTIAL_REPORT = {
+    "ru": (
+        "## Итоговый отчёт отложен: научная работа не принята как завершённая\n\n"
+        "Прогон остановлен до принятого итогового решения. Ни литература в графе, "
+        "ни отдельный частичный результат сами по себе не подтверждают выполнение "
+        "всего запрошенного исследования.\n\n"
+        "- **Задач в плане:** {planned}\n"
+        "- **Выполнено с результатом:** {done}\n"
+        "- **Свидетельств в графе:** {evidence}\n"
+        "- **Причина остановки:** {why}\n\n"
+        "{next}"
+    ),
+    "en": (
+        "## Final report deferred: scientific work was not accepted as complete\n\n"
+        "The run stopped before an accepted final disposition. Literature evidence "
+        "or an isolated partial result does not by itself prove that the requested "
+        "study was completed.\n\n"
+        "- **Tasks planned:** {planned}\n"
+        "- **Carried out with a result:** {done}\n"
+        "- **Evidence in the graph:** {evidence}\n"
         "- **Why it stopped:** {why}\n\n"
         "{next}"
     ),
@@ -253,17 +300,42 @@ def guard_report_without_execution(callback_context: Any) -> types.Content | Non
     """
     try:
         state = callback_context.state
-        if not _module_was_engaged(state):
+        from CoScientist.execution_control import current_run
+
+        execution_handle = current_run()
+        disposition = reconcile_scientific_outcome(
+            state,
+            current_run_id=execution_handle.run_id if execution_handle else None,
+        )
+        if (not _module_was_engaged(state)
+                and disposition.kind is not DispositionKind.COMPLETED_LIMITED):
             return None
 
         done, planned = _carried_out(state), _planned(state)
         evidence = _evidence_in_graph(callback_context)
         lang = _language(state)
         why = _why(state, lang)
+        typed_completion_required = bool(
+            state.get("experiment_module_outcome")
+            or state.get("experiment_review_pause_reason")
+            or state.get("experiment_plan_review_paused")
+            or state.get("_master_active_tasks")
+            or state.get("pipeline_scope")
+        )
 
-        if done or evidence:
+        # Evidence can support a literature section, but cannot prove that a
+        # requested experiment or unfinished roadmap completed.  A partial
+        # scientific report requires a typed, explicitly accepted disposition.
+        blocked_typed_outcome = (
+            typed_completion_required
+            and disposition.module_engaged
+            and not disposition.report_allowed
+        )
+        if (not blocked_typed_outcome
+                and (done or evidence
+                     or disposition.kind is DispositionKind.COMPLETED_LIMITED)):
             # Что-то сделано. Отчёт законен, но обязан сказать, чего в нём нет.
-            if planned and done < planned:
+            if (planned and done < planned) or disposition.kind is DispositionKind.COMPLETED_LIMITED:
                 tail = _WHY_TAIL[lang].format(why=why) if why else ""
                 state[UNEXECUTED_NOTE_KEY] = _PARTIAL_NOTE[lang].format(
                     planned=planned, done=done, why=tail)
@@ -274,13 +346,18 @@ def guard_report_without_execution(callback_context: Any) -> types.Content | Non
         # Ничего. Ни результата задачи, ни свидетельства — писать не о чем.
         state[UNEXECUTED_NOTE_KEY] = ""
         logger.warning(
-            "REPORT_WITHOUT_EXECUTION_REFUSED planned=%d done=0 evidence=0 why=%s",
-            planned, why)
+            "REPORT_WITHOUT_EXECUTION_REFUSED planned=%d done=%d evidence=%d why=%s",
+            planned, done, evidence, why)
         unknown = "не записано" if lang == "ru" else "not recorded"
+        template = (
+            _UNACCEPTED_PARTIAL_REPORT[lang]
+            if done or evidence else _INSTEAD_OF_A_REPORT[lang]
+        )
         return types.Content(
             role="model",
-            parts=[types.Part(text=_INSTEAD_OF_A_REPORT[lang].format(
-                planned=planned or unknown, why=why or unknown,
+            parts=[types.Part(text=template.format(
+                planned=planned or unknown, done=done, evidence=evidence,
+                why=why or unknown,
                 next=_what_next(lang, state)))],
         )
     except Exception as exc:  # noqa: BLE001 — привратник не ломает прогон

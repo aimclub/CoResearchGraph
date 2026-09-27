@@ -124,6 +124,60 @@ def test_architecture_switch_preserves_session_settings_and_accepted_snapshot(tm
         assert client.get(api + "/agent-tree").json()["desiredRevision"] == before
 
 
+def test_bulk_settings_cannot_bypass_pipeline_policy_or_partially_write(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEB_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("COSCIENTIST_CONFIG", "system")
+    app = create_app()
+    with TestClient(app) as client:
+        user = _create_user(client, "Policy tester")
+        first = _create_session(client, user["id"], "First")
+        second = _create_session(client, user["id"], "Second")
+        api = f"/api/users/{user['id']}/sessions/{first['id']}"
+        other = f"/api/users/{user['id']}/sessions/{second['id']}"
+        before_searches = get_settings().web.max_searches
+
+        response = client.post(api + "/settings", json={
+            "researchAgent": {"maxSearches": before_searches + 1},
+            # apply_agent_settings used to silently drop this root override,
+            # letting the unrelated global field above leak through.
+            "agents": {"overrides": {"OrchestratorAgent": {"enabled": False}}},
+        })
+
+        assert response.status_code == 409
+        assert "Обязательный участник" in response.json()["detail"]
+        assert get_settings().web.max_searches == before_searches
+        assert client.get(api + "/agent-tree").json()["desiredRevision"] == 0
+        assert client.get(other + "/agent-tree").json()["desiredRevision"] == 0
+
+
+def test_bulk_settings_rejects_setting_backed_enabled_alias_before_writes(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEB_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("COSCIENTIST_CONFIG", "system")
+    app = create_app()
+    with TestClient(app) as client:
+        user = _create_user(client, "Alias policy tester")
+        session = _create_session(client, user["id"], "Session")
+        api = f"/api/users/{user['id']}/sessions/{session['id']}"
+        assert client.post(api + "/settings", json={
+            "medicalAgent": {"enabled": True},
+        }).status_code == 200
+        before_revision = client.get(api + "/agent-tree").json()["desiredRevision"]
+        before_searches = get_settings().web.max_searches
+
+        response = client.post(api + "/settings", json={
+            "researchAgent": {"maxSearches": before_searches + 1},
+            # MedicalAgent is switched by medicalAgent.enabled.  An enabled
+            # override is ignored by normalization and must not be accepted.
+            "agents": {"overrides": {"MedicalAgent": {"enabled": False}}},
+        })
+
+        assert response.status_code == 409
+        assert "отдельной настройкой" in response.json()["detail"]
+        assert get_settings().web.max_searches == before_searches
+        assert client.get(api + "/agent-tree").json()["desiredRevision"] == before_revision
+        assert client.get(api + "/settings").json()["medicalAgent"]["enabled"] is True
+
+
 def test_agent_tree_page_and_navigation_are_wired(tmp_path, monkeypatch):
     monkeypatch.setenv("WEB_STATE_DIR", str(tmp_path / "web-state"))
     app = create_app()

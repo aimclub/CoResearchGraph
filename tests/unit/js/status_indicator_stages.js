@@ -188,4 +188,17 @@ SI.feed({ type: 'user_message', message: 'other' });
 activity('call', 'ResearchAgent', { tool: 'tavily_search', call_id: 'x1', args: { query: 'q' } });
 assert.doesNotMatch(painted(), /карточек/);
 
+// A durable pause is not completion, even if an in-flight tool reports later.
+SI.reset();
+SI.feed({type: 'user_message', message: 'pause test'});
+SI.feed({type: 'run_control', state: 'paused', pause_causes: ['manual']});
+SI.feed({type: 'status', status: 'paused'});
+activity('result', 'ResearchAgent', {tool: 'search', call_id: 'late', result: {status: 'ok'}});
+assert.match(painted(), /Жду вашего ответа/);
+assert.doesNotMatch(painted(), /Исследование завершено/);
+SI.feed({type: 'hitl_timeout', paused: true});
+assert.match(painted(), /Жду вашего ответа/);
+SI.feed({type: 'run_control', state: 'running', pause_causes: []});
+assert.doesNotMatch(painted(), /Жду вашего ответа/);
+
 console.log('ok');

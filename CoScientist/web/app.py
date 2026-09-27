@@ -36,6 +36,7 @@ from CoScientist.agents.callbacks.report_language import (
 from CoScientist.main import CoScientistManager
 from CoScientist.web.handler import WebHITLHandler, hitl_response_event
 from CoScientist.web.session_registry import LocalSessionRegistry
+from CoScientist.web.run_control import ExecutionControlMixin, register_execution_routes
 from CoScientist.agents import agent_system, planner_agent
 from CoScientist.config import ReportConfig, settings_scope
 from CoScientist.config.settings import Settings
@@ -692,7 +693,7 @@ def _without_agent_configuration(frontend: dict) -> dict:
 
 
 
-class WebRuntime:
+class WebRuntime(ExecutionControlMixin):
     """Process-local users, ADK sessions, managers, sockets, and event logs."""
 
     def __init__(self) -> None:
@@ -756,6 +757,7 @@ class WebRuntime:
         self.checkpoint_hitl = None
         # Run execution times (start to finish) per session
         self.run_times: dict[SessionKey, dict[str, Any]] = {}
+        self.init_execution_control()
 
     def agent_configuration(self, key: SessionKey) -> tuple[int, dict[str, Any]]:
         try:
@@ -856,10 +858,6 @@ class WebRuntime:
                 return False
 
             version = self._next_run_version(key)
-            self.run_times[key] = {
-                "started_at": datetime.now().isoformat(),
-                "finished_at": None,
-            }
             run_data = dict(data)
             run_data["_run_status_version"] = version
             agent_revision, run_settings = self.settings_snapshot(key)
@@ -867,7 +865,17 @@ class WebRuntime:
             # pressed Send must not alter this already accepted invocation.
             run_data["_agent_revision"] = agent_revision
             run_data["_settings_snapshot"] = run_settings
-            task = asyncio.create_task(_handle_chat(self, key, run_data))
+            try:
+                handle = self.prepare_execution(key, run_data, run_settings)
+            except ValueError:
+                return False
+            # Continuation is the same durable research run, not a new timer.
+            # Set timing only after acceptance, so a rejected chat cannot reset it.
+            self.run_times[key] = {
+                "started_at": self._public_execution(handle.status())["started_at"],
+                "finished_at": None,
+            }
+            task = asyncio.create_task(self.run_controlled_chat(key, run_data))
             self.active_runs[key] = task
 
             def schedule_discard(finished: asyncio.Task) -> None:
@@ -892,13 +900,18 @@ class WebRuntime:
                 return False
             self.active_runs.pop(key, None)
             version = self._next_run_version(key)
+            control = self.execution_snapshot(key)
+            terminal_status = "paused" if control and control.get("pause_causes") else "idle"
             timing = self.run_times.get(key)
-            if timing and timing.get("finished_at") is None:
-                timing["finished_at"] = datetime.now().isoformat()
+            if timing and terminal_status == "paused":
+                timing["finished_at"] = None
+            elif timing and timing.get("finished_at") is None:
+                timing["finished_at"] = datetime.now().astimezone().isoformat()
         await self.send(key, self.status_payload(
             key,
-            "idle",
-            "Session is ready for the next request.",
+            terminal_status,
+            "Research is paused; its progress is preserved." if terminal_status == "paused"
+            else "Session is ready for the next request.",
             version=version,
         ))
         return True
@@ -906,6 +919,9 @@ class WebRuntime:
     async def stop_run(self, key: SessionKey) -> bool:
         """Cancel and remove the exact run currently owning this session."""
         async with self.control_lock(key):
+            handle = self.execution_handle(key)
+            if handle is not None and not self._closing:
+                self.execution_controller.stop(handle.run_id, "operator_stopped")
             task = self.active_runs.get(key)
             stopped = task is not None
             self.stopping_runs.add(key)
@@ -931,7 +947,7 @@ class WebRuntime:
             version = self._next_run_version(key)
             timing = self.run_times.get(key)
             if timing and timing.get("finished_at") is None:
-                timing["finished_at"] = datetime.now().isoformat()
+                timing["finished_at"] = datetime.now().astimezone().isoformat()
 
         # Network I/O happens outside the ownership lock so a slow browser
         # cannot block future control operations for the session.
@@ -1081,6 +1097,9 @@ class WebRuntime:
                     if current_run is not None and not current_run.done()
                     else "idle"
                 )
+                execution = self.execution_snapshot(key)
+                if execution and execution.get("pause_causes"):
+                    status = "paused"
                 version = self.run_versions[key]
                 messages = list(self.agent_events[key])
             try:
@@ -1096,6 +1115,7 @@ class WebRuntime:
                     "messages": messages,
                     "active_tasks": _json_safe(active_tasks),
                     "status": status,
+                    "run_control": execution,
                     "run_status_version": version,
                     "metrics": self.metrics.get(key),
                     "tz": self.tz_snapshots.get(key),
@@ -1660,6 +1680,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.runtime = runtime
+    register_execution_routes(app, runtime)
 
     # Vendored JS/CSS (e.g. vis-network for the live graph) so the UI works
     # offline / behind a VPN without any CDN.
@@ -3242,6 +3263,28 @@ def create_app() -> FastAPI:
         # process-wide semantics. Only the fields that can change the topology
         # are isolated and persisted with the selected session.
         global_payload = _without_agent_configuration(data)
+        _, current_snapshot = runtime.settings_snapshot(key)
+        candidate = current_snapshot.model_copy(deep=True)
+        requested_overlay = _agent_configuration_payload(data)
+        from CoScientist.web.agent_configuration_policy import (
+            validate_agent_configuration_transition,
+            validate_raw_agent_configuration_request,
+        )
+        try:
+            validate_raw_agent_configuration_request(current_snapshot, requested_overlay)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        with settings_scope(candidate):
+            _apply_frontend_settings(requested_overlay)
+            normalized_overlay = _agent_configuration_payload(_current_settings())
+        # Validate the complete requested composition before applying even the
+        # process-wide part of the same form submission.  A forbidden agent
+        # change therefore cannot leave a partially saved settings form.
+        try:
+            validate_agent_configuration_transition(current_snapshot, candidate)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         before_global = _current_settings()
         if global_payload:
             _apply_frontend_settings(global_payload)
@@ -3249,13 +3292,6 @@ def create_app() -> FastAPI:
         if global_changed:
             runtime.session_settings_cache.clear()
             runtime.invalidate_agent_trees()
-
-        _, current_snapshot = runtime.settings_snapshot(key)
-        candidate = current_snapshot.model_copy(deep=True)
-        requested_overlay = _agent_configuration_payload(data)
-        with settings_scope(candidate):
-            _apply_frontend_settings(requested_overlay)
-            normalized_overlay = _agent_configuration_payload(_current_settings())
 
         _, saved_overlay = runtime.agent_configuration(key)
         if normalized_overlay != saved_overlay:
@@ -3546,6 +3582,11 @@ def create_app() -> FastAPI:
         )
         # Re-deliver only HITL requests belonging to this session.
         await runtime.hitl_handler.attach_websocket(ws, key)
+        durable_handle = runtime.execution_handle(key)
+        if durable_handle is not None:
+            for cause, decision in durable_handle.status().pending_decisions.items():
+                if cause.startswith("hitl:") and isinstance(decision.get("payload"), dict):
+                    await runtime.send_socket(ws, decision["payload"], key)
         delivered_interrupts = set()
         for pending in runtime.pending_hitl.values():
             payload = pending.get("payload")
@@ -3683,7 +3724,7 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
     resumes the workflow by calling run_async with a FunctionResponse message.
     """
     query = data.get("message", "").strip()
-    internal_resume = bool(data.get("_checkpoint_resume"))
+    internal_resume = bool(data.get("_checkpoint_resume") or data.get("_execution_resume"))
     run_status_version = int(
         data.get("_run_status_version", runtime.run_versions[key])
     )
@@ -3745,6 +3786,8 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
                     query,
                     run_status_version=run_status_version,
                     report_language=report_language,
+                    continuation=bool(data.get("_execution_resume")),
+                    continuation_instruction=data.get("_execution_resume_instruction"),
                 )
 
     except asyncio.CancelledError:
@@ -3756,6 +3799,10 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
         _cancel_pending_hitl(runtime, key)
         runtime.hitl_handler.reset(key)
         runtime.registry.touch_session(user_id, session_id, status="idle")
+        handle = runtime.execution_handle(key)
+        if handle is not None:
+            handle.controller.request_pause(handle.run_id, "execution_error",
+                pending_decision={"error_type": type(exc).__name__, "message": str(exc)})
 
         # Whatever card the operator gets, the exception itself goes to the log.
         # Without this the proxy branch below was a dead end: it replaced the
@@ -3805,6 +3852,8 @@ async def _run_chat_invocation(
     *,
     run_status_version: int,
     report_language: str | None = None,
+    continuation: bool = False,
+    continuation_instruction: str | None = None,
 ) -> None:
     """Execute one serialized ADK invocation for a session."""
     user_id, session_id = key
@@ -3822,7 +3871,22 @@ async def _run_chat_invocation(
     await manager._set_state("report_config", report_config.to_state())
     # The question the user just asked is the root of the research graph, and
     # nothing else guarantees it exists — see seed_research_context.
-    await manager.seed_research_context(query)
+    if not continuation:
+        await manager.seed_research_context(query)
+    else:
+        current_message = types.Content(role="user", parts=[types.Part(text=(
+            continuation_instruction
+            or "Resume the saved research state. Preserve the approved plan and active attempt. "
+               "Do not repeat completed tools or tasks. Process any saved pending result first."
+        ))])
+        from CoScientist.execution_control import current_run
+        handle = current_run()
+        restored_answer = handle.status().metadata.get("request_input_response") if handle else None
+        if restored_answer:
+            current_message = types.Content(role="user", parts=[create_request_input_response(
+                restored_answer["interrupt_id"], restored_answer["response"],
+            )])
+            handle.controller.update_metadata(handle.run_id, {"request_input_response": None})
     # Prompt templates read {report_language?} from session state. An explicit
     # per-message choice overrides the per-session mirror for this run; a
     # message without one leaves the mirror (and the callback default) alone.
@@ -3844,10 +3908,9 @@ async def _run_chat_invocation(
                 user_id=manager.user_id,
                 session_id=manager.session_id,
                 new_message=current_message,
-                # Lift ADK's 500-LLM-call default so a long autonomous run driven
-                # by a single prompt isn't cut off mid-work.
+                # The shared durable budget gate owns the 100-call quota.
                 run_config=RunConfig(
-                    max_llm_calls=get_settings().orchestrator.max_llm_calls
+                    max_llm_calls=0
                 ),
             ):
                 # Stream each event to frontend
@@ -3951,6 +4014,14 @@ async def _run_chat_invocation(
                             "session_key": key,
                             "payload": hitl_payload,
                         }
+                    from CoScientist.execution_control import current_run
+                    execution_handle = current_run()
+                    if execution_handle is not None:
+                        for iid in interrupt_ids:
+                            execution_handle.controller.request_pause(execution_handle.run_id, f"hitl:{iid}",
+                                pending_decision={"payload": hitl_payload, "kind": "request_input"})
+                            execution_handle.controller.journal(execution_handle.run_id, "hitl_requested",
+                                                                action_id=iid, data=hitl_payload)
                     if runtime.checkpoint_hitl is not None:
                         await runtime.checkpoint_hitl(key, {
                             **hitl_payload,
@@ -3989,26 +4060,27 @@ async def _run_chat_invocation(
                 try:
                     await asyncio.wait_for(wait_event.wait(), timeout=600)
                 except asyncio.TimeoutError:
-                    print(f"[HITL] Timeout waiting for response, auto-approving")
-                    for iid in interrupt_ids:
-                        if iid in runtime.pending_hitl and runtime.pending_hitl[iid]["response"] is None:
-                            runtime.pending_hitl[iid]["response"] = {"approved": True}
+                    print("[HITL] Review window elapsed; waiting for an explicit decision")
                     timeout_event = {
                         "type": "hitl_timeout",
                         "request_id": interrupt_ids[0] if interrupt_ids else "",
                         "interrupt_ids": interrupt_ids,
                         "agent_name": hitl_interrupt_event.author or "system",
                         "timeout_seconds": 600,
+                        "paused": True,
                         "timestamp": datetime.now().isoformat(),
                     }
                     runtime.record_event(key, timeout_event)
                     await runtime.send(key, timeout_event)
+                    await wait_event.wait()
 
                 # Build FunctionResponse message for resume
                 response_parts = []
                 for iid in interrupt_ids:
                     info = runtime.pending_hitl.pop(iid, None)
-                    response_data = (info["response"] if info and info["response"] else {"approved": True})
+                    if not info or info.get("response") is None:
+                        raise asyncio.CancelledError("HITL ended without an explicit decision")
+                    response_data = info["response"]
                     response_parts.append(
                         create_request_input_response(iid, response_data)
                     )
@@ -4032,6 +4104,36 @@ async def _run_chat_invocation(
                 # No interrupt, we're done
                 break
 
+        # A normal runner return and a final-looking model message are not
+        # scientific completion evidence.  Gate report finalization on the
+        # freshest durable state before emitting `final_response`; the outer
+        # execution controller will persist the same state and create the
+        # durable pause.  This ordering prevents a transient false-completed UI
+        # and avoids publishing a report for unfinished work.
+        from CoScientist.experiments.outcome.reconciliation import (
+            reconcile_scientific_outcome,
+        )
+
+        reconciled_session = await runtime.session_service.get_session(
+            app_name=APP_NAME, user_id=user_id, session_id=session_id,
+        )
+        reconciled_state = (
+            reconciled_session.state if reconciled_session is not None else {}
+        )
+        from CoScientist.execution_control import current_run as current_execution_run
+
+        execution_handle = current_execution_run()
+        disposition = reconcile_scientific_outcome(
+            reconciled_state,
+            current_run_id=execution_handle.run_id if execution_handle else None,
+        )
+        if not disposition.report_allowed:
+            logging.getLogger("CoScientist.web").info(
+                "REPORT_FINALIZATION_DEFERRED disposition=%s reason=%s stage=%s",
+                disposition.kind.value, disposition.reason, disposition.stage,
+            )
+            return
+
         # ── Package the deliverable ──────────────────────────────────────────────
         # The Result Aggregator already ran as the terminal stage of the single
         # run_async above (its events streamed like any other agent), so its report
@@ -4051,6 +4153,8 @@ async def _run_chat_invocation(
             GRAPH_SCOPE_USER_KEY: user_id,
             GRAPH_SCOPE_SESSION_KEY: session_id,
         }
+        from CoScientist.execution_control import before_tool_action
+        await before_tool_action("finalize_report")
         result = await asyncio.to_thread(
             finalize_report, manager.session_id,
             report_markdown or final_response, report_config, finalize_state,
@@ -4122,6 +4226,8 @@ def _handle_hitl_response(runtime: WebRuntime, key: SessionKey, data: dict):
             return
         # If it was resolved there, no need to check _pending_hitl
         if request_id not in runtime.pending_hitl:
+            if hasattr(runtime, "resolve_durable_hitl"):
+                runtime.resolve_durable_hitl(key, request_id, data)
             return
 
     # 2) Try ADK RequestInput mechanism
@@ -4139,6 +4245,8 @@ def _handle_hitl_response(runtime: WebRuntime, key: SessionKey, data: dict):
             "Ignoring RequestInput response from the wrong session"
         )
         return
+    if info.get("response") is not None:
+        return  # A double click must not replace an already accepted decision.
     # Store the response data
     response = {
         "approved": data.get("approved", False),
@@ -4147,12 +4255,21 @@ def _handle_hitl_response(runtime: WebRuntime, key: SessionKey, data: dict):
         "free_input": data.get("free_input"),
     }
     info["response"] = response
+    if hasattr(runtime, "execution_handle"):
+        handle = runtime.execution_handle(key)
+        if handle is not None:
+            handle.controller.journal(handle.run_id, "hitl_decision", action_id=lookup_id, data=response)
+            handle.controller.resume(handle.run_id, f"hitl:{lookup_id}")
 
     # Check if all interrupt IDs sharing this wait_event have responses
     wait_event = info["event"]
-    for pending in runtime.pending_hitl.values():
+    for pending_id, pending in runtime.pending_hitl.items():
         if pending["event"] is wait_event and pending.get("session_key") == key:
             pending["response"] = response
+            if hasattr(runtime, "execution_handle"):
+                sibling_handle = runtime.execution_handle(key)
+                if sibling_handle is not None:
+                    sibling_handle.controller.resume(sibling_handle.run_id, f"hitl:{pending_id}")
     all_resolved = all(
         v["response"] is not None
         for v in runtime.pending_hitl.values()

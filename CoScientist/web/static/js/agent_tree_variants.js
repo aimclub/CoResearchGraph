@@ -77,6 +77,7 @@
 
   function layout(workflow, design = 'workshop', { width = 1200 } = {}) {
     const spec = designs[design], nodes = [], edges = [], byId = new Map(), roots = [];
+    let traversalOrder = 0;
     const instances = new Map(workflow.instances.map(item => [item.id, item]));
     const ownerId = workflow.configuration?.ownerInstanceId;
     function dimensions(id, agentId) {
@@ -92,7 +93,7 @@
     };
     function visit(block, parent = null) {
       if (block.type === 'agent') {
-        const node = { ...instances.get(block.id), id: block.id, agentId: block.agentId,
+        const node = { ...instances.get(block.id), id: block.id, agentId: block.agentId, traversalOrder: traversalOrder++,
           parent, children: [], bodyKind: block.body?.type, ...dimensions(block.id, block.agentId) };
         nodes.push(node); byId.set(node.id, node);
         if (parent) byId.get(parent).children.push(node.id); else roots.push(node.id);
@@ -133,7 +134,10 @@
     // Keep reports adjacent on the left and settings on the right. This avoids
     // routing a report link across the settings card or the entire experiment.
     rows.forEach(row => {
-      row.sort((a, b) => (byId.get(a.parent)?.x || 0) - (byId.get(b.parent)?.x || 0));
+      row.sort((a, b) => {
+        const parentOrder = node => byId.get(node.parent)?.visualOrder ?? node.traversalOrder;
+        return parentOrder(a) - parentOrder(b) || a.traversalOrder - b.traversalOrder;
+      });
       if (owner && row.includes(owner)) {
         const reports = roots.slice(ownerRoot + 1).map(id => byId.get(id)).filter(n => row.includes(n)).reverse();
         const config = byId.get(`${owner.id}/configuration`);
@@ -153,6 +157,7 @@
           const begin = row.findIndex(n => n.parent === parent); row.splice(begin, children.length, ...rest);
         });
       }
+      row.forEach((node, index) => { node.visualOrder = index; });
       // Keep sequential children together. Unordered calls may wrap; the
       // frame explains membership, not a chronology between visual rows.
       const units = [];
@@ -162,6 +167,10 @@
           || (node.agentId === '__mas_session__' && last.at(-1) === owner))) last.push(node);
         else units.push([node]);
       });
+      if (design === 'atlas') {
+        packedRows.push(row);
+        return;
+      }
       let packed = [];
       units.forEach(unit => {
         if (packed.length && rowWidth([...packed, ...unit]) > available) { packedRows.push(packed); packed = []; }

@@ -92,6 +92,12 @@ def _install_proxy_model_strip() -> None:
     original = _ProxyClient.acompletion
 
     async def acompletion(self, model, messages, tools, **kwargs):  # noqa: ANN001
+        from CoScientist.execution_control import before_model_attempt
+        # OpenAI's default transport retries would otherwise bypass the shared
+        # quota. This proxy sends one HTTP attempt per reservation.
+        if hasattr(self, "_client"):
+            self._client.max_retries = 0
+        await before_model_attempt("fedot_proxy", metadata={"model": model})
         stripped = strip_litellm_provider_prefix(model)
         if stripped != model:
             _log.debug("PatchedMAS: proxy model %r → %r", model, stripped)
@@ -134,7 +140,46 @@ def ensure_fedot_openai_proxy_compat() -> None:
     Safe to call from vanilla ``MAS`` paths (clean arm) as well as ``PatchedMAS``.
     """
     _install_proxy_model_strip()
+    _install_fedot_budget_client()
     _install_parse_llm_output_unwrap()
+
+
+def _install_fedot_budget_client() -> None:
+    """Cover FEDOT's non-proxy LiteLLM clients without counting proxy twice."""
+    import importlib
+    import fedotmas.common.llm as llm_module
+
+    original = llm_module.make_llm
+    if getattr(original, "_coscientist_budgeted", False):
+        return
+
+    class BudgetedClient:
+        def __init__(self, client):
+            self.client = client
+
+        def __getattr__(self, name):
+            return getattr(self.client, name)
+
+        async def acompletion(self, *args, **kwargs):
+            from CoScientist.execution_control import before_model_attempt
+            await before_model_attempt("fedot_litellm", metadata={"model": kwargs.get("model")})
+            kwargs["num_retries"] = 0
+            return await self.client.acompletion(*args, **kwargs)
+
+    def make_llm(cfg):
+        model = original(cfg)
+        if not isinstance(model.llm_client, _ProxyClient):
+            model.llm_client = BudgetedClient(model.llm_client)
+        return model
+
+    make_llm._coscientist_budgeted = True
+    llm_module.make_llm = make_llm
+    # These modules import the factory by name; changing the source module
+    # alone leaves their existing aliases outside the budget boundary.
+    for module_name in ("fedotmas.control._controller", "fedotmas.maw.builder", "fedotmas.meta._adk_runner"):
+        module = importlib.import_module(module_name)
+        if getattr(module, "make_llm", None) is original:
+            module.make_llm = make_llm
 
 
 # Configurable guard against injecting an unbounded task into every worker.

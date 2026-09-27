@@ -267,8 +267,9 @@ def test_planner_context_reads_numbered_frame_operations():
     build_experiment_context(ctx)
     ops = ctx.state["experiment_context"]["operations"]
     ids = [row["operation_id"] for row in ops]
-    assert ids == ["OP-1", "OP-2", "OP-3", "OP-4", "OP-5", "OP-6"]
-    assert "Fit six predictive models" in ops[3]["statement"]
+    assert ids == ["OP-2", "OP-3", "OP-4", "OP-5", "OP-6"]
+    assert ctx.state["experiment_context"]["external_literature_operations"][0]["operation_id"] == "OP-1"
+    assert "Fit six predictive models" in ops[2]["statement"]
     assert not any("Conclusions and limitations" in row["statement"] for row in ops)
 
 
@@ -332,6 +333,23 @@ def test_research_graph_snapshot_reads_typed_nodes(monkeypatch):
     assert snap["data_refs"][0]["source_ref"] == "s3://bucket/data.csv"
     assert snap["prior_evidence"][0]["node_id"] == "E1"
     assert snap["rendered"] == "rendered overview"
+
+
+def test_generated_data_is_an_input_but_literature_prose_is_not_a_dataset(monkeypatch):
+    from CoScientist.experiments.context.builder import research_graph_snapshot
+
+    nodes = [
+        {"id": "E1", "type": "Evidence", "status": "obtained",
+         "attrs": {"content": "Paper mentions compound structures", "source_ref": "doi:paper"}},
+        {"id": "GD1", "type": "GeneratedData", "status": "created",
+         "attrs": {"path": "cos-artifact:dataset.csv", "schema": {"columns": ["name", "structure"]}}},
+    ]
+    ctx = _snapshot_ctx(monkeypatch, _FakeSnapshotGraph(nodes))
+    snapshot = research_graph_snapshot(ctx)
+    assert len(snapshot["data_refs"]) == 1
+    assert snapshot["data_refs"][0]["node_id"] == "GD1"
+    assert snapshot["data_refs"][0]["validation_status"] == "unverified"
+    assert {row["node_id"] for row in snapshot["prior_evidence"]} == {"E1", "GD1"}
 
 
 def test_successor_context_reuses_predecessor_evidence_with_provenance(monkeypatch):
@@ -479,7 +497,8 @@ def test_the_planner_context_carries_medical_tools_only_with_the_agent(monkeypat
     on = build()
     assert on["experiment_context"]["route_medical"] is True
     assert on["experiment_context"]["available_medical_capabilities"]
-    assert "search_pubmed" in on["experiment_planner_context"]
+    assert "get_pico" in on["experiment_planner_context"]
+    assert "search_pubmed" not in on["experiment_planner_context"]
 
     monkeypatch.setattr(get_settings().web, "medical_agent_enabled", False)
     off = build()

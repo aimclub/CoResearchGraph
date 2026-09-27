@@ -1368,7 +1368,7 @@
 
       const notes = [];
       if (locked) {
-        notes.push(`<span class="material-symbols-outlined text-sm" aria-hidden="true">lock</span>${escHtml(t(`settings.agents.lock.${agent.lock}`))}`
+        notes.push(`<span class="material-symbols-outlined text-sm" aria-hidden="true">lock</span>${escHtml(agent.controlReason || t(`settings.agents.lock.${agent.lock}`))}`
           + (agent.lock === 'startMode'
             ? ` <button type="button" data-action="section" data-section="research" class="underline hover:text-on-surface">${escHtml(t('settings.goto'))}</button>`
             : ''));

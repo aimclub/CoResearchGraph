@@ -7,9 +7,8 @@
   <link rel="stylesheet" href="/static/css/fonts.css">
   <link rel="stylesheet" href="/static/css/agent_tree.css">
   <link rel="stylesheet" href="/static/css/agent_tree_workshop.css">
-  <script src="/static/elk.bundled.js"></script>
 </head>
-<body data-design="classic">
+<body data-design="workshop">
   <header class="topbar">
     <a class="brand" href="/" aria-label="CoScientist">C</a>
     <div class="heading">
@@ -24,18 +23,13 @@
   <nav class="design-bar" aria-label="Варианты оформления графа">
     <span class="design-label">Вид схемы</span>
     <div class="design-options" role="group" aria-label="Выберите оформление">
-      <button type="button" data-design="classic" aria-controls="network" aria-pressed="true">Текущий</button>
-      <button type="button" data-design="studio" aria-controls="network" aria-pressed="false">Студия</button>
       <button type="button" data-design="atlas" aria-controls="network" aria-pressed="false">Атлас</button>
-      <button type="button" data-design="blueprint" aria-controls="network" aria-pressed="false">Чертёж</button>
-      <button type="button" data-design="constellation" aria-controls="network" aria-pressed="false">Созвездие</button>
-      <button type="button" data-design="architecture" aria-controls="network" aria-pressed="false">Архитектура</button>
       <button type="button" data-design="workshop" aria-controls="network" aria-pressed="false">Мастерская</button>
     </div>
-    <span id="design-description" class="design-description">Исходные карточки и раскладка</span>
+    <span id="design-description" class="design-description">Соберите свою систему исследования</span>
   </nav>
 
-  <main>
+  <main class="panel-closed">
     <section class="canvas-wrap" aria-label="Схема работы агентов">
       <div class="workshop-paper" aria-hidden="true">
         <span class="paper-tape tape-left"></span><span class="paper-tape tape-right"></span>
@@ -45,10 +39,6 @@
         <span class="paper-scale">0 ├─────┼─────┼─────┤<br>Исследование как конструктор</span>
       </div>
       <svg id="network" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Схема работы агентов. Выберите карточку для подробностей." tabindex="0"></svg>
-      <div class="blueprint-sheet" aria-hidden="true">
-        <div class="sheet-coordinates">А <span>Б</span> <span>В</span> <span>Г</span> Д</div>
-        <div class="sheet-caption"><span>МАС / АРХИТЕКТУРА ИССЛЕДОВАНИЯ</span><span>СОСТАВ СЕССИИ · ЛИСТ 01</span></div>
-      </div>
       <section id="agent-menu" class="agent-menu hidden" aria-label="Состав архитектуры">
         <button id="agent-menu-toggle" class="agent-menu-toggle" type="button" aria-expanded="false" aria-controls="agent-menu-content">
           <span class="menu-symbol" aria-hidden="true">⊞</span><span id="agent-menu-title">Состав архитектуры</span><span id="agent-menu-count"></span><span class="menu-chevron" aria-hidden="true">⌄</span>
@@ -96,7 +86,6 @@
     </div>
   </div>
 
-  <script src="/static/js/agent_tree_layout.js"></script>
   <script src="/static/js/agent_tree_variants.js"></script>
   <script src="/static/js/agent_tree_menu.js"></script>
   <script src="/static/js/agent_tree_workshop.js"></script>

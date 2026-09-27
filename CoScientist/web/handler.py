@@ -38,6 +38,7 @@ def hitl_response_event(request_id: str, response_data: dict) -> dict:
         "action": response_data.get("action"),
         "approved": response_data.get("approved"),
         "selected_option": response_data.get("selected_option"),
+        "selected_task_ids": response_data.get("selected_task_ids") or [],
         "instructions": response_data.get("instructions"),
         "free_input": response_data.get("free_input"),
         "form_values": response_data.get("form_values"),
@@ -320,6 +321,7 @@ class WebHITLHandler(AbstractHITLHandler):
             action=action,
             approved=response_data.get("approved", False),
             selected_option=response_data.get("selected_option"),
+            selected_task_ids=response_data.get("selected_task_ids") or [],
             instructions=response_data.get("instructions"),
             free_input=response_data.get("free_input"),
             form_values=response_data.get("form_values"),
@@ -332,6 +334,13 @@ class WebHITLHandler(AbstractHITLHandler):
     async def handle_request(self, request: HITLRequest) -> HITLResponse:
         session_key = self._request_session_key(request)
         request_id = self._request_id(request, session_key)
+        from CoScientist.execution_control import current_run
+        run_handle = current_run()
+        if run_handle is not None:
+            prior = next((row for row in reversed(run_handle.controller.journal_entries(run_handle.run_id))
+                          if row.get("event") == "hitl_decision" and row.get("action_id") == request_id), None)
+            if prior is not None:
+                return self._response(prior.get("data") or {})
         public_context = dict(request.context or {})
         public_context.pop("_session", None)
 
@@ -402,6 +411,7 @@ class WebHITLHandler(AbstractHITLHandler):
             "payload": payload,
             "created": time.time(),
             "session_key": session_key,
+            "run_handle": run_handle,
             # Auto-approve moment (loop time); None waits for the human. A hold
             # from the browser clears it mid-wait (see hold_request).
             "deadline": loop.time() + timeout_sec
@@ -424,6 +434,13 @@ class WebHITLHandler(AbstractHITLHandler):
             # reference too, or a reopened session would show a card with no
             # way in.
             await self._attach_document(payload, session_key)
+            if run_handle is not None:
+                # Persist the exact approval independently of the response
+                # Future, which cannot survive a process restart.
+                run_handle.controller.request_pause(run_handle.run_id, f"hitl:{request_id}",
+                    pending_decision={"payload": payload})
+                run_handle.controller.journal(run_handle.run_id, "hitl_requested",
+                                              action_id=request_id, data=payload)
             self._record(session_key, payload)
             if self._checkpoint is not None and session_key is not None:
                 try:
@@ -464,11 +481,22 @@ class WebHITLHandler(AbstractHITLHandler):
         try:
             response_data = await self._await_response(entry)
         except asyncio.TimeoutError:
-            response_data = resolve_timeout(
-                reason=("experiment_review_timeout"
-                        if self._is_experiment_review(request)
-                        else "review_window_elapsed")
-            ).model_dump(mode="json")
+            if run_handle is not None:
+                # A controlled research run stays resumable after an expired
+                # review window. Silence is neither rejection nor approval.
+                entry["deadline"] = None
+                timeout_event = {"type": "hitl_timeout", "request_id": request_id,
+                                 "agent_name": request.agent_name, "paused": True,
+                                 "timestamp": datetime.now().isoformat()}
+                self._record(session_key, timeout_event)
+                await self._broadcast(timeout_event, session_key)
+                response_data = await asyncio.shield(future)
+            else:
+                response_data = resolve_timeout(
+                    reason=("experiment_review_timeout"
+                            if self._is_experiment_review(request)
+                            else "review_window_elapsed")
+                ).model_dump(mode="json")
             # Wake any coalesced invocation with the same fail-closed result.
             if not future.done():
                 future.set_result(response_data)
@@ -483,8 +511,9 @@ class WebHITLHandler(AbstractHITLHandler):
                 "paused": True,
                 "timestamp": datetime.now().isoformat(),
             }
-            self._record(session_key, timeout_event)
-            await self._broadcast(timeout_event, session_key)
+            if run_handle is None:
+                self._record(session_key, timeout_event)
+                await self._broadcast(timeout_event, session_key)
         except asyncio.CancelledError:
             cancelled_event = {
                 "type": "hitl_cancelled",
@@ -579,6 +608,11 @@ class WebHITLHandler(AbstractHITLHandler):
             return False
         entry = self._pending.get(request_id)
         if entry and not entry["future"].done():
+            handle = entry.get("run_handle")
+            if handle is not None:
+                handle.controller.journal(handle.run_id, "hitl_decision",
+                                          action_id=request_id, data=response_data)
+                handle.controller.resume(handle.run_id, f"hitl:{request_id}")
             entry["future"].set_result(response_data)
             self._record(entry.get("session_key"), hitl_response_event(request_id, response_data))
             return True

@@ -51,7 +51,7 @@ BASKET_FULL = (
     "     Execute all three stages in sequence without stopping or skipping:\n"
     "     1. ResearchAgent — review literature, known ligands/chemistry, and background data.\n"
     "     2. HypothesesAgent — formulate and commit scientific hypotheses into the research graph.\n"
-    "     3. ExperimentModuleAgent — immediately call ExperimentModuleAgent after HypothesesAgent finishes to plan and execute the computational experiment stage. Pass the full goal and context to ExperimentModuleAgent. Do NOT finish your turn or provide a final answer before ExperimentModuleAgent runs!"
+    "     3. ExperimentModuleAgent — immediately call ExperimentModuleAgent after HypothesesAgent finishes to plan and execute the computational experiment stage. Pass the full goal and context to ExperimentModuleAgent, including collected literature evidence, data refs and missing inputs. Literature collection stays with ResearchAgent outside the module; never ask the module to repeat it or substitute Coder for literature search. Do NOT finish your turn or provide a final answer before ExperimentModuleAgent runs!"
 )
 BASKET_LITERATURE = (
     "   - Literature search / paper reviews / scientific knowledge questions (no experiment requested) →\n"
@@ -242,6 +242,18 @@ def enforce_pipeline_scope_hops(callback_context, llm_response=None):
     scope = getter(STATE_KEY)
     if not isinstance(scope, dict):
         return None
+    from CoScientist.execution_control import current_run
+    from CoScientist.experiments.outcome.reconciliation import (
+        DispositionKind,
+        reconcile_scientific_outcome,
+    )
+
+    handle = current_run()
+    disposition = reconcile_scientific_outcome(
+        state, current_run_id=handle.run_id if handle else None,
+    )
+    if disposition.kind is DispositionKind.COMPLETED_LIMITED:
+        return None
     nxt = next_named_agent(scope, getter(DONE_KEY) or [])
     if not nxt:
         return None
@@ -258,13 +270,57 @@ def enforce_pipeline_scope_hops(callback_context, llm_response=None):
 
 
 def mark_pipeline_scope_lane(tool, args, tool_context, tool_response=None):
-    """after_tool: record that a named HITL lane AgentTool has returned."""
+    """after_tool: close a named lane only after an accepted typed outcome."""
     name = getattr(tool, "name", "") or ""
     if name not in {agent for _, agent in LANES}:
         return None
     state = getattr(tool_context, "state", None)
     getter = getattr(state, "get", None) if state is not None else None
-    if not callable(getter) or not isinstance(getter(STATE_KEY), dict):
+    if not callable(getter):
+        return None
+
+    # Result HITL may request one explicit, targeted redo.  The first module
+    # return must therefore not close the experiments lane.  Consume the
+    # request here, at the actual AgentTool boundary, and leave a one-shot
+    # marker for the orchestrator callback.  A second return clears it even if
+    # that AgentTool failed before reaching another review, preventing a loop.
+    redo_key = "experiment_targeted_redo_pending"
+    if name == "ExperimentModuleAgent":
+        outcome = getter("experiment_module_outcome")
+        targeted = (
+            isinstance(outcome, dict)
+            and outcome.get("resume_required") is True
+            and outcome.get("reason") == "targeted_redo_requested"
+        )
+        if targeted:
+            consumed = dict(outcome)
+            consumed["resume_required"] = False
+            consumed["resume_dispatched"] = True
+            state["experiment_module_outcome"] = consumed
+            state[redo_key] = {
+                "selected_task_ids": list(consumed.get("selected_task_ids") or []),
+                "affected_task_ids": list(consumed.get("affected_task_ids") or []),
+            }
+            done = [item for item in list(getter(DONE_KEY) or []) if item != name]
+            state[DONE_KEY] = done
+            return None
+        if getter(redo_key):
+            state[redo_key] = None
+
+        from CoScientist.experiments.outcome.reconciliation import (
+            accepted_stage_outcome,
+        )
+
+        if not accepted_stage_outcome(state, name):
+            # A normal AgentTool return can mean plan pause, unresolved result
+            # review, or an operational failure.  None is an accepted stage
+            # outcome, so a stale DONE marker must not authorize completion.
+            state[DONE_KEY] = [
+                item for item in list(getter(DONE_KEY) or []) if item != name
+            ]
+            return None
+
+    if not isinstance(getter(STATE_KEY), dict):
         return None
     done = list(getter(DONE_KEY) or [])
     if name not in done:

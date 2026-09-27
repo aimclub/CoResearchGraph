@@ -163,8 +163,8 @@ def test_the_modules_own_methods_survive_the_overlay():
     assert "coalesce_experiment_module_calls" in orch.callbacks.after_model
     assert "suppress_experiment_module_after_completed" in orch.callbacks.after_model
     assert "ask_pipeline_scope" in orch.callbacks.before_agent
-    # Target contract: no keyword-rewrite callbacks. Research-vs-compute is
-    # decided by the module's inventory, never by matching words in the request.
+    # The orchestrator must not rewrite ResearchAgent calls into experiments.
+    # Literature belongs to the parent; inventory selects computational routes.
     assert "redirect_research_to_experiment_module" not in orch.callbacks.after_model
     assert "normalize_experiment_module_brief" not in orch.callbacks.after_model
     assert "inject_upstream_artifacts" not in orch.callbacks.before_agent
@@ -199,16 +199,13 @@ def test_the_modules_own_methods_survive_the_overlay():
     assert executor.callbacks.before_agent[0] == "skip_when_experiment_stage_complete"
     assert executor.callbacks.before_tool == ["guard_experiment_route"]
     assert executor.callbacks.after_tool == ["mark_experiment_route_returned"]
-    # ADK stops an after_model chain at the first callback that returns a
-    # response, so this order is the contract, not a preference.
-    assert executor.callbacks.after_model == [
-        "enforce_pending_record_result",
-        "rewrite_mismatched_control_action",
-        "enforce_continue_until_reporting",
-    ]
+    # One selector owns all executor transitions.  Independent rewriters can
+    # otherwise drive one another back into fallback/read loops.
+    assert executor.callbacks.after_model == ["enforce_pending_record_result"]
     assert "CoderAgent" in executor.subordinates
     assert "McpBuilderAgent" in executor.subordinates
-    assert "ResearchAgent" in executor.subordinates
+    assert "ResearchAgent" not in executor.subordinates
+    assert "ResearchAgent" in config.agent("OrchestratorAgent").subordinates
     assert "MedicalAgent" in executor.subordinates
 
     fedot = config.agent("FedotAgent")
@@ -278,6 +275,14 @@ def test_the_experiment_profile_builds():
     config = load_config(resolve_config_path("experiments"))
     system = build_system(config)
     module = system.agent("ExperimentModuleAgent")
+    from CoScientist.experiments.scope import skip_literature_only_experiment
+
+    callbacks = module.before_agent_callback
+    assert skip_literature_only_experiment in (callbacks if isinstance(callbacks, list) else [callbacks])
+    for name, owns_research in (("OrchestratorAgent", True), ("ExperimentExecutorAgent", False)):
+        attached = {getattr(getattr(tool, "agent", None), "name", None)
+                    for tool in system.agent(name).tools}
+        assert ("ResearchAgent" in attached) is owns_research
     assert [child.name for child in module.sub_agents] == [
         "ToolPreparerAgent",
         "ExperimentPlannerAgent",
@@ -290,6 +295,11 @@ def test_the_experiment_profile_builds():
         assert isinstance(review_agent, ExperimentReviewSessionAgent)
         assert review_agent.hitl_handler is not None  # fail-closed even headless
     assert system.agent("ExperimentPlannerAgent").include_contents == "none"
+    from CoScientist.experiments.context.builder import build_experiment_context
+    from CoScientist.experiments.plan_policy import check_experiment_plan_capacity
+
+    callbacks = system.agent("ExperimentPlannerAgent").before_agent_callback
+    assert callbacks.index(build_experiment_context) < callbacks.index(check_experiment_plan_capacity)
 
 
 def test_planner_and_coder_prompts_cover_multi_h_and_anti_fabrication():
@@ -326,7 +336,7 @@ def test_planner_and_coder_prompts_cover_multi_h_and_anti_fabrication():
     assert "ANTI-FABRICATION" in coder
     assert "hardcoded" in coder.lower()
     assert "simulated/hardcoded" in executor.lower() or "fabricated" in executor.lower()
-    assert "phase is still" in executor and "reporting" in executor
+    assert "current phase" in executor and "reporting" in executor
 
 
 def test_research_prompt_requires_both_literature_tools():
@@ -501,7 +511,8 @@ def test_the_planner_is_offered_the_medical_route_only_with_its_agent(monkeypatc
 
     config = load_config(resolve_config_path("experiments"))
     on = _planner_prompt(config)
-    assert "research|medical" in on
+    assert "alembic_build|medical" in on
+    assert "|research" not in on
     assert "→ medical, mcp_servers=[]" in on
 
     monkeypatch.setattr(get_settings().web, "medical_agent_enabled", False)
@@ -512,7 +523,7 @@ def test_the_planner_is_offered_the_medical_route_only_with_its_agent(monkeypatc
     # Rule 3 stays, so the rules cited by number still line up.
     assert "3) PubMed/PICO/DICOM asks: there is no clinical route in this run." in off
     # Falls through to Alembic (4) before coder (5), as with the route on.
-    assert "anything else falls through to routes 4-5" in off
+    assert "other computational work falls through to routes 4-5" in off
     assert "<<" not in off
 
 

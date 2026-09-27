@@ -601,6 +601,170 @@ def inject_dataset_context(callback_context: CallbackContext):
 # Recognisable token the orchestrator prompt / post-critic key off to re-route.
 NO_MATCHING_TOOL_TOKEN = "NO_MATCHING_TOOL"
 
+_TOOL_FAILURE_STATUSES = frozenset({
+    "blocked", "error", "failed", "failure", "refused", "rejected",
+})
+_TOOL_PENDING_STATUSES = frozenset({
+    "accepted", "in_progress", "pending", "queued", "running", "submitted",
+})
+_TOOL_SUCCESS_STATUSES = frozenset({"complete", "completed", "done", "ok", "success"})
+
+
+def _tool_content_payload(content: Any) -> tuple[Any, str]:
+    """Extract MCP ``content[].text`` without assuming one SDK representation."""
+    if not isinstance(content, list):
+        return None, ""
+    texts: List[str] = []
+    for item in content:
+        if isinstance(item, dict):
+            text = item.get("text")
+        else:
+            text = getattr(item, "text", None)
+        if isinstance(text, str) and text.strip():
+            texts.append(text.strip())
+    joined = "\n".join(texts)
+    if len(texts) == 1:
+        try:
+            return json.loads(texts[0]), joined
+        except (TypeError, ValueError):
+            pass
+    return None, joined
+
+
+def normalize_tool_observation(response: Any) -> Dict[str, Any]:
+    """Normalize the MCP/ADK result shapes used by experiment routing.
+
+    This is an observation, not a scientific verdict.  It identifies explicit
+    transport/tool failures, pending jobs and the deterministic
+    ``NO_MATCHING_TOOL`` signal while preserving structured payloads.  Plain
+    prose remains ``unknown`` so a callback never invents success from tone.
+    """
+    if hasattr(response, "model_dump"):
+        try:
+            response = response.model_dump(by_alias=True)
+        except Exception:  # noqa: BLE001 - opaque SDK result, inspect attributes below
+            pass
+    if not isinstance(response, dict) and any(
+        hasattr(response, name) for name in ("structuredContent", "content", "isError")
+    ):
+        response = {
+            "structuredContent": getattr(response, "structuredContent", None),
+            "content": getattr(response, "content", None),
+            "isError": getattr(response, "isError", False),
+        }
+
+    if not isinstance(response, dict):
+        message = str(response or "").strip()
+        no_match = NO_MATCHING_TOOL_TOKEN in message.upper()
+        return {
+            "status": "failure" if no_match else "unknown",
+            "is_error": no_match,
+            "error_code": "no_matching_tool" if no_match else None,
+            "no_matching_tool": no_match,
+            "pending": False,
+            "job_id": None,
+            "message": message[:4000],
+            "data": None,
+        }
+
+    structured = response.get("structuredContent")
+    if structured is None:
+        structured = response.get("structured_content")
+    parsed_content, content_text = _tool_content_payload(response.get("content"))
+    data = structured if structured is not None else parsed_content
+    if data is None:
+        # An unwrapped dict is itself useful structured output.  Wrapper keys
+        # are removed so callers do not materialise protocol metadata as data.
+        wrapper_keys = {
+            "content", "structuredContent", "structured_content", "isError", "is_error",
+            "status", "message", "error", "error_code", "error_message", "ok",
+        }
+        remainder = {k: v for k, v in response.items() if k not in wrapper_keys}
+        data = remainder or None
+
+    raw_status = str(response.get("status") or "").strip().lower().replace("-", "_")
+    error_value = response.get("error")
+    explicit_error = bool(response.get("isError") or response.get("is_error"))
+    if error_value not in (None, False, "", [], {}):
+        explicit_error = True
+    if raw_status in _TOOL_FAILURE_STATUSES:
+        explicit_error = True
+
+    message_parts: List[str] = []
+    for value in (
+        response.get("message"), response.get("error_message"), error_value, content_text,
+    ):
+        if value not in (None, ""):
+            message_parts.append(str(value))
+    message = "\n".join(message_parts).strip()
+    search_blob = " ".join((message, str(data or ""), raw_status)).upper()
+    no_match = NO_MATCHING_TOOL_TOKEN in search_blob
+    if no_match:
+        explicit_error = True
+
+    pending = raw_status in _TOOL_PENDING_STATUSES
+    if explicit_error:
+        status = "failure"
+        pending = False
+    elif pending:
+        status = "pending"
+    elif raw_status in _TOOL_SUCCESS_STATUSES or response.get("ok") is True:
+        status = "success"
+    else:
+        status = "unknown"
+
+    job_id = response.get("job_id") or response.get("jobId")
+    if job_id is None and isinstance(data, dict):
+        job_id = data.get("job_id") or data.get("jobId")
+    error_code = response.get("error_code")
+    if no_match:
+        error_code = "no_matching_tool"
+    elif explicit_error and not error_code:
+        error_code = raw_status if raw_status in _TOOL_FAILURE_STATUSES else "tool_error"
+    return {
+        "status": status,
+        "raw_status": raw_status or None,
+        "is_error": explicit_error,
+        "error_code": error_code,
+        "no_matching_tool": no_match,
+        "pending": pending,
+        "job_id": str(job_id) if job_id not in (None, "") else None,
+        "message": message[:4000],
+        "data": data,
+    }
+
+
+def record_experiment_tool_observation(
+    tool: BaseTool,
+    args: Dict[str, Any],
+    tool_context: ToolContext,
+    tool_response: Any,
+) -> None:
+    """Keep a bounded, machine-readable trace of route MCP outcomes."""
+    state = getattr(tool_context, "state", None)
+    if not state or not state.get("experiment_runtime"):
+        return None
+    observation = normalize_tool_observation(tool_response)
+    row = {
+        key: value for key, value in observation.items()
+        if key != "data" and value not in (None, "")
+    }
+    row["tool"] = str(getattr(tool, "name", "") or "")
+    row["argument_names"] = sorted(str(key) for key in (args or {}))
+    history = list(state.get("experiment_tool_observations") or [])
+    history.append(row)
+    state["experiment_tool_observations"] = history[-50:]
+    try:
+        from CoScientist.experiments.runtime.state_machine import active_attempt
+
+        _, _, attempt = active_attempt(state)
+        if attempt.get("status") in {None, "running"}:
+            attempt["family_tool_called"] = True
+            attempt["last_tool_observation"] = row
+    except Exception:  # noqa: BLE001 - observation must not alter tool delivery
+        pass
+    return None
+
 
 def rerank_fallback_active(state: Any) -> bool:
     """True when the executor's tool set must go to the FEDOT.MAS fallback.
@@ -965,6 +1129,7 @@ async def capture_mcp_artifacts(
     drifted: the plugin wrote the durable on-disk index and this one did not, so
     a sub-agent's figures were lost on restart. One body now, two thin callers.
     """
+    record_experiment_tool_observation(tool, args, tool_context, tool_response)
     try:
         from CoScientist.reporting.collect import find_artifact_urls
         urls = find_artifact_urls(tool_response)

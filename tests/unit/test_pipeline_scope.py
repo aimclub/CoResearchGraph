@@ -398,3 +398,45 @@ def test_enforce_hops_allows_retrieve_then_forces_em_after_lane_done():
     hop_ctx.state["orchestrator_root_goal"] = "run docking"
     out = enforce_pipeline_scope_hops(hop_ctx, _llm(text="research done"))
     assert out.content.parts[0].function_call.name == "ExperimentModuleAgent"
+
+
+def test_targeted_experiment_redo_reopens_lane_exactly_once():
+    from CoScientist.hitl.pipeline_scope import DONE_KEY, mark_pipeline_scope_lane
+
+    scope = pack_scope({FORM_BLOCK: {"experiments": "yes"}})
+    state = {
+        STATE_KEY: scope,
+        DONE_KEY: ["ExperimentModuleAgent"],
+        "experiment_module_outcome": {
+            "resume_required": True,
+            "reason": "targeted_redo_requested",
+            "selected_task_ids": ["EXP-2"],
+            "affected_task_ids": ["EXP-2", "EXP-3"],
+        },
+    }
+    context = SimpleNamespace(state=state)
+    tool = SimpleNamespace(name="ExperimentModuleAgent")
+
+    mark_pipeline_scope_lane(tool, {}, context)
+
+    assert "ExperimentModuleAgent" not in state[DONE_KEY]
+    assert state["experiment_targeted_redo_pending"] == {
+        "selected_task_ids": ["EXP-2"],
+        "affected_task_ids": ["EXP-2", "EXP-3"],
+    }
+    assert state["experiment_module_outcome"]["resume_required"] is False
+    assert state["experiment_module_outcome"]["resume_dispatched"] is True
+
+    # The return from that explicit redo consumes the one-shot marker and
+    # closes the lane only after result review accepted the updated stage;
+    # stale review state or a failed AgentTool return cannot mark it DONE.
+    state["experiment_runtime"] = {"phase": "completed"}
+    state["experiment_module_outcome"] = {
+        "status": "completed",
+        "stage": "result_review",
+        "reason": "result_approved",
+        "accepted": True,
+    }
+    mark_pipeline_scope_lane(tool, {}, context)
+    assert state["experiment_targeted_redo_pending"] is None
+    assert state[DONE_KEY] == ["ExperimentModuleAgent"]

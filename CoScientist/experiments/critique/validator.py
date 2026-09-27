@@ -11,7 +11,6 @@ from pydantic import ValidationError
 from CoScientist.config.settings import ExperimentsSettings
 from CoScientist.experiments.capabilities.inventory import (
     FAMILY_MEDICAL,
-    FAMILY_RESEARCH,
     declared_family_capabilities,
     index_inventory_tools,
     inventory_pairs,
@@ -19,6 +18,10 @@ from CoScientist.experiments.capabilities.inventory import (
     match_named_inventory_tool,
 )
 from CoScientist.experiments.critique.coverage import task_coverage_blob as _task_coverage_blob
+from CoScientist.experiments.capabilities.contracts import bound_dataset_mismatches, dataset_mismatch
+from CoScientist.experiments.scope import (
+    experiment_capabilities, literature_task_reason, operation_rows, partition_operations,
+)
 from CoScientist.experiments.schemas import (
     CodeRequirement,
     CritiqueIssue,
@@ -29,7 +32,7 @@ from CoScientist.experiments.schemas import (
 )
 
 _MCP = {ExecutionRoute.FEDOT_MAS, ExecutionRoute.REACT_TOOLS}
-_EVIDENCE_AGENTS = {ExecutionRoute.RESEARCH, ExecutionRoute.MEDICAL}
+_EVIDENCE_AGENTS = {ExecutionRoute.MEDICAL}
 _ALT = re.compile(r"\b(otherwise|else|либо|иначе|alternativ)\b|/", re.I)
 _NARRATIVE_REPORT = re.compile(
     r"(?x)"
@@ -286,10 +289,9 @@ def critique_plan(
     take those routes (the review agent passes them); None asks the YAML and
     switches as they are now.
     """
-    from CoScientist.context_init.operations import normalize_operation_rows
-
     issues: list[CritiqueIssue] = []
-    ops = normalize_operation_rows(list(operations or []))
+    all_operations = operation_rows(list(operations or []))
+    ops, _external_literature = partition_operations(all_operations)
     ops_index = {
         str(op["operation_id"]).strip().upper(): op for op in ops if op.get("operation_id")
     }
@@ -341,7 +343,7 @@ def critique_plan(
         medical_route_available,
     )
 
-    enabled = {ExecutionRoute.REACT_TOOLS, ExecutionRoute.CODER, ExecutionRoute.RESEARCH}
+    enabled = {ExecutionRoute.REACT_TOOLS, ExecutionRoute.CODER}
     # The same answers start_task gets (switch AND agent attached): the bare
     # switches approved fedot_mas plans for an agent the YAML had removed, and
     # medical plans for an agent MEDICAL__ENABLED had taken out of the tree.
@@ -353,14 +355,14 @@ def critique_plan(
         medical_on = medical_route_available()
     if medical_on:
         enabled.add(ExecutionRoute.MEDICAL)
-    families = {FAMILY_RESEARCH} | ({FAMILY_MEDICAL} if medical_on else set())
+    families = {FAMILY_MEDICAL} if medical_on else set()
     if settings.route_alembic:
         enabled.add(ExecutionRoute.ALEMBIC_BUILD)
 
-    inv_list = list(available_tools)
+    inv_list = experiment_capabilities(available_tools)
     inventory = inventory_pairs(inv_list)
     by_tool_caps = index_inventory_tools(inv_list)
-    completeness = list(preferred_tools) if preferred_tools is not None else list(available_tools)
+    completeness = experiment_capabilities(preferred_tools) if preferred_tools is not None else inv_list
 
     if settings.require_task_design:
         for task in plan.tasks:
@@ -447,6 +449,12 @@ def critique_plan(
 
     for task in plan.tasks:
         tid = task.id
+        if reason := literature_task_reason(task, all_operations):
+            fe(tid, "blocker", f"{tid}: literature_outside_experiment_module", reason)
+            continue
+        if task.route in _MCP and (conflicts := bound_dataset_mismatches(task, inv_list)):
+            fe(tid, "blocker", f"{tid}: tool_dataset_scope_mismatch: {conflicts}",
+               "Use an exact compatible tool or Coder for caller-supplied data; do not substitute another fixed dataset.")
         code_requirement = task.code_assessment.requirement
         if _is_narrative_report_task(task):
             fe(
@@ -492,7 +500,7 @@ def critique_plan(
             fe(tid, "blocker", "Route 'medical' is switched off (MedicalAgent is not in this run).",
                "Cover it with route=coder, or alembic_build / react_tools when one fits."
                if research_forbidden else
-               "Cover the literature part with route=research and a research family tool, "
+               "Return the literature part to the orchestrator's ResearchAgent, "
                "and the rest (PICO, DICOM) with route=coder, or alembic_build / react_tools "
                "when one fits.")
         elif task.route not in enabled:
@@ -538,22 +546,6 @@ def critique_plan(
                     "List the existing CLI/function/script that will be executed or wrapped.",
                 )
 
-        if research_forbidden and task.route == ExecutionRoute.RESEARCH:
-            fe(
-                tid, "blocker",
-                f"{tid} uses route=research but the human-fixed pipeline_scope "
-                "has research=false.",
-                "Cover this step with react_tools/coder; do not call ResearchAgent.",
-            )
-        if research_forbidden:
-            for art in task.design.analysis_artifacts:
-                if str(getattr(art, "prepare_via", "") or "") == "research":
-                    fe(
-                        tid, "blocker",
-                        f"{tid} sets prepare_via=research but pipeline_scope.research is false.",
-                        "Use prepare_via=mcp or prepare_via=coder.",
-                    )
-
         if task.route in _MCP and not inventory:
             fe(tid, "blocker",
                f"{tid} uses {task.route.value} but the MCP capability inventory is empty.",
@@ -561,9 +553,7 @@ def critique_plan(
 
         # A switched-off evidence route already has its blocker above; its own
         # shape checks would only point the planner back at it.
-        if task.route in _EVIDENCE_AGENTS and task.route in enabled and not (
-            research_forbidden and task.route == ExecutionRoute.RESEARCH
-        ):
+        if task.route in _EVIDENCE_AGENTS and task.route in enabled:
             if task.mcp_servers:
                 fe(tid, "blocker",
                    f"{tid} uses {task.route.value} but lists mcp_servers; "
@@ -576,9 +566,7 @@ def critique_plan(
                    "Require a notes/citations/report artifact (role=report or data).")
             family_tools = {
                 row["tool"]
-                for row in declared_family_capabilities(
-                    FAMILY_RESEARCH if task.route == ExecutionRoute.RESEARCH else FAMILY_MEDICAL
-                )
+                for row in experiment_capabilities(declared_family_capabilities(FAMILY_MEDICAL))
             }
             bound = {
                 str(art.path_or_tool or "").strip()
@@ -601,16 +589,17 @@ def critique_plan(
             and not task.optional
         ):
             blob = _task_coverage_blob(task, ops_index)
+            task_caps = {name: row for name, row in by_tool_caps.items() if not dataset_mismatch(task, row)}
             if match_named_family_capability(blob, families=families) and not research_forbidden:
                 fe(
                     tid, "major",
                     f"{tid} uses route=coder, but THIS task names a "
-                    f"{'research/medical' if medical_on else 'research'} "
+                    "medical "
                     "family tool — Coder must not reimplement that family.",
-                    ("Set route=research or route=medical" if medical_on else "Set route=research")
+                    "Set route=medical"
                     + " and bind the family tool on design.analysis_artifacts.path_or_tool.",
                 )
-            elif by_tool_caps and match_named_inventory_tool(blob, by_tool_caps):
+            elif task_caps and match_named_inventory_tool(blob, task_caps):
                 fe(
                     tid, "major",
                     f"{tid} uses route=coder, but THIS task names a retrieved inventory "

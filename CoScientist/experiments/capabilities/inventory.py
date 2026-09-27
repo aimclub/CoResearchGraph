@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Mapping
 
+from CoScientist.experiments.capabilities.contracts import contract_metadata
+
 
 FAMILY_MCP = "mcp"
 FAMILY_RESEARCH = "research"
@@ -156,6 +158,7 @@ def index_inventory_tools(
             "input_schema": item.get("input_schema"),
             "score": item.get("score"),
             "url": item.get("url"),
+            **contract_metadata(item),
         }
         prior = out.get(tool)
         if prior is None or float(row.get("score") or 0) > float(prior.get("score") or 0):
@@ -189,6 +192,77 @@ def inventory_nonempty(available_tools: Iterable[dict[str, Any]] | Mapping[str, 
             return bool(index_inventory_tools(list(available_tools.values())))
         return False
     return bool(index_inventory_tools(available_tools))
+
+
+def input_schema_mismatches(
+    schema: Mapping[str, Any] | None,
+    arguments: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return definite top-level JSON-schema mismatches.
+
+    MCP registries are allowed to omit schemas, and several expose partial
+    schemas.  An absent/unknown schema therefore permits the call.  When a
+    conventional object schema *is* present we can safely reject only facts it
+    states explicitly: missing required keys, forbidden additional keys, and
+    primitive type mismatches.  This deliberately is not a home-grown JSON
+    Schema validator; ambiguous constructs (``$ref``, unions, conditionals,
+    nested objects) are left to the server.
+    """
+    if not isinstance(schema, Mapping) or not schema:
+        return []
+    args = arguments if isinstance(arguments, Mapping) else {}
+    properties = schema.get("properties")
+    required = schema.get("required")
+    object_like = schema.get("type") == "object" or isinstance(properties, Mapping)
+    if not object_like:
+        return []
+
+    mismatches: list[dict[str, Any]] = []
+    if isinstance(required, list):
+        for name in required:
+            key = str(name or "").strip()
+            if key and key not in args:
+                mismatches.append({
+                    "path": key,
+                    "code": "required_argument_missing",
+                    "expected": "present",
+                    "actual": "missing",
+                })
+
+    if isinstance(properties, Mapping):
+        if schema.get("additionalProperties") is False:
+            for key in args:
+                if key not in properties:
+                    mismatches.append({
+                        "path": str(key),
+                        "code": "additional_argument_forbidden",
+                        "expected": "declared property",
+                        "actual": "additional property",
+                    })
+        for key, value in args.items():
+            spec = properties.get(key)
+            if not isinstance(spec, Mapping):
+                continue
+            expected = spec.get("type")
+            if not isinstance(expected, str):
+                continue
+            actual_ok = {
+                "string": isinstance(value, str),
+                "boolean": isinstance(value, bool),
+                "integer": isinstance(value, int) and not isinstance(value, bool),
+                "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+                "array": isinstance(value, list),
+                "object": isinstance(value, Mapping),
+                "null": value is None,
+            }.get(expected)
+            if actual_ok is False:
+                mismatches.append({
+                    "path": str(key),
+                    "code": "argument_type_mismatch",
+                    "expected": expected,
+                    "actual": type(value).__name__,
+                })
+    return mismatches
 
 
 def _named_match(text: str, by_tool: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
@@ -285,6 +359,7 @@ def get_grouped_mcp_inventory(
                 "name": tool_name,
                 "description": str(item.get("description") or "").strip(),
                 "input_schema": item.get("input_schema"),
+                **contract_metadata(item),
             })
 
     return list(groups.values())
@@ -300,6 +375,7 @@ __all__ = [
     "inventory_covers_capabilities",
     "inventory_nonempty",
     "inventory_pairs",
+    "input_schema_mismatches",
     "match_inventory_tool",
     "match_named_family_capability",
     "match_named_inventory_tool",

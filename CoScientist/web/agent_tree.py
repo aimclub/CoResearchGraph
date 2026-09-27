@@ -172,7 +172,12 @@ def project_agent_tree(
     with settings_scope(run_settings):
         config = config_for_mode()
         graph, attached = _full_graph(config)
+        from CoScientist.web.agent_configuration_policy import (
+            agent_control_policy,
+            public_control_fields,
+        )
         from CoScientist.web.agent_workflow import project_workflow
+        controls = agent_control_policy(config)
         workflow = project_workflow(config, nir_enabled=run_settings.nir.enabled)
 
     virtual_root = "__mas_session__"
@@ -214,15 +219,25 @@ def project_agent_tree(
     nodes: list[dict[str, Any]] = [{
         "id": virtual_root,
         "name": "MAS",
-        "title": {"ru": "Конфигурация сессии", "en": "Session configuration"},
+        "title": {"ru": "Конфигуратор сессии", "en": "Session configurator"},
         "description": "",
-        "descriptionLocalized": {"ru": "Состав агентов выбранной сессии. Изменения применяются со следующего запроса.", "en": "Agent configuration for this session. Changes apply to the next request."},
+        "descriptionLocalized": {
+            "ru": "Управляет составом агентов выбранной сессии. Позволяет подключать и отключать дополнительных исполнителей. Изменения применяются со следующего запроса.",
+            "en": "Controls the selected session's agent composition. Changes apply to the next request.",
+        },
         "icon": "settings",
         "kind": "system",
         "stage": None,
         "toolKeys": [],
         "hasMcpTools": False,
         "selected": True,
+        "availableInProfile": True,
+        "effectiveEnabled": True,
+        "canEnable": False,
+        "canDisable": False,
+        "controlReason": "Элемент интерфейса управления составом выбранной сессии.",
+        "controlCode": "configuration",
+        "requiredForPipeline": True,
     }]
     for name in config.build_order():
         if name not in visible:
@@ -234,6 +249,7 @@ def project_agent_tree(
             else None
         )
         selected = not (name == "NirReportAgent" and not run_settings.nir.enabled)
+        control = controls[name]
         nodes.append({
             "id": name,
             "name": name,
@@ -248,6 +264,7 @@ def project_agent_tree(
                 for key in agent.tools
             ),
             "selected": selected,
+            **public_control_fields(control),
         })
 
     return {

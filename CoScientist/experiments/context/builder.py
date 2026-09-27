@@ -14,7 +14,9 @@ from google.adk.models import LlmResponse
 from google.genai import types
 
 from CoScientist.experiments.capabilities.inventory import get_grouped_mcp_inventory
+from CoScientist.experiments.capabilities.contracts import contract_metadata
 from CoScientist.experiments.runtime.shared import audit
+from CoScientist.experiments.scope import experiment_capabilities, operation_rows, partition_operations
 
 logger = logging.getLogger(__name__)
 _MAX_RETRIEVAL_CALLS = 5
@@ -26,6 +28,9 @@ _CLEAR_ON_NEW_RUN = (
     "experiment_last_route_response", "experiment_active_envelope",
     "experiment_plan_validation_errors", "experiment_plan_review_paused",
     "experiment_plan_candidate", "experiment_plan_fallback_pending",
+    "experiment_plan_capacity_override",
+    "experiment_plan_last_schema_valid_candidate", "experiment_plan_last_executable_candidate",
+    "experiment_plan_recovery_requested",
     "experiment_module_outcome",
     "experiment_review_pause_reason", "experiment_module_runs", "experiment_module_dispatched",
     "experiment_plan_revision_count", "experiment_inventory_blocker_hits",
@@ -66,7 +71,7 @@ _PROMPT_OPTIONAL_KEYS = (
     "research_focus_id", "research_context", "hypotheses", "hypothesis_refs", "prior_results",
     "prior_evidence", "hypothesis_chain_context", "confirmation_criteria",
     "data_refs", "constraints", "operations", "explicit_mcp_servers", "repo_candidates",
-    "revision_feedback", "unresolved_gaps", "pipeline_scope",
+    "revision_feedback", "unresolved_gaps", "pipeline_scope", "external_literature_operations", "plan_limits",
 )
 # Hypothesis statuses that still need experimental verification (typed read —
 # refuted/postponed/confirmed nodes must not force new plan coverage).
@@ -233,6 +238,13 @@ def research_graph_snapshot(callback_context: CallbackContext) -> dict[str, Any]
                 "source_ref": ref,
                 "status": status,
             })
+            if ntype == "GeneratedData" and ref:
+                data_refs.append({
+                    "kind": "generated_data", "node_id": str(node.get("id") or ""),
+                    "source_ref": ref, "schema": attrs.get("schema"),
+                    "dataset_scope": attrs.get("dataset_scope"),
+                    "validation_status": attrs.get("validation_status") or "unverified",
+                })
     chain_context: list[dict[str, Any]] = []
     active_ids = {row["hypothesis_id"] for row in hypothesis_refs}
     for edge in edges:
@@ -319,12 +331,11 @@ def _constraints_from_state(state: Any) -> list[dict[str, Any]]:
 def _operations_from_state(state: Any, source_request: str = "") -> list[dict[str, str]]:
     """Committed ops, then ContextInit frame, then numbered steps in the ask."""
     from CoScientist.context_init.operations import (
-        normalize_operation_rows,
         parse_numbered_operations,
     )
 
     existing = state.get("experiment_operations") if hasattr(state, "get") else None
-    rows = normalize_operation_rows(existing)
+    rows = operation_rows(existing)
     if rows:
         return rows
     raw = state.get("research_frame") if hasattr(state, "get") else None
@@ -342,7 +353,7 @@ def _operations_from_state(state: Any, source_request: str = "") -> list[dict[st
     )
     parsed = parse_numbered_operations(ask) if ask else []
     if len(parsed) >= 2:
-        return normalize_operation_rows([op.model_dump() for op in parsed])
+        return operation_rows([op.model_dump() for op in parsed])
     return []
 
 def extract_repo_candidates(
@@ -593,6 +604,7 @@ def _normalize_capabilities(items: Any) -> list[dict[str, Any]]:
             "input_schema": _bounded(schema, 40) if isinstance(schema, dict) else {},
             "score": item.get("score"),
             "url": item.get("url"),
+            **contract_metadata(item),
         })
         if len(out) >= 20:
             break
@@ -607,6 +619,11 @@ def _cap_for_prompt(cap: dict[str, Any]) -> dict[str, Any]:
     if family := str(cap.get("family") or "").strip():
         row["family"] = family
     row.update(_schema_brief(cap.get("input_schema")))
+    metadata = contract_metadata(cap)
+    if "data_contract" in metadata:
+        row["data_contract"] = metadata["data_contract"]
+    if schema := metadata.get("output_schema"):
+        row["output_contract"] = _schema_brief(schema)
     return row
 
 def _prompt_context(context: dict[str, Any]) -> str:
@@ -638,9 +655,6 @@ def _prompt_context(context: dict[str, Any]) -> str:
         "available_mcp_servers": prompt_servers,
         "available_mcp_capabilities": [
             _cap_for_prompt(c) for c in (context.get("available_mcp_capabilities") or [])
-        ],
-        "available_research_capabilities": [
-            _cap_for_prompt(c) for c in (context.get("available_research_capabilities") or [])
         ],
     }
     # Only while the medical route is in the run: an empty list would still name
@@ -772,6 +786,8 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
         or critique.get("verdict") == "revise"
         or previous_runtime.get("phase") == "awaiting_review"
         or previous_runtime.get("phase") == "replan_requested"
+        or state.get("experiment_plan_review_paused")
+        or state.get("experiment_plan_recovery_requested")
     )
     source_request = persisted or (prev_request if planning_revision and prev_request else (user_text or prev_request))
     same_request = bool(source_request) and source_request == prev_request
@@ -816,10 +832,13 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
             stash_caps = _normalize_capabilities(_session_accumulated_raw())
         if stash_caps:
             state[RETRIEVED_CAPABILITIES_KEY] = stash_caps
-    capabilities = _resolve_capabilities(state, previous_context if (revising or same_request) else {})
+    capabilities = experiment_capabilities(
+        _resolve_capabilities(state, previous_context if (revising or same_request) else {})
+    )
     preferred = _normalize_capabilities(state.get("filtered_tools")) if not mid_attempt else []
     if not preferred:
         preferred = _normalize_capabilities(state.get(DISCOVERED_CAPABILITIES_KEY))
+    preferred = experiment_capabilities(preferred)
     planner_caps = capabilities if capabilities else preferred
     # Graph-first science input: typed nodes committed by previous agents
     # (ContextInit frame, HypothesesAgent H, prior Evidence). Empty when the
@@ -838,7 +857,6 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
     from CoScientist.config import get_settings
     from CoScientist.experiments.capabilities.inventory import (
         FAMILY_MEDICAL,
-        FAMILY_RESEARCH,
         declared_family_capabilities,
     )
     from CoScientist.experiments.runtime.state_machine import (
@@ -868,12 +886,13 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
     if not isinstance(cached_repos, list):
         cached_repos = []
     operations = _operations_from_state(state, source_request)
+    experiment_operations, literature_operations = partition_operations(operations)
     repo_candidates = resolve_repo_candidates(
         source_request,
         planner_caps=planner_caps,
         route_alembic=bool(experiments.route_alembic),
         cached=cached_repos if (revising or same_request) else None,
-        operations=operations,
+        operations=experiment_operations,
     )
     if repo_candidates:
         state["experiment_repo_candidates"] = repo_candidates
@@ -908,10 +927,17 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
     ]
     context = {
         "experiment_run_id": run_id, "source_request": source_request,
+        "plan_capacity_override": state.get("experiment_plan_capacity_override"),
+        "plan_limits": {"max_tasks": experiments.max_plan_tasks,
+                        "schema_max_tasks": 20, "max_revisions": experiments.max_plan_revisions,
+                        "operation_ref_cardinality": "one"},
         "research_focus_id": state.get("research_focus_id"), "research_context": research_context,
         "hypotheses": _bounded(state.get("hypotheses") or [], 20),
         "hypothesis_refs": hypothesis_refs,
-        "operations": _bounded(operations, 20),
+        # Authority must never be truncated to fit the schema. The preflight
+        # rejects >20 compute ops before an LLM call instead of dropping them.
+        "operations": copy.deepcopy(experiment_operations),
+        "external_literature_operations": copy.deepcopy(literature_operations),
         "prior_results": _bounded(state.get("experiment_task_results") or [], 20),
         "prior_evidence": _bounded(snapshot.get("prior_evidence") or [], 20),
         "hypothesis_chain_context": _bounded(
@@ -921,9 +947,9 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
         "constraints": _bounded(constraints, 20),
         "available_mcp_capabilities": planner_caps,
         "available_mcp_servers": get_grouped_mcp_inventory(planner_caps),
-        "available_research_capabilities": declared_family_capabilities(FAMILY_RESEARCH),
         "available_medical_capabilities": (
-            declared_family_capabilities(FAMILY_MEDICAL) if medical_on else []
+            [row for row in declared_family_capabilities(FAMILY_MEDICAL)
+             if row["tool"] != "search_pubmed"] if medical_on else []
         ),
         "preferred_mcp_capabilities": preferred if preferred else planner_caps,
         "critique_mcp_capabilities": capabilities if capabilities else planner_caps,
@@ -946,7 +972,9 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
             "experiments": bool(scope.get("experiments")),
         }
     state["experiment_context"] = context
-    state[PLANNER_CONTEXT_KEY] = _prompt_context(context)
+    from CoScientist.experiments.plan_policy import refresh_plan_limits
+
+    refresh_plan_limits(state, experiments)
     state["experiment_source_request"] = source_request
     if os.getenv("COSCIENTIST_EXPERIMENT_AUDIT_STDOUT") == "1":
         tools = [f"{c['server_id']}/{c['tool']}" for c in planner_caps]

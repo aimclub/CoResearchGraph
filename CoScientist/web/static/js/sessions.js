@@ -434,19 +434,23 @@
         if (Number.isFinite(parsedVersion)) runStatusVersion = parsedVersion;
       }
       const processing = status === 'processing';
-      runActive = processing;
+      const paused = status === 'paused';
+      runActive = processing || paused;
       renderStatusBadge();
-      document.getElementById('send-btn').disabled = processing;
+      document.getElementById('send-btn').disabled = processing || paused;
       // The language also drives the report, and the server rejects a mid-run
       // change. Re-render the settings panel so its language radio locks.
       if (typeof renderSettings === 'function'
           && !document.getElementById('settings-modal').classList.contains('hidden')) {
         renderSettings();
       }
-      document.getElementById('stop-btn').classList.toggle('hidden', !processing);
+      document.getElementById('stop-btn').classList.toggle('hidden', !processing && !paused);
       if (processing) {
         showTyping();
         if (typeof RunTimer !== 'undefined') RunTimer.start();
+      } else if (paused) {
+        // A pause keeps pending approvals, active tasks and the same run timer.
+        hideTyping();
       } else {
         hideTyping();
         resetAgents();
@@ -559,6 +563,7 @@
         RunTimer.restoreFromSnapshot(snapshot);
       }
       StatusIndicator.feed({ type: 'status', status: snapshot.status });
+      if (window.RunControl) RunControl.feed(snapshot);
       populateUserSelectors();
       populateSessionSelector();
     }

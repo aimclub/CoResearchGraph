@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 from typing import Any, Mapping, MutableMapping, Optional
@@ -16,6 +17,8 @@ from .state_machine import (
     ExperimentRuntimeError,
     active_attempt,
     alembic_route_available,
+    experiment_next_actions,
+    experiment_state_revision,
     fedot_route_available,
     mark_route_returned,
 )
@@ -32,6 +35,13 @@ _NO_MATCHING_TOOL_TOKEN = "NO_MATCHING_TOOL"
 _PENDING_RECORD_ALLOWED = frozenset(
     {"record_result", "skip_task", "amend_task", "get_experiment_plan"}
 )
+_CONTROL_TOOLS = frozenset({
+    "get_experiment_plan", "start_task", "record_result", "retry_task",
+    "fallback_task", "skip_task", "amend_task",
+})
+_CONTROL_OBSERVATION_KEY = "experiment_last_control_observation"
+_CONTROL_FAILURE_KEY = "experiment_last_control_failure"
+_DISCOVERY_ROUNDS_KEY = "experiment_discovery_rounds_by_request"
 RECORD_REQUIRED_MESSAGE = (
     "Route already returned for this attempt but record_result was not called. "
     "Call record_result with the same task_id and attempt_id from start_task "
@@ -324,6 +334,13 @@ def guard_route_agent_tool(
 ) -> dict[str, Any] | None:
     """Refuse second/mismatched AgentTool, or control calls before record."""
     tool_name = getattr(tool, "name", "") or ""
+    if tool_name == "ResearchAgent":
+        from CoScientist.experiments.scope import LITERATURE_HANDOFF
+
+        return {
+            "status": "refused", "error_code": "literature_outside_experiment_module",
+            "message": LITERATURE_HANDOFF,
+        }
     state = tool_context.state
     pending = _pending_record_attempt(state)
     if tool_name in ROUTE_AGENT_NAMES:
@@ -401,12 +418,32 @@ def _schema_from_tool(tool: BaseTool, tool_context: ToolContext) -> dict[str, An
 def force_schema_s3_upload(
     tool: BaseTool, args: dict[str, Any], tool_context: ToolContext,
 ) -> dict[str, Any] | None:
-    """If the tool schema offers upload_results_to_s3, force it on during EM runs."""
+    """Validate a known MCP schema and request managed output when supported."""
     if not tool_context.state.get("experiment_runtime"):
         return None
-    if schema_offers_s3_upload(_schema_from_tool(tool, tool_context)):
+    schema = _schema_from_tool(tool, tool_context)
+    from CoScientist.experiments.capabilities.inventory import input_schema_mismatches
+
+    if schema_offers_s3_upload(schema):
         args["upload_results_to_s3"] = True
         args.setdefault("output_s3_prefix", "generated")
+    mismatches = input_schema_mismatches(schema, args)
+    if mismatches:
+        return {
+            "status": "refused",
+            "error_code": "tool_input_schema_mismatch",
+            "message": "Tool arguments do not satisfy its advertised input schema.",
+            "tool": str(getattr(tool, "name", "") or ""),
+            "mismatches": mismatches,
+            "retryable": False,
+            "next_actions": [{
+                "action": "correct_tool_arguments",
+                "required_arguments": [
+                    item["path"] for item in mismatches
+                    if item.get("code") == "required_argument_missing"
+                ],
+            }],
+        }
     return None
 
 
@@ -423,6 +460,31 @@ def on_route_agent_returned(
     """Close the route slot after a successful or failed agent response."""
     tool_name = getattr(tool, "name", "")
     if tool_name not in ROUTE_AGENT_NAMES:
+        if tool_name in _CONTROL_TOOLS:
+            from CoScientist.agents.callbacks.tool_callbacks import normalize_tool_observation
+
+            observation = normalize_tool_observation(tool_response)
+            row = {
+                "tool": tool_name,
+                "task_id": str(args.get("task_id") or ""),
+                "reason": str(args.get("reason") or "")[:500],
+                "status": observation.get("status"),
+                "error_code": observation.get("error_code"),
+                "message": observation.get("message"),
+                "is_error": bool(observation.get("is_error")),
+                "state_revision": experiment_state_revision(tool_context.state),
+            }
+            tool_context.state[_CONTROL_OBSERVATION_KEY] = row
+            if row["is_error"]:
+                tool_context.state[_CONTROL_FAILURE_KEY] = row
+            else:
+                prior = tool_context.state.get(_CONTROL_FAILURE_KEY)
+                if (
+                    isinstance(prior, dict)
+                    and prior.get("tool") == tool_name
+                    and prior.get("task_id") == row["task_id"]
+                ):
+                    tool_context.state[_CONTROL_FAILURE_KEY] = None
         return
     try:
         runtime, _, attempt = active_attempt(tool_context.state)
@@ -431,6 +493,9 @@ def on_route_agent_returned(
         if tool_name == "CoderAgent":
             from CoScientist.experiments.runtime.coder_artifacts import promote_coder_workspace_artifacts
             promote_coder_workspace_artifacts(tool_context.state)
+        from CoScientist.agents.callbacks.tool_callbacks import normalize_tool_observation
+
+        observation = normalize_tool_observation(tool_response)
         stored = tool_response
         snap = _alembic_snapshot(runtime=runtime, attempt=attempt)
         if tool_name == "McpBuilderAgent" and isinstance(snap, dict):
@@ -441,6 +506,7 @@ def on_route_agent_returned(
                 attempt["alembic_job_id"] = snap["job_id"]
         mark_route_returned(tool_context.state, tool_name)
         tool_context.state["experiment_last_route_response"] = copy.deepcopy(stored)
+        tool_context.state["experiment_last_route_observation"] = copy.deepcopy(observation)
     except ExperimentRuntimeError:
         return
 
@@ -480,7 +546,24 @@ def _make_criteria_checks(criteria: Any, passed: bool, details: str) -> list[dic
     if not isinstance(criteria, list):
         return []
     return [
-        {"criterion_id": cid, "passed": passed, "details": details}
+        {
+            "criterion_id": cid,
+            "purpose": str(item.get("purpose") or (
+                "assessment" if item.get("kind") in {"threshold", "expert"} else "execution"
+            )),
+            "passed": (
+                None
+                if str(item.get("purpose") or "") == "assessment"
+                or item.get("kind") in {"threshold", "expert"}
+                else passed
+            ),
+            "details": (
+                "Assessment was not inferred by the control callback."
+                if str(item.get("purpose") or "") == "assessment"
+                or item.get("kind") in {"threshold", "expert"}
+                else details
+            ),
+        }
         for item in criteria
         if isinstance(item, dict) and (cid := str(item.get("criterion_id") or "").strip())
     ]
@@ -495,6 +578,11 @@ def _auto_record_result_payload(
     criteria = (task_runtime.get("task") or {}).get("success_criteria") or []
     summary = _summary_from_last_route(state)
     last = state.get("experiment_last_route_response")
+    observation = state.get("experiment_last_route_observation")
+    if not isinstance(observation, dict):
+        from CoScientist.agents.callbacks.tool_callbacks import normalize_tool_observation
+
+        observation = normalize_tool_observation(last)
     snap = last if isinstance(last, dict) else {}
     if not snap and isinstance(attempt.get("alembic_snapshot"), dict):
         snap = attempt["alembic_snapshot"]
@@ -525,18 +613,38 @@ def _auto_record_result_payload(
             }
 
     has_artifacts = bool(captured_delta(state, attempt)) and route != "alembic_build"
+    observed_data = observation.get("data")
+    has_structured_delivery = (
+        observation.get("status") == "success"
+        and isinstance(observed_data, dict)
+        and bool(observed_data)
+    )
+    explicit_failure = bool(observation.get("is_error"))
     detail = (
         "Auto-recorded: route returned and executor omitted record_result; evidence taken from route capture."
-        if has_artifacts
+        if has_artifacts or has_structured_delivery
         else "Auto-recorded failure: route returned with no captured artifacts and executor omitted record_result."
     )
     base: dict[str, Any] = {
         "summary": summary,
-        "criteria_checks": _make_criteria_checks(criteria, has_artifacts, detail),
-        "outputs": {},
+        "criteria_checks": _make_criteria_checks(
+            criteria, has_artifacts or has_structured_delivery, detail,
+        ),
+        "outputs": observed_data if has_structured_delivery else {},
         "warnings": ["auto_recorded_omitted_record_result"],
     }
-    if has_artifacts:
+    if explicit_failure:
+        no_match = bool(observation.get("no_matching_tool"))
+        return {
+            **base,
+            "status": "failure",
+            "error_code": observation.get("error_code") or "route_failed",
+            "error_message": observation.get("message") or summary or "Route reported failure.",
+            # A no-match is a deterministic route miss: skip same-route retry
+            # and let the finite fallback chain choose the next route.
+            "retryable": not no_match,
+        }
+    if has_artifacts or has_structured_delivery:
         return {**base, "status": "success", "retryable": False}
     return {
         **base,
@@ -561,29 +669,16 @@ def _alembic_job_still_running(attempt: dict[str, Any]) -> bool:
 def enforce_pending_record_result(
     callback_context: Any, llm_response: LlmResponse,
 ) -> LlmResponse | None:
-    """after_model: force record_result when route returned but model skips close."""
-    state = callback_context.state
-    pending = _pending_record_attempt(state)
-    if pending is None or _llm_has_pending_close_call(llm_response):
-        return None
-    _, task_runtime, attempt = pending
-    if _alembic_job_still_running(attempt):
-        return None
-    runtime = state.get("experiment_runtime") or {}
-    task_id = str(runtime.get("active_task_id") or "")
-    attempt_id = str(attempt.get("attempt_id") or runtime.get("active_attempt_id") or "")
-    if not task_id or not attempt_id:
-        return None
-    payload = _auto_record_result_payload(state, task_runtime, attempt)
-    audit(
-        logger,
-        f"EXPERIMENT_FORCE_RECORD_RESULT task_id={task_id} attempt_id={attempt_id} "
-        f"status={payload.get('status')} retryable={payload.get('retryable')}",
-    )
-    return _force_call(
-        "record_result",
-        {"task_id": task_id, "attempt_id": attempt_id, "result": payload},
-    )
+    """Single after-model selector (historical callback name kept for config)."""
+    expected = select_experiment_action(callback_context.state)
+    if expected is not None and expected[0] == "record_result":
+        try:
+            _, _, attempt = active_attempt(callback_context.state)
+        except ExperimentRuntimeError:
+            attempt = {}
+        if _alembic_job_still_running(attempt):
+            return None
+    return _select_or_preserve_model_action(callback_context, llm_response)
 
 
 def _llm_has_any_function_call(llm_response: LlmResponse) -> bool:
@@ -640,42 +735,168 @@ def _running_task_id(runtime: dict[str, Any]) -> str | None:
     return None
 
 
-def _next_control_action(runtime: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    if _running_task_id(runtime) is not None:
+def _automation_paused(state: Any, runtime: Mapping[str, Any]) -> bool:
+    """Do not turn an explicit human/budget pause into an automatic action."""
+    for key in (
+        "experiment_plan_review_paused",
+        "experiment_result_review_paused",
+        "experiment_execution_paused",
+        "experiment_manual_pause",
+        "experiment_budget_paused",
+        "experiment_hitl_paused",
+    ):
+        if bool(state.get(key)):
+            return True
+    if str(runtime.get("phase") or "") in {
+        "paused", "awaiting_human", "manual_review", "budget_exhausted",
+    }:
+        return True
+    if any(bool(runtime.get(key)) for key in (
+        "automation_paused", "manual_review_required", "budget_exhausted",
+    )):
+        return True
+    for key in ("experiment_execution_control", "experiment_run_control"):
+        control = state.get(key)
+        if isinstance(control, Mapping) and str(control.get("status") or "") in {
+            "paused", "awaiting_human", "manual", "budget_exhausted",
+        }:
+            return True
+    return False
+
+
+def _fallback_reason(runtime: Mapping[str, Any], task_id: str, tr: Mapping[str, Any]) -> str:
+    """A factual, non-empty reason accepted by ``fallback_task``."""
+    for result in reversed(list(runtime.get("results") or [])):
+        if not isinstance(result, Mapping) or str(result.get("task_id") or "") != task_id:
+            continue
+        code = str(result.get("error_code") or "route_failed").strip()
+        detail = str(result.get("error_message") or result.get("summary") or "").strip()
+        route = str(result.get("route_used") or tr.get("current_route") or "current route")
+        return f"{route} ended with {code}" + (f": {detail[:500]}" if detail else "")
+    route = str(tr.get("current_route") or "current route")
+    return f"{route} is terminal for this task; continue via the next untried fallback route."
+
+
+def _failed_action_is_unchanged(
+    state: Any, name: str, args: Mapping[str, Any],
+) -> bool:
+    """A refused deterministic transition must not be forced forever."""
+    failed = state.get(_CONTROL_FAILURE_KEY)
+    if not isinstance(failed, Mapping) or not failed.get("is_error"):
+        return False
+    return (
+        str(failed.get("tool") or "") == name
+        and str(failed.get("task_id") or "") == str(args.get("task_id") or "")
+        and str(failed.get("state_revision") or "") == experiment_state_revision(state)
+    )
+
+
+def select_experiment_action(state: Any) -> tuple[str, dict[str, Any]] | None:
+    """Select exactly one valid next executor action, or deliberately stop.
+
+    The selector reads deterministic state only.  It never selects the
+    read-only ``get_experiment_plan`` and never manufactures a transition when
+    execution is paused, an attempt is already closed, or the same transition
+    was just refused without state progress.
+    """
+    actions = experiment_next_actions(state)
+    if not actions:
         return None
-    for tid, tr in _iter_task_runtimes(runtime):
-        status = str(tr.get("status") or "")
-        if status == "ready":
-            return "start_task", {"task_id": tid}
-        if status == "retry_pending":
-            return "retry_task", {"task_id": tid}
-        if status == "fallback_pending":
-            return "fallback_task", {"task_id": tid}
-    return None
+    selected = actions[0]
+    name = str(selected.get("tool") or "")
+    args = dict(selected.get("arguments") or {})
+    runtime = state.get("experiment_runtime") or {}
+
+    # The public state-machine contract deliberately omits the potentially
+    # large result envelope.  Build it only for the exact active attempt that
+    # the contract declared closable.
+    if name == "record_result":
+        task_id = str(args.get("task_id") or "")
+        attempt_id = str(args.get("attempt_id") or "")
+        tr = (runtime.get("tasks") or {}).get(task_id)
+        attempt = (
+            (tr.get("attempts") or {}).get(attempt_id)
+            if isinstance(tr, dict) else None
+        )
+        if not isinstance(attempt, dict):
+            return None
+        args["result"] = _auto_record_result_payload(state, tr, attempt)
+    elif name in ROUTE_AGENT_NAMES:
+        pending = _pending_route_agent(state)
+        if pending is None or pending[0] != name:
+            return None
+        name, args = pending
+
+    action = (name, args)
+    if not name or _failed_action_is_unchanged(state, name, args):
+        return None
+    return action
+
+
+def _function_calls(llm_response: LlmResponse) -> list[tuple[str, dict[str, Any]]]:
+    content = getattr(llm_response, "content", None)
+    out: list[tuple[str, dict[str, Any]]] = []
+    for part in getattr(content, "parts", None) or []:
+        fc = getattr(part, "function_call", None)
+        name = getattr(fc, "name", None)
+        if name:
+            out.append((str(name), dict(getattr(fc, "args", None) or {})))
+    return out
+
+
+def _call_matches_action(
+    name: str, args: Mapping[str, Any], expected_name: str, expected_args: Mapping[str, Any],
+) -> bool:
+    if name != expected_name:
+        return False
+    for key in ("task_id", "attempt_id"):
+        if key in expected_args and str(args.get(key) or "") != str(expected_args.get(key) or ""):
+            return False
+    if expected_name == "fallback_task" and not str(args.get("reason") or "").strip():
+        return False
+    return True
+
+
+def _select_or_preserve_model_action(
+    callback_context: Any, llm_response: LlmResponse,
+) -> LlmResponse | None:
+    """Shared after-model callback for close/route/control transitions."""
+    state = callback_context.state
+    expected = select_experiment_action(state)
+    if expected is None:
+        return None
+    expected_name, expected_args = expected
+    calls = _function_calls(llm_response)
+    if any(
+        _call_matches_action(name, args, expected_name, expected_args)
+        for name, args in calls
+    ):
+        return None
+
+    # A read-only plan observation is always safe and may expose a newer
+    # state_revision/next_actions contract.  Never rewrite or suppress it.
+    managed = (_CONTROL_TOOLS - {"get_experiment_plan"}) | ROUTE_AGENT_NAMES
+    conflicting = [name for name, _ in calls if name in managed]
+    # Preserve unrelated function calls.  The next model turn will see the
+    # updated state and the selector can decide again.
+    if calls and not conflicting:
+        return None
+    audit(
+        logger,
+        f"EXPERIMENT_SELECT_ACTION action={expected_name} args={expected_args}"
+        + (f" replacing={conflicting}" if conflicting else ""),
+    )
+    content = getattr(llm_response, "content", None)
+    return _force_call(
+        expected_name, expected_args, role=getattr(content, "role", None) or "model",
+    )
 
 
 def enforce_continue_until_reporting(
     callback_context: Any, llm_response: LlmResponse,
 ) -> LlmResponse | None:
-    """after_model: block prose-only exit while ready/retry/fallback work remains."""
-    state = callback_context.state
-    runtime = state.get("experiment_runtime") or {}
-    if runtime.get("phase") != "execution":
-        return None
-    if pending_route := _pending_route_agent(state):
-        name, args = pending_route
-        if name in _llm_function_names(llm_response):
-            return None
-        audit(logger, f"EXPERIMENT_FORCE_ROUTE_AGENT action={name}")
-        return _force_call(name, args)
-    if _pending_record_attempt(state) is not None or _llm_has_any_function_call(llm_response):
-        return None
-    action = _next_control_action(runtime)
-    if action is None:
-        return None
-    name, args = action
-    audit(logger, f"EXPERIMENT_FORCE_CONTINUE action={name} args={args}")
-    return _force_call(name, args)
+    """Backward-compatible alias for the single deterministic selector."""
+    return _select_or_preserve_model_action(callback_context, llm_response)
 
 
 _CONTROL_TRANSITION_TOOLS = frozenset(
@@ -686,81 +907,8 @@ _CONTROL_TRANSITION_TOOLS = frozenset(
 def rewrite_mismatched_control_action(
     callback_context: Any, llm_response: LlmResponse,
 ) -> LlmResponse | None:
-    """after_model: rewrite wrong retry/fallback/start to the next control action."""
-    state = callback_context.state
-    runtime = state.get("experiment_runtime") or {}
-    phase = str(runtime.get("phase") or "")
-    content = getattr(llm_response, "content", None)
-    parts = list(getattr(content, "parts", None) or [])
-    control_fcs: list[tuple[int, str, dict[str, Any]]] = [
-        (i, str(getattr(getattr(p, "function_call", None), "name", "")), dict(getattr(getattr(p, "function_call", None), "args", None) or {}))
-        for i, p in enumerate(parts)
-        if getattr(getattr(p, "function_call", None), "name", None) in _CONTROL_TRANSITION_TOOLS
-    ]
-
-    if phase == "execution" and _pending_record_attempt(state) is None:
-        if pending_route := _pending_route_agent(state):
-            name, args = pending_route
-            if name not in _llm_function_names(llm_response):
-                called = {n for _, n, _ in control_fcs} | {
-                    n for n in _llm_function_names(llm_response)
-                    if n in ROUTE_AGENT_NAMES or n in _CONTROL_TRANSITION_TOOLS or n == "get_experiment_plan"
-                }
-                if called:
-                    audit(
-                        logger,
-                        f"EXPERIMENT_REWRITE_CONTROL from={sorted(called)} to={name} reason=pending_route_agent",
-                        stdout=f"EXPERIMENT_REWRITE_CONTROL to={name} reason=pending_route_agent",
-                    )
-                    return _force_call(name, args, role=getattr(content, "role", None) or "model")
-
-    if not control_fcs:
-        return None
-
-    def _suppress(reason: str) -> LlmResponse:
-        audit(
-            logger,
-            f"EXPERIMENT_REWRITE_CONTROL suppress reason={reason} from={[n for _, n, _ in control_fcs]} phase={phase}",
-            stdout=f"EXPERIMENT_REWRITE_CONTROL suppress reason={reason} phase={phase}",
-        )
-        return _force_call("get_experiment_plan", {}, role=getattr(content, "role", None) or "model")
-
-    if phase != "execution":
-        return _suppress(f"phase_{phase or 'none'}")
-
-    if _pending_record_attempt(state) is not None:
-        return None
-
-    running = _running_task_id(runtime)
-    if running is not None:
-        if any(n in {"start_task", "retry_task", "fallback_task", "skip_task"} for _, n, _ in control_fcs):
-            return _suppress(f"while_running:{running}")
-        return None
-
-    expected = _next_control_action(runtime)
-    if expected is None:
-        return _suppress("no_pending_transition")
-
-    exp_name, exp_args = expected
-    # Allow skip_task on the same task that would otherwise start
-    for _, name, args in control_fcs:
-        if name == "skip_task" and exp_name == "start_task":
-            if str(args.get("task_id") or "") == str(exp_args.get("task_id") or ""):
-                return None
-        if name == exp_name and str(args.get("task_id") or "") == str(exp_args.get("task_id") or ""):
-            return None
-
-    fixed_args = dict(exp_args)
-    if exp_name == "fallback_task" and not str(fixed_args.get("reason") or "").strip():
-        wrong = ",".join(sorted({n for _, n, _ in control_fcs}))
-        fixed_args["reason"] = f"Auto-corrected control action (model called {wrong}; runtime requires {exp_name})."
-
-    audit(
-        logger,
-        f"EXPERIMENT_REWRITE_CONTROL from={[n for _, n, _ in control_fcs]} to={exp_name} args={fixed_args}",
-        stdout=f"EXPERIMENT_REWRITE_CONTROL to={exp_name} task_id={fixed_args.get('task_id')}",
-    )
-    return _force_call(exp_name, fixed_args, role=getattr(content, "role", None) or "model")
+    """Backward-compatible alias for the single deterministic selector."""
+    return _select_or_preserve_model_action(callback_context, llm_response)
 
 
 def assess_experiment_inventory_feasibility(callback_context: Any) -> None:
@@ -770,6 +918,16 @@ def assess_experiment_inventory_feasibility(callback_context: Any) -> None:
         inventory_covers_capabilities,
     )
     state = callback_context.state
+    request = str(
+        state.get("experiment_source_request")
+        or state.get("orchestrator_root_goal")
+        or "unknown-request"
+    )
+    request_key = hashlib.sha256(request.encode("utf-8")).hexdigest()[:20]
+    discovery_rounds = dict(state.get(_DISCOVERY_ROUNDS_KEY) or {})
+    discovery_rounds[request_key] = int(discovery_rounds.get(request_key) or 0) + 1
+    # Bound session bookkeeping while preserving same-request recovery counts.
+    state[_DISCOVERY_ROUNDS_KEY] = dict(list(discovery_rounds.items())[-8:])
     gate_routed = bool(state.get(GATE_ROUTED_STATE_KEY))
     state[GATE_ROUTED_STATE_KEY] = None
 
@@ -836,6 +994,23 @@ def skip_when_experiment_stage_complete(callback_context: Any) -> Optional[types
     except (TypeError, ValueError):
         replan_count = 0
 
+    # Result HITL can reopen only selected tasks.  On that one-shot module hop,
+    # discovery and planning are already complete and replaying them would turn
+    # a targeted redo into an unrelated new plan.  SequentialAgent continues to
+    # the executor after these content returns; executor and result review stay
+    # live.  The outer AgentTool callback consumes the marker after the hop.
+    if (
+        phase == "execution"
+        and state.get("experiment_targeted_redo_pending")
+        and agent in {"ToolPreparerAgent", "ExperimentPlannerAgent"}
+    ):
+        message = (
+            "Targeted result-review redo is active; preserving the approved plan "
+            f"and skipping {agent} for this one-shot resume."
+        )
+        audit(logger, f"EXPERIMENT_SKIP_TARGETED_REDO_STAGE agent={agent}")
+        return types.Content(role="model", parts=[types.Part(text=message)])
+
     if phase == "completed":
         from CoScientist.experiments.review import result_tasks_ok
         if not result_tasks_ok(runtime):
@@ -865,6 +1040,23 @@ def skip_when_experiment_stage_complete(callback_context: Any) -> Optional[types
         return types.Content(role="model", parts=[types.Part(text=message)])
 
     if agent == "ToolPreparerAgent":
+        from CoScientist.config import get_settings
+
+        request = str(
+            state.get("experiment_source_request")
+            or state.get("orchestrator_root_goal")
+            or "unknown-request"
+        )
+        request_key = hashlib.sha256(request.encode("utf-8")).hexdigest()[:20]
+        rounds = int((state.get(_DISCOVERY_ROUNDS_KEY) or {}).get(request_key) or 0)
+        max_rounds = int(get_settings().experiments.max_recovery_discovery_rounds)
+        if rounds >= max_rounds:
+            message = (
+                f"Capability discovery limit reached ({rounds}/{max_rounds}) for this request; "
+                "preserving current inventory and continuing to a finite route/result decision."
+            )
+            audit(logger, f"EXPERIMENT_SKIP_DISCOVERY_LIMIT rounds={rounds}/{max_rounds}")
+            return types.Content(role="model", parts=[types.Part(text=message)])
         has_inventory = bool(
             state.get("experiment_retrieved_capabilities")
             or state.get("experiment_discovered_capabilities")
@@ -923,6 +1115,7 @@ __all__ = [
     "enforce_pending_record_result",
     "enforce_continue_until_reporting",
     "rewrite_mismatched_control_action",
+    "select_experiment_action",
     "skip_when_experiment_not_feasible",
     "skip_when_experiment_stage_complete",
 ]

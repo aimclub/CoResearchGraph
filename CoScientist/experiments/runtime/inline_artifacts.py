@@ -76,7 +76,14 @@ def has_structured_family_outputs(outputs: Mapping[str, Any] | None) -> bool:
     """
     if not isinstance(outputs, Mapping) or not outputs:
         return False
-    skip = {"mcp_url", "mcp_endpoint"}
+    # Diagnostics explain why a route could not execute; persisting them is
+    # useful, but they are not the requested scientific output and must not
+    # suppress fallback to another route.
+    skip = {
+        "mcp_url", "mcp_endpoint", "tool_limitation", "tool_limitations",
+        "limitation", "limitations", "diagnostic", "diagnostics",
+        "wrong_dataset", "dataset_mismatch",
+    }
     items = {k: v for k, v in outputs.items() if str(k) not in skip}
     if not items:
         return False

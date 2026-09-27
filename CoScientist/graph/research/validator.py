@@ -113,12 +113,17 @@ async def _complete(system: str, user: str) -> str:
     from CoScientist.config import get_settings
     s = get_settings().llm
     model = os.getenv("RESEARCH_VALIDATOR_MODEL") or s.main_model
+    from CoScientist.execution_control import before_model_attempt
+    await before_model_attempt(
+        "research_validator", metadata={"model": model}
+    )
     resp = await litellm.acompletion(
         model=model, api_base=s.main_url, api_key=s.openai_api_key,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}],
         temperature=0,
         timeout=s.request_timeout,
+        num_retries=0,
     )
     # Judged in the background, off the agent tree: the ambient session binding
     # is what keeps this call attached to the run that triggered it.

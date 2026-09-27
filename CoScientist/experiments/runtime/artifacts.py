@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import copy
+import csv
 import html
+import json
 import logging
 import mimetypes
 from pathlib import Path
@@ -32,6 +34,10 @@ EVIDENCE_AGENT_ROUTES = frozenset({
     ExecutionRoute.MEDICAL.value,
 })
 _ATTESTABLE_CRITERION_KINDS = frozenset({"execution", "artifact_exists", "schema"})
+_DIAGNOSTIC_ARTIFACT_NAMES = frozenset({
+    "tool_limitation", "tool_limitation.json", "tool_limitations.json",
+    "diagnostic.json", "diagnostics.json", "wrong_dataset.json",
+})
 _UNKNOWN_TOOL_SNIPPET = "do not exist — they are not in your tool list"
 _TABULAR_MEDIA = frozenset({
     "text/csv", "text/tab-separated-values", "text/plain", "application/json",
@@ -412,6 +418,40 @@ def artifact_matches(artifact: ArtifactRef, expected: Any) -> bool:
     return artifact_exists(artifact) and _artifact_family_compatible(artifact, expected)
 
 
+def artifact_basic_format_valid(artifact: ArtifactRef, expected: Any) -> bool:
+    """Cheap syntax check when a local, well-known format is available.
+
+    Remote/S3 artifacts cannot be opened here, so their declared media/suffix is
+    the basic check. This intentionally does not attempt scientific semantics or
+    require checksums.
+    """
+    path_text = str(artifact.workspace_path or "").strip()
+    if not path_text:
+        return True
+    path = Path(path_text)
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        suffix = (path.suffix or Path(str(getattr(expected, "name", ""))).suffix).lower()
+        media = str(artifact.media_type or getattr(expected, "media_type", "") or "").lower()
+        if suffix == ".json" or media == "application/json":
+            with path.open("r", encoding="utf-8") as stream:
+                json.load(stream)
+        elif suffix in {".csv", ".tsv"} or media in {
+            "text/csv", "text/tab-separated-values",
+        }:
+            delimiter = "\t" if suffix == ".tsv" or media == "text/tab-separated-values" else ","
+            with path.open("r", encoding="utf-8", newline="") as stream:
+                reader = csv.reader(stream, delimiter=delimiter)
+                header = next(reader, None)
+                row = next(reader, None)
+                if not header or row is None:
+                    return False
+        return True
+    except (OSError, UnicodeError, ValueError, csv.Error, json.JSONDecodeError):
+        return False
+
+
 def is_durable_artifact(artifact: ArtifactRef) -> bool:
     if artifact.bucket and artifact.s3_key:
         return True
@@ -432,17 +472,32 @@ def has_durable_family_evidence(
         from CoScientist.experiments.runtime.alembic_bridge import extract_mcp_url
 
         return bool(extract_mcp_url(outputs if isinstance(outputs, dict) else {}))
-    # If any artifact has S3 or workspace/external URL, or outputs has results URL or molecules
-    if artifacts and any(is_durable_artifact(a) for a in artifacts):
+    from CoScientist.experiments.runtime.inline_artifacts import has_structured_family_outputs
+
+    meaningful_outputs = has_structured_family_outputs(outputs)
+
+    def _is_result_artifact(artifact: ArtifactRef) -> bool:
+        name = str(artifact.name or "").strip().lower()
+        if name in _DIAGNOSTIC_ARTIFACT_NAMES or name.startswith("tool_limitation"):
+            return False
+        # family_outputs.json is only result evidence when the accompanying
+        # outputs contain an actual structured payload, not just limitations.
+        if name == "family_outputs.json" and not meaningful_outputs:
+            return False
+        return is_durable_artifact(artifact)
+
+    # If any non-diagnostic artifact has S3/workspace/external storage, or the
+    # route returned a structured output, there is delivery evidence.
+    if artifacts and any(_is_result_artifact(a) for a in artifacts):
         return True
     if outputs and (outputs.get("results_url") or outputs.get("molecules_generated")):
         return True
     if task_requires_managed_s3(task):
-        return any(bool(a.bucket and a.s3_key) for a in artifacts)
+        return any(bool(a.bucket and a.s3_key) and _is_result_artifact(a) for a in artifacts)
     roles = _REPORT_EVIDENCE_ROLES if route in EVIDENCE_AGENT_ROUTES else _DATA_ROLES
     durable = [
         a for a in artifacts
-        if is_durable_artifact(a) and str(a.role or "data") in roles
+        if _is_result_artifact(a) and str(a.role or "data") in roles
     ]
     return bool(durable)
 
@@ -513,9 +568,16 @@ def attest_durable_criteria(
         cid = crit.criterion_id
         existing = by_id.get(cid)
         kind = str(crit.kind or "execution")
-        if kind in _ATTESTABLE_CRITERION_KINDS:
+        if existing is not None and existing.passed is False:
+            # A file proves delivery, not that an explicit validator passed.
+            # Preserve the route's negative execution/schema check verbatim.
+            out.append(existing.model_copy(update={"purpose": crit.purpose}))
+            seen.add(cid)
+            continue
+        if crit.purpose == "execution" and kind in _ATTESTABLE_CRITERION_KINDS:
             out.append(CriterionCheck.model_validate({
                 "criterion_id": cid,
+                "purpose": crit.purpose,
                 "passed": True,
                 "observed": existing.observed if existing is not None else True,
                 "details": (
@@ -526,7 +588,7 @@ def attest_durable_criteria(
             seen.add(cid)
             continue
         if existing is not None:
-            out.append(existing)
+            out.append(existing.model_copy(update={"purpose": crit.purpose}))
             seen.add(cid)
     for check in checks:
         if check.criterion_id not in seen:
@@ -536,11 +598,21 @@ def attest_durable_criteria(
 
 def runtime_has_durable_data_evidence(runtime: Mapping[str, Any], task_id: str) -> bool:
     """Prior TaskResults already hold S3/file evidence (not alembic mcp_url)."""
+    task_runtime = (runtime.get("tasks") or {}).get(task_id) or {}
+    current_version = int(task_runtime.get("operation_revision") or 0) + 1
     for result in runtime.get("results") or []:
-        if not isinstance(result, dict) or result.get("task_id") != task_id:
+        if (
+            not isinstance(result, dict)
+            or result.get("task_id") != task_id
+            or result.get("status") not in {"success", "partial"}
+            or int(result.get("result_version") or 1) != current_version
+        ):
             continue
         for raw in result.get("artifacts") or []:
             if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip().lower()
+            if name in _DIAGNOSTIC_ARTIFACT_NAMES or name.startswith("tool_limitation"):
                 continue
             if raw.get("bucket") and raw.get("s3_key"):
                 return True
@@ -561,7 +633,10 @@ def _evidence_expected_artifacts(task: ExperimentTask, *, route: str) -> list:
 
 
 def _evidence_success_criteria(task: ExperimentTask, *, route: str) -> list:
-    required = [item for item in task.success_criteria if item.required]
+    required = [
+        item for item in task.success_criteria
+        if item.required and item.purpose == "execution"
+    ]
     if route != ExecutionRoute.ALEMBIC_BUILD.value:
         return required
     return [item for item in required if item.kind == "execution"]
@@ -584,7 +659,12 @@ def required_artifacts_present(
             (
                 a
                 for a in artifacts
-                if a.artifact_id not in claimed and artifact_exists(a) and artifact_matches(a, expected)
+                if (
+                    a.artifact_id not in claimed
+                    and artifact_exists(a)
+                    and artifact_matches(a, expected)
+                    and artifact_basic_format_valid(a, expected)
+                )
             ),
             None,
         )
@@ -593,6 +673,30 @@ def required_artifacts_present(
         else:
             claimed.add(hit.artifact_id)
     return not missing, missing
+
+
+def invalid_required_artifact_formats(
+    task: ExperimentTask,
+    artifacts: list[ArtifactRef],
+    *,
+    route: str | None = None,
+) -> list[str]:
+    """Required local artifacts that exist/match but fail a known syntax check."""
+    expected_items = (
+        _evidence_expected_artifacts(task, route=route)
+        if route is not None
+        else [item for item in task.expected_artifacts if item.required]
+    )
+    return [
+        expected.name
+        for expected in expected_items
+        if any(
+            artifact_exists(artifact)
+            and artifact_matches(artifact, expected)
+            and not artifact_basic_format_valid(artifact, expected)
+            for artifact in artifacts
+        )
+    ]
 
 
 def criteria_valid(

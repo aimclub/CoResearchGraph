@@ -440,6 +440,7 @@ def test_record_result_requires_canonical_result_keys():
     assert result["criteria_checks"] == [
         {
             "criterion_id": "EXP-1-C1",
+            "purpose": "execution",
             "passed": True,
             "observed": {"status": "success"},
             "evidence_artifact_ids": [],
@@ -693,7 +694,7 @@ def test_inline_fedot_csv_is_materialized_as_expected_workspace_artifact(
     assert stored["task_result"]["artifacts"][0]["workspace_path"] == artifact_path
 
 
-def test_record_result_does_not_auto_pass_threshold_without_checks(tmp_path, monkeypatch):
+def test_record_result_leaves_unchecked_quality_threshold_unassessed(tmp_path, monkeypatch):
     from CoScientist.config import get_settings
 
     monkeypatch.setattr(get_settings().code_exec, "workspace_root", str(tmp_path))
@@ -721,17 +722,19 @@ def test_record_result_does_not_auto_pass_threshold_without_checks(tmp_path, mon
     ]
     (tmp_path / "exp-1-result.csv").write_text("a,b\n1,2\n", encoding="utf-8")
 
-    with pytest.raises(ExperimentRuntimeError, match="missing required evidence"):
-        record_result(
-            state,
-            "EXP-1",
-            started["attempt_id"],
-            {
-                "status": "success",
-                "summary": "Model ran.",
-                "outputs": {"exp-1-result.csv": "a,b\n1,2\n"},
-            },
-        )
+    stored = record_result(
+        state,
+        "EXP-1",
+        started["attempt_id"],
+        {
+            "status": "success",
+            "summary": "Model ran.",
+            "outputs": {"exp-1-result.csv": "a,b\n1,2\n"},
+        },
+    )
+    assert stored["task_result"]["status"] == "success"
+    assert stored["task_result"]["execution_status"] == "completed"
+    assert stored["task_result"]["assessment_status"] == "not_evaluated"
 
 
 def test_coder_workspace_artifacts_are_promoted_into_lineage(tmp_path, monkeypatch):
@@ -1125,31 +1128,32 @@ def test_result_review_approval_records_a_state_delta():
     assert delta[RUNTIME_KEY]["phase"] == "completed"
 
 
-def test_rejected_review_also_records_a_state_delta(monkeypatch):
+def test_quality_feedback_completes_and_records_a_state_delta(monkeypatch):
     from CoScientist.config import get_settings
     from CoScientist.experiments.runtime import mark_result_review
     from CoScientist.experiments.runtime.state_machine import RUNTIME_KEY
     monkeypatch.setattr(get_settings().experiments, "max_replan_rounds", 1)
     st, delta = _adk_state(_reported_state())
     out = mark_result_review(st, approved=False, feedback="metrics missing")
-    assert out["phase"] == "replan_requested"
-    assert delta[RUNTIME_KEY]["phase"] == "replan_requested"
+    assert out["phase"] == "completed"
+    assert out["result_review_disposition"] == "changes_suggested"
+    assert delta[RUNTIME_KEY]["phase"] == "completed"
 
 
-def test_rejected_review_spends_one_replan_round(monkeypatch):
+def test_quality_feedback_does_not_spend_one_replan_round(monkeypatch):
     from CoScientist.config import get_settings
     from CoScientist.experiments.runtime import mark_result_review
     from CoScientist.experiments.runtime.state_machine import REPLAN_ROUNDS_KEY
     monkeypatch.setattr(get_settings().experiments, "max_replan_rounds", 1)
     state = _reported_state()
     out = mark_result_review(state, approved=False, feedback="metrics missing")
-    assert out["replan_rounds"] == 1
+    assert out["replan_rounds"] == 0
     assert out["replan_exhausted"] is False
-    assert state[REPLAN_ROUNDS_KEY] == 1
+    assert state.get(REPLAN_ROUNDS_KEY, 0) == 0
     assert "metrics missing" in state["experiment_runtime"]["result_review_feedback"]
 
 
-def test_replan_budget_survives_the_builder_wiping_the_runtime(monkeypatch):
+def test_feedback_does_not_create_a_replan_for_builder_to_resume(monkeypatch):
     """The path production actually takes.
 
     build_experiment_context runs as the planner's before_agent and nulls
@@ -1172,12 +1176,12 @@ def test_replan_budget_survives_the_builder_wiping_the_runtime(monkeypatch):
         if key in state:
             state[key] = None
     initialize_runtime(state, _plan(_task("EXP-1")), critique=None)
-    assert get_experiment_plan(state)["replan_rounds"] == 1, "budget was reset by the wipe"
+    assert get_experiment_plan(state)["replan_rounds"] == 0
 
     state["experiment_runtime"]["phase"] = "reporting"
     out = mark_result_review(state, approved=False, feedback="second objection")
-    assert out["phase"] == "completed", "out of budget must finish, not replan again"
-    assert out["replan_exhausted"] is True
+    assert out["phase"] == "completed"
+    assert out["replan_exhausted"] is False
 
 
 def test_zero_budget_never_replans(monkeypatch):
@@ -1186,10 +1190,10 @@ def test_zero_budget_never_replans(monkeypatch):
     monkeypatch.setattr(get_settings().experiments, "max_replan_rounds", 0)
     out = mark_result_review(_reported_state(), approved=False, feedback="nope")
     assert out["phase"] == "completed"
-    assert out["replan_exhausted"] is True
+    assert out["replan_exhausted"] is False
 
 
-def test_a_new_ask_starts_with_a_full_budget(monkeypatch):
+def test_a_new_ask_starts_without_implicit_result_replans(monkeypatch):
     """A different question is a new run, so it must not inherit spent rounds."""
     from CoScientist.config import get_settings
     from CoScientist.experiments.runtime import get_experiment_plan, mark_result_review
@@ -1197,7 +1201,7 @@ def test_a_new_ask_starts_with_a_full_budget(monkeypatch):
     monkeypatch.setattr(get_settings().experiments, "max_replan_rounds", 1)
     state = _reported_state()
     mark_result_review(state, approved=False, feedback="redo")
-    assert state[REPLAN_ROUNDS_KEY] == 1
+    assert state.get(REPLAN_ROUNDS_KEY, 0) == 0
     state[REPLAN_ROUNDS_KEY] = 0           # what builder.py does when the ask changes
     initialize_runtime(state, _plan(_task("EXP-1")), critique=None)
     view = get_experiment_plan(state)
@@ -1461,7 +1465,7 @@ def _medical_task(task_id: str = "EXP-1") -> dict:
     task = _task(task_id, route="medical")
     task["design"]["analysis_artifacts"] = [{
         "name": "pubmed_notes.md", "role": "report",
-        "prepare_via": "medical", "path_or_tool": "search_pubmed",
+        "prepare_via": "medical", "path_or_tool": "get_pico",
     }]
     return task
 
@@ -1539,7 +1543,7 @@ def test_a_coder_task_naming_a_medical_tool_follows_the_switch(monkeypatch, medi
     from CoScientist.config import get_settings
 
     task = _task("EXP-1", route="coder")
-    task["description"] = "Search the clinical literature with search_pubmed."
+    task["description"] = "Extract PICO from the supplied abstract with get_pico."
     state = _forced_state(task)
     monkeypatch.setattr(get_settings().web, "medical_agent_enabled", medical_on)
 
@@ -1554,7 +1558,7 @@ def test_a_coder_task_the_runtime_moved_to_medical_goes_back_to_coder(monkeypatc
     from CoScientist.config import get_settings
 
     first = _task("EXP-1", route="coder")
-    first["description"] = "Search the clinical literature with search_pubmed."
+    first["description"] = "Extract PICO from the supplied abstract with get_pico."
     second = _task("EXP-2", route="coder", depends_on=["EXP-1"])
     state = _forced_state(first, second)
     planned_task = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]
@@ -1583,7 +1587,7 @@ def test_an_amendment_keeps_the_planned_route_of_a_task_the_runtime_moved(monkey
     from CoScientist.config import get_settings
 
     task = _task("EXP-1", route="coder")
-    task["description"] = "Search the clinical literature with search_pubmed."
+    task["description"] = "Extract PICO from the supplied abstract with get_pico."
     state = _forced_state(task)
     started = start_task(state, "EXP-1")
     assert started["route"] == "medical"
@@ -1650,6 +1654,7 @@ def test_fedot_switched_off_after_the_fallback_chose_it_does_not_strand_the_task
     assert started["route_agent"] == "ExperimentAgent"
     mark_route_returned(state, "ExperimentAgent")
     record_result(state, "EXP-1", started["attempt_id"], _route_failure(), settings=off, route_agents=live)
-    # Out of that corner by the ordinary road: on to the next route of the chain.
-    assert task_runtime["status"] == "fallback_pending"
-    assert fallback_task(state, "EXP-1", "still empty", settings=off, route_agents=live)["route"] == "coder"
+    # This is the third total attempt. No fourth automatic route is exposed.
+    assert task_runtime["status"] == "failed"
+    with pytest.raises(ExperimentRuntimeError, match="requires fallback_pending"):
+        fallback_task(state, "EXP-1", "still empty", settings=off, route_agents=live)

@@ -167,11 +167,13 @@ def agents_catalog() -> Dict[str, Any]:
     override is shown next to it, never folded into it.
     """
     from CoScientist.web.agent_tree import agent_presentation
+    from CoScientist.agents import config_for_mode
 
     system = load_config()
-    controls = agent_control_policy()
+    effective_system = config_for_mode()
+    controls = agent_control_policy(effective_system)
     parents: Dict[str, List[str]] = {}
-    for cfg in system.agents.values():
+    for cfg in effective_system.agents.values():
         for dep in cfg.subordinates + cfg.children:
             parents.setdefault(dep, []).append(cfg.name)
 
@@ -183,8 +185,9 @@ def agents_catalog() -> Dict[str, Any]:
             declared_enabled = cfg.declared_enabled()
         except Exception:  # noqa: BLE001 — a reference to a missing setting
             declared_enabled = False
-        stage = ("pre" if name in system.pipeline.pre
-                 else "post" if name in system.pipeline.post else None)
+        effective_cfg = effective_system.agents[name]
+        stage = ("pre" if name in effective_system.pipeline.pre
+                 else "post" if name in effective_system.pipeline.post else None)
         control = controls.get(name, {
             "availableInProfile": False,
             "effectiveEnabled": False,
@@ -203,17 +206,17 @@ def agents_catalog() -> Dict[str, Any]:
         elif control["controlCode"] == "parentDisabled":
             lock = "parentDisabled"
         elif control["requiredForPipeline"] and not control["canEnable"]:
-            lock = "required"
+            lock = old_lock or "required"
         agents.append({
             "name": name,
             **agent_presentation(name, cfg.title, cfg.description),
             "class": cfg.cls,
             "description": cfg.description or "",
-            "root": bool(cfg.root),
+            "root": name == effective_system.root.name,
             "internal": bool(cfg.internal),
             "stage": stage,
             "parents": parents.get(name, []),
-            "subordinates": list(cfg.subordinates) + list(cfg.children),
+            "subordinates": list(effective_cfg.subordinates) + list(effective_cfg.children),
             "enabled": _mode_controlled_enabled(cfg, system, declared_enabled),
             "effectiveEnabled": control["effectiveEnabled"],
             **public_control_fields(control),

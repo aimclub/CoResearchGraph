@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterator, List, Literal, Optional, Union
 
 from dotenv import find_dotenv as _find_dotenv, load_dotenv as _load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _load_dotenv(_find_dotenv())
@@ -301,12 +301,26 @@ class OrchestratorSettings(BaseModel):
     # creates -> it hammers update_task_status on phantom task ids and gives up.
     use_planner: bool = False
 
-    # Upper bound on LLM calls for one top-level run, passed to ADK's RunConfig.
-    # ADK defaults to 500, which a long autonomous research run (many CoderAgent
-    # debug/poll iterations) hits and gets cut off mid-work. Raised so a single
-    # prompt can drive a long job to completion; still finite as a runaway-cost
-    # backstop. Override via ORCHESTRATOR__MAX_LLM_CALLS.
-    max_llm_calls: int = 3000
+    # Shared provider-attempt quota, NOT an independent allowance for every
+    # nested ADK runner. Only an explicit operator decision grants another quota.
+    # Opaque remote agents have their own accounting and are outside this gate.
+    max_llm_calls: int = Field(default=100, ge=1, le=100)
+
+    @field_validator("max_llm_calls", mode="before")
+    @classmethod
+    def _clamp_legacy_llm_budget(cls, value):
+        """Old environments used 3000; load them safely without breaking boot."""
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return value
+        if number > 100:
+            import logging
+            logging.getLogger(__name__).warning(
+                "ORCHESTRATOR__MAX_LLM_CALLS=%s exceeds the shared quota; using 100", number,
+            )
+            return 100
+        return value
 
 # =========================
 # CODE EXECUTION
@@ -489,6 +503,11 @@ class ExperimentsSettings(BaseModel):
     route_coder_mcp: bool = False
     route_alembic: bool = False
     task_max_attempts: int = Field(default=2, ge=1, le=2)
+    # Cumulative across routes and automatic replans of the same operation.
+    task_max_total_attempts: int = Field(default=3, ge=1, le=10)
+    max_recovery_discovery_rounds: int = Field(default=2, ge=0, le=2)
+    control_same_failure_limit: int = Field(default=3, ge=2, le=5)
+    control_no_progress_limit: int = Field(default=5, ge=2, le=10)
     max_plan_tasks: int = Field(default=8, ge=1, le=20)
     # How many times a rejected result review may send the module back to
     # planning. `task_max_attempts` bounds retries of ONE task; nothing used to
