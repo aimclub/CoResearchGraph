@@ -106,6 +106,45 @@ def _completed_delegations(callback_context):
     return completed
 
 
+def block_pilot_repeated_overview(tool, args, tool_context):
+    """Stop another remote executor task from repeating a successful overview."""
+    if not isinstance(tool, AgentTool) or tool.name != "TaskExecutorAgent":
+        return None
+    request = args.get("request") if isinstance(args, dict) else None
+    if not isinstance(request, str):
+        return None
+    target = re.search(r"\bTarget tool:\s*([A-Za-z_][A-Za-z_0-9]*)\b", request)
+    if target:
+        if target.group(1) != "dataset_overview_heracleum_tox":
+            return None
+    else:
+        task = request.split("Discovered pilot MCP tools:", 1)[0]
+        if ("dataset_overview_heracleum_tox" not in task
+                or any(name in task for name in _PILOT_SCIENCE_TOOLS[1:])):
+            return None
+    completed = _completed_delegations(tool_context)
+    for body in completed.get("TaskExecutorAgent", []):
+        result = body.get("result") if isinstance(body, dict) else None
+        try:
+            receipt = json.loads(result) if isinstance(result, str) else result
+        except ValueError:
+            continue
+        if not isinstance(receipt, dict) or receipt.get("status") != "computed":
+            continue
+        for call in receipt.get("scientific_mcp_calls") or []:
+            if (isinstance(call, dict)
+                    and call.get("tool") == "dataset_overview_heracleum_tox"
+                    and call.get("args") == {}
+                    and call.get("result") not in (None, "", {})):
+                return {
+                    "error": "The aggregate overview already succeeded. A repeat "
+                             "cannot provide molecule rows or SMILES; use a different "
+                             "tool or report that the data are unavailable.",
+                    "observed_result": call["result"],
+                }
+    return None
+
+
 def _scientific_receipt(bodies):
     calls = []
     for body in bodies:

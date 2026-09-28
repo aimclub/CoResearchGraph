@@ -116,6 +116,55 @@ def test_pilot_allows_executor_handoff_with_a_retrieved_science_tool():
     )
 
 
+def test_pilot_blocks_redelegating_successful_aggregate_overview():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")), remote_subagents=True)
+    executor = next(
+        tool for tool in pilot.root.tools
+        if getattr(tool, "name", None) == "TaskExecutorAgent"
+    )
+    context = _context(_event("TaskExecutorAgent", result=_science_result(
+        "dataset_overview_heracleum_tox"
+    )))
+    context.state = {}
+    args = {"request": "Target tool: dataset_overview_heracleum_tox. Get molecule rows."}
+    responses = [
+        callback(executor, args, context)
+        for callback in pilot.root.canonical_before_tool_callbacks
+    ]
+    assert any(
+        isinstance(response, dict)
+        and "already" in response.get("error", "")
+        and "molecule rows" in response.get("error", "")
+        for response in responses
+    )
+
+
+def test_pilot_allows_new_target_after_observed_overview():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")), remote_subagents=True)
+    executor = next(
+        tool for tool in pilot.root.tools
+        if getattr(tool, "name", None) == "TaskExecutorAgent"
+    )
+    context = _context(_event("TaskExecutorAgent", result=_science_result(
+        "dataset_overview_heracleum_tox"
+    )))
+    context.state = {}
+    args = {"request": (
+        "Target tool: predict_molecule_profile. Profile xanthotoxin. "
+        "Discovered pilot MCP tools: dataset_overview_heracleum_tox, predict_molecule_profile"
+    )}
+    assert all(
+        callback(executor, args, context) is None
+        for callback in pilot.root.canonical_before_tool_callbacks
+    )
+
+
 def test_pilot_handoff_requires_every_discovered_name_and_server_id():
     from CoScientist.assembly import build_system
     from CoScientist.assembly.schema import load_config, resolve_config_path
