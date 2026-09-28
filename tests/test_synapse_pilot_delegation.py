@@ -424,6 +424,57 @@ def test_pilot_accepts_grounded_substantive_report():
     assert report.content.parts[0].text == report_text
 
 
+def _one_profile_cost_context():
+    receipt = json.loads(_science_result(
+        "dataset_overview_heracleum_tox", "chemical_space_clustering",
+        "predict_ld50", "predict_molecule_profile",
+    )["result"])
+    profile = receipt["scientific_mcp_calls"][-1]
+    profile["args"] = {"name_or_smiles": "trioxsalen"}
+    profile["result"] = {"answer": {"synthesis_cost": {"usd_per_g": 1.87}}}
+    return _context(
+        _event("retrieve_tools"), _event("ResearchAgent"),
+        _event("TaskExecutorAgent", result={"result": json.dumps(receipt)}),
+    )
+
+
+def _cost_report(extra):
+    return LlmResponse(content=types.Content(
+        role="model", parts=[types.Part(text=GROUNDED_REPORT + "\n\n" + extra)]
+    ))
+
+
+def test_pilot_accepts_cost_for_the_one_observed_profile():
+    report = _cost_report(
+        "| Соединение | Стоимость USD / g |\n|---|---|\n| trioxsalen | 1.87 |"
+    )
+    assert pilot_delegation.validate_pilot_report(_one_profile_cost_context(), report) is None
+
+
+def test_pilot_rejects_cost_row_without_a_profile_call():
+    report = _cost_report(
+        "| Соединение | Стоимость USD / g |\n|---|---|\n"
+        "| trioxsalen | 1.87 |\n| oxypeucedanin\u202fhydrate | 1.93 |"
+    )
+    with pytest.raises(RuntimeError, match="synthesis cost"):
+        pilot_delegation.validate_pilot_report(_one_profile_cost_context(), report)
+
+
+def test_pilot_rejects_unobserved_cost_amount_in_prose():
+    report = _cost_report("Стоимость isopsoralen составляет 1.95\u202fUSD\u202f/\u202fg.")
+    with pytest.raises(RuntimeError, match="synthesis cost"):
+        pilot_delegation.validate_pilot_report(_one_profile_cost_context(), report)
+
+
+def test_pilot_rejects_unenumerated_additional_profile_calls():
+    report = _cost_report(
+        "Оценка синтеза получена из predict_molecule_profile для trioxsalen "
+        "и аналогичных вызовов для остальных соединений."
+    )
+    with pytest.raises(RuntimeError, match="profile calls"):
+        pilot_delegation.validate_pilot_report(_one_profile_cost_context(), report)
+
+
 def test_pilot_report_requires_molecule_level_limitation():
     report = LlmResponse(content=types.Content(role="model", parts=[types.Part(
         text=GROUNDED_REPORT.replace(

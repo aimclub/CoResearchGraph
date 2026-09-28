@@ -145,3 +145,8 @@ def test_delegated_receipt_does_not_authorize_an_unobserved_link():
     false_url = "https://example.org/artifacts/invented-heatmap.png"
     with pytest.raises(RuntimeError, match="unsupported artifact link"):
         _run(_report(f" Дополнительный рисунок [[{link_id_for(false_url)}]]."))
+
+
+def test_delegated_figures_do_not_authorize_unobserved_profile_cost():
+    with pytest.raises(RuntimeError, match="unsupported synthesis cost"):
+        _run(_report(" Стоимость isopsoralen составляет 1.95 USD/g."))
