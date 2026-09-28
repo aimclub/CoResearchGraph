@@ -6,6 +6,13 @@ defaults:
 agents:
   HypothesesAgent:
     reasoning: medium
+  ExperimentAgent:
+    callbacks:
+      before_agent: [redirect_when_no_tools, reset_scientific_execution, before_get_task, inject_research_context, user_links]
+      before_model: [redact_link_urls, require_first_scientific_tool_call]
+      before_tool: [resolve_link_refs]
+      after_model: [recover_pilot_json_science_call, require_scientific_execution, expand_link_refs]
+      after_tool: [register_tool_result_links, capture_mcp_artifacts, record_scientific_mcp_result]
   TaskExecutorAgent:
     prompt: pilot_task_router
     callbacks:

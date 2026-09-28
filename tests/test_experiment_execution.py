@@ -61,6 +61,18 @@ def _after_model(agent, context, response):
     return response
 
 
+def test_pilot_json_call_recovery_precedes_science_receipt_guard():
+    pilot = load_config(resolve_config_path("synapse_pilot"))
+    regular = load_config(resolve_config_path("system"))
+    callbacks = pilot.agent("ExperimentAgent").callbacks.after_model
+    assert callbacks.index("recover_pilot_json_science_call") < callbacks.index(
+        "require_scientific_execution"
+    )
+    assert "recover_pilot_json_science_call" not in (
+        regular.agent("ExperimentAgent").callbacks.after_model
+    )
+
+
 def test_first_scientific_call_offers_only_explicit_target():
     context = _context()
     context.state["filtered_tools"] = [

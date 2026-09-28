@@ -18,6 +18,7 @@ from google.genai import types
 
 _STATE_KEY = "_experiment_mcp_receipt"
 _EXECUTOR_STATE_KEY = "_executor_science_receipt"
+_PILOT_JSON_TOOL_KEY = "_pilot_json_science_tool"
 _MAX_RESULT_BYTES = 16_384
 _ARTIFACT_EXTENSIONS = {
     ".csv", ".tsv", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".pdf"
@@ -34,6 +35,7 @@ def reset_scientific_execution(callback_context):
         "invocation_id": callback_context._invocation_context.invocation_id,
         "calls": [],
     }
+    callback_context.state[_PILOT_JSON_TOOL_KEY] = None
     return None
 
 
@@ -71,6 +73,10 @@ def require_first_scientific_tool_call(callback_context, llm_request):
         if target:
             raise RuntimeError(f"Explicit target tool {target} is not available to ExperimentAgent")
         return None
+    callback_context.state[_PILOT_JSON_TOOL_KEY] = {
+        "invocation_id": callback_context._invocation_context.invocation_id,
+        "name": declarations[0].name if len(declarations) == 1 else None,
+    }
     llm_request.config.tools = [types.Tool(function_declarations=declarations)]
     llm_request.config.tool_config = types.ToolConfig(
         function_calling_config=types.FunctionCallingConfig(
@@ -78,6 +84,43 @@ def require_first_scientific_tool_call(callback_context, llm_request):
         )
     )
     return None
+
+
+def recover_pilot_json_science_call(callback_context, llm_response):
+    """Route a single JSON-shaped call through ADK when the gateway omits function_call."""
+    if llm_response.partial:
+        return None
+    parts = getattr(llm_response.content, "parts", None) or []
+    if any(getattr(part, "function_call", None) for part in parts):
+        return None
+    receipt = callback_context.state.get(_STATE_KEY) or {}
+    invocation_id = callback_context._invocation_context.invocation_id
+    if receipt.get("invocation_id") == invocation_id and receipt.get("calls"):
+        return None
+    offered = callback_context.state.get(_PILOT_JSON_TOOL_KEY) or {}
+    name = offered.get("name") if offered.get("invocation_id") == invocation_id else None
+    if not name or not (callback_context.state.get("executor_tool_match") or {}).get("matched"):
+        return None
+    target = callback_context.state.get("explicit_tool_target")
+    if target and target != name:
+        return None
+    text_parts = [part.text for part in parts if part.text and not getattr(part, "thought", False)]
+    if len(text_parts) != 1:
+        return None
+    try:
+        payload = json.loads(text_parts[0])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, list) or len(payload) != 1:
+        return None
+    call = payload[0]
+    if (not isinstance(call, dict) or set(call) != {"name", "parameters"}
+            or call.get("name") != name or not isinstance(call.get("parameters"), dict)):
+        return None
+    return LlmResponse(content=types.Content(role="model", parts=[
+        *(part for part in parts if getattr(part, "thought", False)),
+        types.Part.from_function_call(name=name, args=call["parameters"]),
+    ]))
 
 
 def capture_scientific_pipeline_receipt(tool, args, tool_context, tool_response):
