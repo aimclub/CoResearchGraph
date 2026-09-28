@@ -22,7 +22,7 @@ _PILOT_SCIENCE_TOOLS = (
 
 
 def enforce_pilot_science_handoff(tool, args, tool_context):
-    """Keep discovered pilot MCP names in the outbound executor request."""
+    """Carry discovered pilot MCP names into the remote executor request."""
     if not isinstance(tool, AgentTool) or tool.name != "TaskExecutorAgent":
         return None
     request = args.get("request") if isinstance(args, dict) else None
@@ -43,13 +43,13 @@ def enforce_pilot_science_handoff(tool, args, tool_context):
         f"{name} (server_id={server_id})" if server_id else name
         for name, server_id in science.items()
     )
-    return {"error": (
-        "Pilot scientific handoff: TaskExecutorAgent request must carry all "
-        f"retrieved MCP tool names and server ids: {available}. Resubmit the "
-        "computation naming its target tool and available tools; send it "
-        "through ToolPipelineAgent. "
-        "heracleum-tox is a prepared MCP service, not a GitHub repository."
-    )}
+    args["request"] = (
+        f"{request}\n\nDiscovered pilot MCP tools: {available}. "
+        "This list is routing context; execute only the computation requested "
+        "above through ToolPipelineAgent. heracleum-tox is a prepared MCP "
+        "service, not a GitHub repository."
+    )
+    return None
 
 
 def enforce_pilot_executor_route(tool, args, tool_context):

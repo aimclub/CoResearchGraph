@@ -18,6 +18,7 @@ from CoScientist.assembly.schema import load_config, resolve_config_path
 class _ScriptedModel(BaseLlm):
     _responses: list = PrivateAttr()
     _index: int = PrivateAttr(default=0)
+    _seen_requests: list[str] = PrivateAttr(default_factory=list)
 
     def __init__(self, responses):
         super().__init__(model="pilot-handoff-probe")
@@ -28,6 +29,11 @@ class _ScriptedModel(BaseLlm):
         return self._index
 
     async def generate_content_async(self, llm_request, stream=False):
+        self._seen_requests.append(" ".join(
+            part.text or ""
+            for content in llm_request.contents
+            for part in content.parts
+        ))
         response = self._responses[self._index]
         self._index += 1
         yield response
@@ -42,7 +48,7 @@ def _response(*, request=None, text=None):
     return LlmResponse(content=types.Content(role="model", parts=[part]))
 
 
-def test_pilot_handoff_retries_missing_tool_before_agent_tool_runs():
+def test_pilot_handoff_passes_discovered_tools_to_remote_worker_without_retry():
     url = "heracleum-server"
     worker_model = _ScriptedModel([_response(text="worker called")])
     worker = LlmAgent(name="TaskExecutorAgent", model=worker_model,
@@ -51,10 +57,6 @@ def test_pilot_handoff_retries_missing_tool_before_agent_tool_runs():
                          remote_subagents=True)
     model = _ScriptedModel([
         _response(request=f"Run predict_ld50 (server_id={url})"),
-        _response(request=(
-            f"Run predict_ld50 (server_id={url}); available "
-            f"chemical_space_clustering (server_id={url})"
-        )),
         _response(text="done"),
     ])
     agent = LlmAgent(name="PilotHandoffProbe", model=model,
@@ -81,7 +83,7 @@ def test_pilot_handoff_retries_missing_tool_before_agent_tool_runs():
     responses = [response.response for event in events
                  for response in event.get_function_responses()
                  if response.name == "TaskExecutorAgent"]
-    assert len(responses) == 2
-    assert "chemical_space_clustering" in responses[0]["error"]
+    assert len(responses) == 1
     assert worker_model.calls == 1
-    assert "worker called" in str(responses[1])
+    assert "chemical_space_clustering (server_id=heracleum-server)" in worker_model._seen_requests[0]
+    assert "worker called" in str(responses[0])

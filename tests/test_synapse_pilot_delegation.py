@@ -68,7 +68,7 @@ def test_pilot_accepts_extra_calls_and_required_delegations_in_any_order():
     assert "Pilot report" not in result.content.parts[0].text
 
 
-def test_pilot_blocks_executor_handoff_that_drops_retrieved_science_tools():
+def test_pilot_enriches_executor_handoff_with_discovered_science_tools():
     from CoScientist.assembly import build_system
     from CoScientist.assembly.schema import load_config, resolve_config_path
 
@@ -87,14 +87,11 @@ def test_pilot_blocks_executor_handoff_that_drops_retrieved_science_tools():
         for callback in orchestrator.canonical_before_tool_callbacks
     ]
 
-    assert any(
-        isinstance(response, dict)
-        and "predict_ld50" in response.get("error", "")
-        and "chemical_space_clustering" in response.get("error", "")
-        and "butina_clustering" not in response.get("error", "")
-        for response in responses
-    )
-    assert args["request"] == "Extract metabolites from the prepared heracleum-tox base"
+    assert all(response is None for response in responses)
+    assert args["request"].startswith("Extract metabolites from the prepared heracleum-tox base")
+    assert "predict_ld50 (server_id=heracleum-server)" in args["request"]
+    assert "chemical_space_clustering (server_id=heracleum-server)" in args["request"]
+    assert "butina_clustering" not in args["request"]
 
 
 def test_pilot_allows_executor_handoff_with_a_retrieved_science_tool():
@@ -116,7 +113,7 @@ def test_pilot_allows_executor_handoff_with_a_retrieved_science_tool():
     )
 
 
-def test_pilot_handoff_requires_every_discovered_name_and_server_id():
+def test_pilot_handoff_adds_missing_names_only_once():
     from CoScientist.assembly import build_system
     from CoScientist.assembly.schema import load_config, resolve_config_path
 
@@ -126,20 +123,18 @@ def test_pilot_handoff_requires_every_discovered_name_and_server_id():
         {"tool": "predict_ld50", "server_id": "heracleum-server"},
         {"tool": "chemical_space_clustering", "server_id": "heracleum-server"},
     ]})
-    assert any(
-        "chemical_space_clustering" in response.get("error", "")
-        for callback in pilot.root.canonical_before_tool_callbacks
-        if isinstance(response := callback(executor, {
-            "request": "Run predict_ld50 (server_id=heracleum-server)"
-        }, context), dict)
-    )
+    args = {"request": "Run predict_ld50 (server_id=heracleum-server)"}
     assert all(
-        callback(executor, {"request": (
-            "Run predict_ld50 (server_id=heracleum-server); available tool "
-            "chemical_space_clustering (server_id=heracleum-server)"
-        )}, context) is None
+        callback(executor, args, context) is None
         for callback in pilot.root.canonical_before_tool_callbacks
     )
+    assert args["request"].count("chemical_space_clustering") == 1
+    enriched = args["request"]
+    assert all(
+        callback(executor, args, context) is None
+        for callback in pilot.root.canonical_before_tool_callbacks
+    )
+    assert args["request"] == enriched
 
 
 def test_pilot_executor_blocks_coder_for_named_ready_mcp_tool():
