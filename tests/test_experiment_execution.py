@@ -61,6 +61,40 @@ def _after_model(agent, context, response):
     return response
 
 
+def test_first_scientific_call_offers_only_explicit_target():
+    context = _context()
+    context.state["filtered_tools"] = [
+        {"tool": "dataset_overview_heracleum_tox"},
+        {"tool": "predict_molecule_profile"},
+    ]
+    context.state["explicit_tool_target"] = "predict_molecule_profile"
+    request = SimpleNamespace(config=SimpleNamespace(
+        tools=[types.Tool(function_declarations=[
+            types.FunctionDeclaration(name="dataset_overview_heracleum_tox"),
+            types.FunctionDeclaration(name="predict_molecule_profile"),
+        ])],
+        tool_config=None,
+    ))
+    require_first_scientific_tool_call(context, request)
+    assert [declaration.name for declaration in request.config.tools[0].function_declarations] == [
+        "predict_molecule_profile"
+    ]
+
+
+def test_first_scientific_call_rejects_missing_explicit_target():
+    context = _context()
+    context.state["filtered_tools"] = [{"tool": "dataset_overview_heracleum_tox"}]
+    context.state["explicit_tool_target"] = "predict_molecule_profile"
+    request = SimpleNamespace(config=SimpleNamespace(
+        tools=[types.Tool(function_declarations=[
+            types.FunctionDeclaration(name="dataset_overview_heracleum_tox"),
+        ])],
+        tool_config=None,
+    ))
+    with pytest.raises(RuntimeError, match="predict_molecule_profile"):
+        require_first_scientific_tool_call(context, request)
+
+
 def test_experiment_rejects_text_that_impersonates_mcp_results(agent):
     response = LlmResponse(
         content=types.Content(

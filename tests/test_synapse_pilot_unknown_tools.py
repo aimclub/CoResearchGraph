@@ -141,6 +141,74 @@ def test_synapse_pilot_observes_real_calls_and_responses_without_forcing_order()
     assert all(config is None for config in model.tool_configs)
 
 
+def test_pilot_final_response_runs_missing_profile_through_adk_tool_call():
+    partial = json.dumps({
+        "status": "computed",
+        "scientific_mcp_calls": [
+            {"tool": name, "args": {}, "result": {"answer": {"observed": True}}}
+            for name in (
+                "dataset_overview_heracleum_tox", "chemical_space_clustering",
+                "predict_ld50",
+            )
+        ],
+    })
+    profile = json.dumps({
+        "status": "computed",
+        "scientific_mcp_calls": [{
+            "tool": "predict_molecule_profile",
+            "args": {"name_or_smiles": "xanthotoxin"},
+            "result": {"answer": {"ld50_mgkg": 638.0}},
+        }],
+    })
+    requests = []
+
+    async def retrieve_tools(query: str) -> dict:
+        return {"status": "ok"}
+
+    async def HypothesesAgent(request: str) -> dict:
+        return {"status": "ok"}
+
+    async def ResearchAgent(request: str) -> dict:
+        return {"status": "ok"}
+
+    async def TaskExecutorAgent(request: str) -> dict:
+        requests.append(request)
+        return {"result": profile if "Target tool: predict_molecule_profile" in request else partial}
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")), remote_subagents=True)
+    model = PilotModel()
+    agent = LlmAgent(
+        name="PilotRecoveryProbe", model=model, instruction="Complete the pilot.",
+        tools=[retrieve_tools, HypothesesAgent, ResearchAgent, TaskExecutorAgent],
+        after_model_callback=pilot.root.after_model_callback,
+    )
+
+    async def run():
+        sessions = InMemorySessionService()
+        await sessions.create_session(
+            app_name="pilot_recovery", user_id="user", session_id="session",
+            state={"accumulated_tools": [
+                {"tool": name, "server_id": "heracleum-server"}
+                for name in (
+                    "dataset_overview_heracleum_tox", "chemical_space_clustering",
+                    "predict_ld50", "predict_molecule_profile",
+                )
+            ]},
+        )
+        runner = Runner(agent=agent, app_name="pilot_recovery", session_service=sessions)
+        return [event async for event in runner.run_async(
+            user_id="user", session_id="session",
+            new_message=types.Content(role="user", parts=[types.Part(text="Run pilot")]),
+        )]
+
+    events = asyncio.run(run())
+    calls = [call.name for event in events for call in event.get_function_calls()]
+    assert calls == [*CALLS, "TaskExecutorAgent"]
+    assert len(requests) == 2
+    assert "name_or_smiles=xanthotoxin" in requests[1]
+    assert "ld50_mgkg" in events[-1].content.parts[0].text
+
+
 class UnknownFirstModel(PilotModel):
     _unknown_sent: bool = PrivateAttr(default=False)
 
