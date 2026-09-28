@@ -169,6 +169,55 @@ def test_pilot_executor_blocks_coder_for_named_ready_mcp_tool():
     )
 
 
+def test_pilot_executor_allows_separate_supplementary_table_extraction():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    executor = pilot.agent("TaskExecutorAgent")
+    coder = next(tool for tool in executor.tools if tool.name == "CoderAgent")
+    context = SimpleNamespace(
+        state={},
+        _invocation_context=SimpleNamespace(user_content=types.Content(
+            role="user", parts=[types.Part(text=(
+                "Run dataset_overview_heracleum_tox and, if it has no SMILES list, "
+                "extract the article's supplementary tables with CoderAgent."
+            ))],
+        )),
+    )
+
+    assert all(
+        callback(coder, {"request": (
+            "Download and parse supplementary tables for DOI 10.3390/plants1403253 "
+            "to extract names and SMILES. Report missing files honestly."
+        )}, context) is None
+        for callback in executor.canonical_before_tool_callbacks
+    )
+
+
+def test_pilot_executor_still_blocks_reimplementing_named_ld50_tool():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    executor = pilot.agent("TaskExecutorAgent")
+    coder = next(tool for tool in executor.tools if tool.name == "CoderAgent")
+    context = SimpleNamespace(
+        state={},
+        _invocation_context=SimpleNamespace(user_content=types.Content(
+            role="user", parts=[types.Part(text="Run predict_ld50 on the prepared MCP")],
+        )),
+    )
+
+    assert any(
+        isinstance(response, dict) and "ToolPipelineAgent" in response.get("error", "")
+        for callback in executor.canonical_before_tool_callbacks
+        if (response := callback(coder, {
+            "request": "Write Python to compute acute LD50 predictions for the molecules"
+        }, context)) is not None
+    )
+
+
 def test_pilot_executor_preserves_explicit_repository_work():
     from CoScientist.assembly import build_system
     from CoScientist.assembly.schema import load_config, resolve_config_path

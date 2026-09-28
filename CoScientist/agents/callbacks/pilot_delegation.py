@@ -56,28 +56,37 @@ def enforce_pilot_executor_route(tool, args, tool_context):
     """Do not turn a named ready MCP computation into sandbox code."""
     if not isinstance(tool, AgentTool) or tool.name != "CoderAgent":
         return None
+    subtask = args.get("request") if isinstance(args, dict) else None
+    if not isinstance(subtask, str):
+        return None
     invocation = getattr(tool_context, "_invocation_context", None)
     content = getattr(invocation, "user_content", None)
     request = "\n".join(
         part.text or "" for part in (getattr(content, "parts", None) or [])
     )
-    subtask = args.get("request") if isinstance(args, dict) else None
-    if isinstance(subtask, str) and not any(
+    names_ready_tool = any(
         re.search(rf"(?<!\w){re.escape(name)}(?!\w)", subtask)
         for name in _PILOT_SCIENCE_TOOLS
-    ):
-        explicit_repo = re.search(
-            r"\b(?:clone|inspect|read|checkout|check out)\b.{0,100}?"
-            r"(https?://github\.com/[^\s,;)]+)", request, re.IGNORECASE,
-        )
-        if (explicit_repo and explicit_repo.group(1) in subtask
-                and re.search(r"\b(?:clone|inspect|read|checkout|check out)\b",
-                              subtask, re.IGNORECASE)):
-            return None
-    if any(
+    )
+    names_prepared_service = re.search(
+        r"\b(?:heracleum[-_ ]tox|server_id)\b", subtask, re.IGNORECASE
+    )
+    reimplements_science = re.search(
+        r"\b(?:predict|compute|calculate|estimate|run)\b.{0,100}?"
+        r"\b(?:LD50|hepatotoxicity|DILI|cardiotoxicity|carcinogenicity|"
+        r"chemical[ -]space|clustering|molecule[ -]profile)\b",
+        subtask, re.IGNORECASE,
+    ) and any(
         re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request)
         for name in _PILOT_SCIENCE_TOOLS
-    ):
+    )
+    ambiguous_clone = (
+        re.search(r"\b(?:clone|checkout|check out)\b", subtask, re.IGNORECASE)
+        and not re.search(r"https?://github\.com/[^\s,;)]+", subtask, re.IGNORECASE)
+        and any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request)
+                for name in _PILOT_SCIENCE_TOOLS)
+    )
+    if names_ready_tool or names_prepared_service or reimplements_science or ambiguous_clone:
         return {"error": (
             "The request names a ready scientific MCP tool. Delegate this "
             "computation to ToolPipelineAgent; CoderAgent cannot call MCP tools. "
