@@ -329,7 +329,11 @@ def test_pilot_recovers_missing_profile_after_reranker_clears_discovery():
     handoff = SimpleNamespace(
         state=state, _invocation_context=SimpleNamespace(invocation_id="run-1")
     )
-    pilot.root.canonical_before_tool_callbacks[-1](
+    handoff_callback = next(
+        callback for callback in pilot.root.canonical_before_tool_callbacks
+        if callback.__name__ == "enforce_pilot_science_handoff"
+    )
+    handoff_callback(
         executor, {"request": "Run dataset_overview_heracleum_tox"}, handoff
     )
     state["accumulated_tools"] = []
