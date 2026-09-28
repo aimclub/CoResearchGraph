@@ -35,11 +35,11 @@ def _event(name, *, invocation_id="run-1", result=None, include_call=True):
     )
 
 
-def _context(*events):
+def _context(*events, state=None):
     invocation = SimpleNamespace(
         invocation_id="run-1", session=SimpleNamespace(events=list(events))
     )
-    return SimpleNamespace(_invocation_context=invocation)
+    return SimpleNamespace(_invocation_context=invocation, state=state or {})
 
 
 def _model_response(*, tool=None, partial=False):
@@ -169,6 +169,32 @@ def test_pilot_executor_blocks_coder_for_named_ready_mcp_tool():
     )
 
 
+def test_pilot_executor_keeps_explicit_target_in_pipeline_request():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    executor = pilot.agent("TaskExecutorAgent")
+    pipeline = next(tool for tool in executor.tools if tool.name == "ToolPipelineAgent")
+    context = SimpleNamespace(
+        state={},
+        _invocation_context=SimpleNamespace(user_content=types.Content(
+            role="user", parts=[types.Part(text=(
+                "Target tool: predict_molecule_profile (server_id=heracleum-server). "
+                "Call it with name_or_smiles=xanthotoxin."
+            ))],
+        )),
+    )
+    args = {"request": "Compute a profile for xanthotoxin"}
+
+    assert all(
+        callback(pipeline, args, context) is None
+        for callback in executor.canonical_before_tool_callbacks
+    )
+    assert args["request"].startswith("Target tool: predict_molecule_profile")
+    assert "name_or_smiles=xanthotoxin" in args["request"]
+
+
 def test_pilot_executor_preserves_explicit_repository_work():
     from CoScientist.assembly import build_system
     from CoScientist.assembly.schema import load_config, resolve_config_path
@@ -255,6 +281,69 @@ def test_pilot_combines_scientific_receipts_across_executor_delegations():
         "dataset_overview_heracleum_tox", "chemical_space_clustering",
         "predict_ld50", "predict_molecule_profile",
     ))
+
+
+def test_pilot_requests_missing_profile_before_accepting_final_report():
+    context = _context(
+        _event("retrieve_tools"),
+        _event("ResearchAgent"),
+        _event("TaskExecutorAgent", result=_science_result(
+            "dataset_overview_heracleum_tox", "chemical_space_clustering",
+            "predict_ld50",
+        )),
+        state={"accumulated_tools": [
+            {"tool": name, "server_id": "heracleum-server"}
+            for name in (
+                "dataset_overview_heracleum_tox", "chemical_space_clustering",
+                "predict_ld50", "predict_molecule_profile",
+            )
+        ]},
+    )
+
+    correction = require_pilot_delegations(context, _model_response())
+    call = correction.content.parts[0].function_call
+    assert call.name == "TaskExecutorAgent"
+    assert "Target tool: predict_molecule_profile" in call.args["request"]
+    assert "name_or_smiles=xanthotoxin" in call.args["request"]
+    assert "chemical_space_clustering" in call.args["request"]
+    with pytest.raises(RuntimeError, match="predict_molecule_profile"):
+        require_pilot_delegations(context, _model_response())
+
+
+def test_pilot_recovers_missing_profile_after_reranker_clears_discovery():
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")), remote_subagents=True)
+    executor = next(
+        tool for tool in pilot.root.tools
+        if getattr(tool, "name", None) == "TaskExecutorAgent"
+    )
+    state = {"accumulated_tools": [
+        {"tool": name, "server_id": "heracleum-server"}
+        for name in (
+            "dataset_overview_heracleum_tox", "chemical_space_clustering",
+            "predict_ld50", "predict_molecule_profile",
+        )
+    ]}
+    handoff = SimpleNamespace(
+        state=state, _invocation_context=SimpleNamespace(invocation_id="run-1")
+    )
+    pilot.root.canonical_before_tool_callbacks[-1](
+        executor, {"request": "Run dataset_overview_heracleum_tox"}, handoff
+    )
+    state["accumulated_tools"] = []
+    context = _context(
+        _event("retrieve_tools"), _event("ResearchAgent"),
+        _event("TaskExecutorAgent", result=_science_result(
+            "dataset_overview_heracleum_tox", "chemical_space_clustering", "predict_ld50"
+        )),
+        state=state,
+    )
+    correction = require_pilot_delegations(context, _model_response())
+    assert "Target tool: predict_molecule_profile" in (
+        correction.content.parts[0].function_call.args["request"]
+    )
 
 
 def test_pilot_rejects_delegations_without_verified_scientific_computation():

@@ -12,7 +12,7 @@ agents:
       after_model: [attest_executor_science, expand_link_refs, guard_unknown_tools]
       before_agent: [reset_executor_science_receipt, user_links]
       before_model: [redact_link_urls]
-      before_tool: [resolve_link_refs, enforce_pilot_executor_route]
+      before_tool: [resolve_link_refs, enforce_pilot_executor_route, preserve_pilot_target]
       after_tool: [register_tool_result_links, capture_scientific_pipeline_receipt]
   OrchestratorAgent:
     prompt: pilot_orchestrator

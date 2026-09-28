@@ -54,6 +54,11 @@ def require_first_scientific_tool_call(callback_context, llm_request):
         item.get("tool") for item in callback_context.state.get("filtered_tools") or []
         if isinstance(item, dict) and item.get("tool")
     }
+    target = callback_context.state.get("explicit_tool_target")
+    if target and target not in selected:
+        raise RuntimeError(f"Explicit target tool {target} was not selected")
+    if target:
+        selected = {target}
     if not selected:
         return None
     declarations = [
@@ -63,6 +68,8 @@ def require_first_scientific_tool_call(callback_context, llm_request):
         if declaration.name in selected
     ]
     if not declarations:
+        if target:
+            raise RuntimeError(f"Explicit target tool {target} is not available to ExperimentAgent")
         return None
     llm_request.config.tools = [types.Tool(function_declarations=declarations)]
     llm_request.config.tool_config = types.ToolConfig(

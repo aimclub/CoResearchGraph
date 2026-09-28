@@ -1113,11 +1113,13 @@ _cb("guard_unknown_tools", "after_model", factory=_guard_unknown_tools)
 from CoScientist.agents.callbacks.pilot_delegation import (
     enforce_pilot_executor_route,
     enforce_pilot_science_handoff,
+    preserve_pilot_target,
     require_pilot_delegations,
 )
 _cb("require_pilot_delegations", "after_model", func=require_pilot_delegations)
 _cb("enforce_pilot_science_handoff", "before_tool", func=enforce_pilot_science_handoff)
 _cb("enforce_pilot_executor_route", "before_tool", func=enforce_pilot_executor_route)
+_cb("preserve_pilot_target", "before_tool", func=preserve_pilot_target)
 from CoScientist.agents.callbacks.experiment_execution import (
     attest_executor_science,
     capture_scientific_pipeline_receipt,
