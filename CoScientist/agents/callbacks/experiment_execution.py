@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+from copy import deepcopy
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,6 +19,7 @@ from google.genai import types
 
 _STATE_KEY = "_experiment_mcp_receipt"
 _EXECUTOR_STATE_KEY = "_executor_science_receipt"
+_OVERVIEW_STATE_KEY = "_pilot_observed_overview"
 _MAX_RESULT_BYTES = 16_384
 _ARTIFACT_EXTENSIONS = {
     ".csv", ".tsv", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".pdf"
@@ -40,6 +42,30 @@ def reset_scientific_execution(callback_context):
 def reset_executor_science_receipt(callback_context):
     callback_context.state[_EXECUTOR_STATE_KEY] = None
     return None
+
+
+def reset_pilot_overview_cache(callback_context):
+    """A new executor task starts with fresh MCP observations."""
+    callback_context.state[_OVERVIEW_STATE_KEY] = None
+    return None
+
+
+def reuse_pilot_overview_result(tool, args, tool_context):
+    """Return the observed aggregate overview for an identical pilot call."""
+    if not isinstance(tool, McpTool) or tool.name != "dataset_overview_heracleum_tox":
+        return None
+    if args != {}:
+        return None
+    cached = tool_context.state.get(_OVERVIEW_STATE_KEY) or {}
+    if "response" not in cached:
+        return None
+    response = deepcopy(cached["response"])
+    response["_reused_observed_result"] = True
+    response["capability_note"] = (
+        "This is the previous observed aggregate overview. Repeating this call "
+        "cannot produce per-molecule rows or SMILES; report that limitation."
+    )
+    return response
 
 
 def require_first_scientific_tool_call(callback_context, llm_request):
@@ -241,12 +267,20 @@ def record_scientific_mcp_result(tool, args, tool_context, tool_response):
         list(receipt.get("calls") or [])
         if receipt.get("invocation_id") == invocation_id else []
     )
-    calls.append({
+    call = {
         "tool": tool.name,
         "args": args,
         "result": _bounded_result(result),
-    })
+    }
+    if tool_response.get("_reused_observed_result"):
+        call["reused_observed_result"] = True
+    calls.append(call)
     tool_context.state[_STATE_KEY] = {"invocation_id": invocation_id, "calls": calls}
+    if (tool.name == "dataset_overview_heracleum_tox" and args == {}
+            and not tool_response.get("_reused_observed_result")):
+        tool_context.state[_OVERVIEW_STATE_KEY] = {
+            "response": deepcopy(tool_response),
+        }
     return None
 
 

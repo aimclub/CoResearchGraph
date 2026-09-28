@@ -26,6 +26,7 @@ from CoScientist.agents.callbacks.experiment_execution import (
     reset_executor_science_receipt,
     reset_scientific_execution,
 )
+from CoScientist.agents.callbacks import experiment_execution
 from CoScientist.assembly import build_system
 from CoScientist.assembly.schema import load_config, resolve_config_path
 
@@ -393,3 +394,122 @@ def test_adk_passes_real_mcp_receipt_through_pipeline_and_router():
     assert receipt["status"] == "computed"
     assert receipt["scientific_mcp_calls"][0]["result"] == {"answer": {"n_reconstructed": 225}}
     assert "12,654" not in events[-1].content.parts[0].text
+
+
+def test_pilot_reuses_observed_overview_instead_of_calling_mcp_twice():
+    mcp_tool = _ObservedMcpTool()
+    model = _ScriptedModel([
+        LlmResponse(content=types.Content(role="model", parts=[
+            types.Part.from_function_call(name="dataset_overview_heracleum_tox", args={})
+        ])),
+        LlmResponse(content=types.Content(role="model", parts=[
+            types.Part.from_function_call(name="dataset_overview_heracleum_tox", args={})
+        ])),
+        _response("Report the available summary"),
+    ])
+    experiment = LlmAgent(
+        name="ExperimentAgent", model=model, tools=[mcp_tool],
+        before_agent_callback=reset_scientific_execution,
+        before_model_callback=require_first_scientific_tool_call,
+        before_tool_callback=experiment_execution.reuse_pilot_overview_result,
+        after_tool_callback=record_scientific_mcp_result,
+        after_model_callback=require_scientific_execution,
+    )
+
+    async def run():
+        sessions = InMemorySessionService()
+        await sessions.create_session(
+            app_name="overview_reuse", user_id="user", session_id="session",
+            state={"executor_tool_match": {"matched": True},
+                   "filtered_tools": [{"tool": "dataset_overview_heracleum_tox"}]},
+        )
+        runner = Runner(agent=experiment, app_name="overview_reuse", session_service=sessions)
+        return [event async for event in runner.run_async(
+            user_id="user", session_id="session",
+            new_message=types.Content(role="user", parts=[types.Part(text="Overview")]),
+        )]
+
+    events = asyncio.run(run())
+    assert mcp_tool.calls == 1
+    receipt = json.loads(events[-1].content.parts[0].text)
+    assert len(receipt["scientific_mcp_calls"]) == 2
+    assert receipt["scientific_mcp_calls"][1]["reused_observed_result"] is True
+
+
+def test_pilot_config_installs_overview_reuse_callback(agent):
+    assert experiment_execution.reuse_pilot_overview_result in (
+        agent.canonical_before_tool_callbacks
+    )
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    assert experiment_execution.reset_pilot_overview_cache in (
+        pilot.agent("TaskExecutorAgent").canonical_before_agent_callbacks
+    )
+
+
+def test_pilot_starts_next_executor_task_with_fresh_overview_cache():
+    context = _context()
+    context.state["_pilot_observed_overview"] = {
+        "response": {"content": [{"type": "text", "text": "old overview"}]}
+    }
+    experiment_execution.reset_pilot_overview_cache(context)
+    tool = Mock(spec=McpTool)
+    tool.name = "dataset_overview_heracleum_tox"
+    assert experiment_execution.reuse_pilot_overview_result(tool, {}, context) is None
+
+
+def test_pilot_reuses_overview_across_executor_subtasks_in_one_run():
+    mcp_tool = _ObservedMcpTool()
+    experiment = LlmAgent(
+        name="ExperimentAgent",
+        model=_ScriptedModel([
+            LlmResponse(content=types.Content(role="model", parts=[
+                types.Part.from_function_call(name="dataset_overview_heracleum_tox", args={})
+            ])),
+            _response("First aggregate overview"),
+            LlmResponse(content=types.Content(role="model", parts=[
+                types.Part.from_function_call(name="dataset_overview_heracleum_tox", args={})
+            ])),
+            _response("Same aggregate overview"),
+        ]),
+        tools=[mcp_tool],
+        before_agent_callback=reset_scientific_execution,
+        before_model_callback=require_first_scientific_tool_call,
+        before_tool_callback=experiment_execution.reuse_pilot_overview_result,
+        after_tool_callback=record_scientific_mcp_result,
+        after_model_callback=require_scientific_execution,
+    )
+    pipeline = SequentialAgent(name="ToolPipelineAgent", sub_agents=[experiment])
+    router = LlmAgent(
+        name="TaskExecutorAgent",
+        model=_ScriptedModel([
+            LlmResponse(content=types.Content(role="model", parts=[
+                types.Part.from_function_call(name="ToolPipelineAgent", args={"request": "Overview"})
+            ])),
+            LlmResponse(content=types.Content(role="model", parts=[
+                types.Part.from_function_call(name="ToolPipelineAgent", args={"request": "Overview again"})
+            ])),
+            _response("Done"),
+        ]),
+        tools=[AgentTool(agent=pipeline)],
+        before_agent_callback=reset_executor_science_receipt,
+        after_tool_callback=capture_scientific_pipeline_receipt,
+        after_model_callback=attest_executor_science,
+    )
+
+    async def run():
+        sessions = InMemorySessionService()
+        await sessions.create_session(
+            app_name="overview_subtasks", user_id="user", session_id="session",
+            state={"executor_tool_match": {"matched": True},
+                   "filtered_tools": [{"tool": "dataset_overview_heracleum_tox"}]},
+        )
+        runner = Runner(agent=router, app_name="overview_subtasks", session_service=sessions)
+        return [event async for event in runner.run_async(
+            user_id="user", session_id="session",
+            new_message=types.Content(role="user", parts=[types.Part(text="Overview twice")]),
+        )]
+
+    events = asyncio.run(run())
+    assert mcp_tool.calls == 1
+    receipt = json.loads(events[-1].content.parts[0].text)
+    assert receipt["scientific_mcp_calls"][0]["reused_observed_result"] is True
