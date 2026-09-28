@@ -7,6 +7,7 @@ import pytest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
+from CoScientist.agents.callbacks import pilot_delegation
 from CoScientist.agents.callbacks.pilot_delegation import require_pilot_delegations
 
 
@@ -63,9 +64,9 @@ def test_pilot_accepts_extra_calls_and_required_delegations_in_any_order():
         )),
         _event("ResearchAgent"),
     )
-    result = require_pilot_delegations(context, _model_response())
-    assert "225" in result.content.parts[0].text
-    assert "Pilot report" not in result.content.parts[0].text
+    report = _model_response()
+    assert require_pilot_delegations(context, report) is None
+    assert report.content.parts[0].text == "Pilot report"
 
 
 def test_pilot_blocks_executor_handoff_that_drops_retrieved_science_tools():
@@ -275,12 +276,69 @@ def test_pilot_combines_scientific_receipts_across_executor_delegations():
             )
         ),
     )
-    result = require_pilot_delegations(context, _model_response())
-    text = result.content.parts[0].text
-    assert all(name in text for name in (
-        "dataset_overview_heracleum_tox", "chemical_space_clustering",
-        "predict_ld50", "predict_molecule_profile",
+    assert require_pilot_delegations(context, _model_response()) is None
+
+
+def _verified_report_context():
+    return _context(
+        _event("retrieve_tools"), _event("ResearchAgent"),
+        _event("TaskExecutorAgent", result=_science_result(
+            "dataset_overview_heracleum_tox", "chemical_space_clustering",
+            "predict_ld50", "predict_molecule_profile",
+        )),
+    )
+
+
+GROUNDED_REPORT = (
+        "## Научный отчёт по Heracleum\n\n"
+        "| Этап | Наблюдение |\n|---|---|\n"
+        "| Обзор | MCP подтвердил 225 реконструированных соединений |\n"
+        "| Кластеризация | Результат вычислен инструментом |\n"
+        "| LD50 | Значения являются прогнозом модели |\n"
+        "| Профиль | Получен отдельным вызовом MCP |\n\n"
+        "Полные строки молекул и SMILES недоступны из агрегированного обзора. "
+        "Экспериментальная проверка LD50 в доступных результатах не подтверждена. "
+        "Тепловая карта и дендрограмма не приложены, потому что инструменты "
+        "не вернули файлы изображений. Таблица отражает только реально "
+        "полученные вычислительные результаты."
+)
+
+
+@pytest.mark.parametrize("claim", [
+    "Тепловая карта создана (рисунок [[linkcb93]]).",
+    "Кардиотоксичность составляет 87%.",
+    "Тепловая карта построена и включена в отчёт.",
+    "[Тепловая карта](results/heatmap.png) создана.",
+    "Это согласуется с оригинальными экспериментальными данными.",
+    "Источник: Supplementary Tables S1-S5.",
+    "По литературе не найдено никаких публикаций.",
+])
+def test_pilot_rejects_each_unsupported_claim(claim):
+    report = LlmResponse(content=types.Content(
+        role="model", parts=[types.Part(text=GROUNDED_REPORT + "\n" + claim)]
     ))
+    with pytest.raises(RuntimeError, match="unsupported"):
+        pilot_delegation.validate_pilot_report(_verified_report_context(), report)
+
+
+def test_pilot_accepts_grounded_substantive_report():
+    context = _verified_report_context()
+    report_text = GROUNDED_REPORT
+    report = LlmResponse(content=types.Content(
+        role="model", parts=[types.Part(text=report_text)]
+    ))
+    assert pilot_delegation.validate_pilot_report(context, report) is None
+    assert report.content.parts[0].text == report_text
+
+
+def test_pilot_report_requires_molecule_level_limitation():
+    report = LlmResponse(content=types.Content(role="model", parts=[types.Part(
+        text=GROUNDED_REPORT.replace(
+            "Полные строки молекул и SMILES недоступны из агрегированного обзора. ", ""
+        )
+    )]))
+    with pytest.raises(RuntimeError, match="SMILES"):
+        pilot_delegation.validate_pilot_report(_verified_report_context(), report)
 
 
 def test_pilot_requests_missing_profile_before_accepting_final_report():

@@ -1115,8 +1115,10 @@ from CoScientist.agents.callbacks.pilot_delegation import (
     enforce_pilot_science_handoff,
     preserve_pilot_target,
     require_pilot_delegations,
+    validate_pilot_report,
 )
 _cb("require_pilot_delegations", "after_model", func=require_pilot_delegations)
+_cb("validate_pilot_report", "after_model", func=validate_pilot_report)
 _cb("enforce_pilot_science_handoff", "before_tool", func=enforce_pilot_science_handoff)
 _cb("enforce_pilot_executor_route", "before_tool", func=enforce_pilot_executor_route)
 _cb("preserve_pilot_target", "before_tool", func=preserve_pilot_target)
