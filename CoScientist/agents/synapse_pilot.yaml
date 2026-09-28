@@ -9,10 +9,10 @@ agents:
   ResearchAgent:
     callbacks:
       before_agent: [before_get_task, inject_research_context, user_links]
-      before_model: [inject_uploaded_papers, redact_link_urls]
+      before_model: [inject_uploaded_papers, redact_link_urls, capture_research_tool_roster]
       before_tool: [WebSearchLimiter, resolve_link_refs, normalize_paper_download_args]
       after_tool: [log_research_tool_calls, register_tool_result_links]
-      after_model: [expand_link_refs, guard_unknown_tools]
+      after_model: [normalize_research_function_name, expand_link_refs, guard_unknown_tools]
   TaskExecutorAgent:
     prompt: pilot_task_router
     callbacks:
