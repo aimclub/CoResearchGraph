@@ -1400,12 +1400,14 @@ from CoScientist.agents.callbacks.experiment_execution import (
     record_scientific_mcp_result,
     reset_pilot_overview_cache,
     reuse_pilot_overview_result,
+    recover_pilot_json_science_call,
     require_first_scientific_tool_call,
     require_scientific_execution,
     reset_executor_science_receipt,
     reset_scientific_execution,
 )
 _cb("require_scientific_execution", "after_model", func=require_scientific_execution)
+_cb("recover_pilot_json_science_call", "after_model", func=recover_pilot_json_science_call)
 _cb("require_first_scientific_tool_call", "before_model", func=require_first_scientific_tool_call)
 _cb("record_scientific_mcp_result", "after_tool", func=record_scientific_mcp_result)
 _cb("reuse_pilot_overview_result", "before_tool", func=reuse_pilot_overview_result)
