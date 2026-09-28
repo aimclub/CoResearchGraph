@@ -249,6 +249,58 @@ def require_pilot_delegations(callback_context, llm_response):
     return None
 
 
+def _validate_profile_cost_claims(report, calls):
+    """Tie every stated synthesis cost to the molecule actually profiled."""
+    costs = {}
+    for call in calls:
+        if not isinstance(call, dict) or call.get("tool") != "predict_molecule_profile":
+            continue
+        name = (call.get("args") or {}).get("name_or_smiles")
+        result = call.get("result") or {}
+        answer = result.get("answer") if isinstance(result, dict) else None
+        synthesis = answer.get("synthesis_cost") if isinstance(answer, dict) else None
+        cost = synthesis.get("usd_per_g") if isinstance(synthesis, dict) else None
+        if isinstance(name, str) and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            costs[re.sub(r"\s+", " ", name).strip().casefold()] = float(cost)
+
+    if re.search(r"аналогичн\w*\s+вызов\w*|similar\s+(?:tool\s+)?calls", report, re.IGNORECASE):
+        raise RuntimeError("Pilot report claims unenumerated profile calls")
+
+    for amount in re.findall(
+        r"(?<!\d)(\d+(?:[.,]\d+)?)\*{0,2}\s*(?:USD|US\$)\s*/\s*g\b",
+        report, re.IGNORECASE,
+    ):
+        if float(amount.replace(",", ".")) not in costs.values():
+            raise RuntimeError(f"Pilot report has an unsupported synthesis cost: {amount} USD/g")
+
+    lines = report.splitlines()
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith("|"):
+            continue
+        headings = [cell.strip().casefold() for cell in line.strip().strip("|").split("|")]
+        cost_columns = [
+            column for column, heading in enumerate(headings)
+            if ("стоим" in heading or "cost" in heading)
+            and re.search(r"usd\s*/\s*g", heading, re.IGNORECASE)
+        ]
+        if not cost_columns:
+            continue
+        cost_column = cost_columns[0]
+        for row in lines[index + 1:]:
+            if not row.lstrip().startswith("|"):
+                break
+            cells = [cell.strip().strip("*") for cell in row.strip().strip("|").split("|")]
+            if len(cells) <= cost_column:
+                continue
+            amount = re.search(r"(?<!\d)\d+(?:[.,]\d+)?", cells[cost_column])
+            if not amount:
+                continue
+            molecule = re.sub(r"\s+", " ", cells[0]).strip().casefold()
+            observed = costs.get(molecule)
+            if observed is None or float(amount.group().replace(",", ".")) != observed:
+                raise RuntimeError(f"Pilot report has an unsupported synthesis cost for {cells[0]}")
+
+
 def validate_pilot_report(callback_context, llm_response):
     """Keep the narrative report while refusing claims the observed work cannot support."""
     if llm_response.partial:
@@ -297,6 +349,8 @@ def validate_pilot_report(callback_context, llm_response):
     for percentage in re.findall(r"\d+(?:[.,]\d+)?[\s\u202f]*%", report):
         if percentage not in evidence:
             raise RuntimeError(f"Pilot report has an unsupported percentage: {percentage}")
+
+    _validate_profile_cost_claims(report, calls)
 
     result_text = json.dumps(calls, ensure_ascii=False, default=str).lower()
     for line in report.splitlines():
