@@ -12,6 +12,12 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
 
+from CoScientist.agents.callbacks.link_registry import (
+    find_urls,
+    link_id_for,
+    register_user_links,
+)
+
 _REQUIRED = ("retrieve_tools", "ResearchAgent", "TaskExecutorAgent")
 _PILOT_SCIENCE_TOOLS = (
     "dataset_overview_heracleum_tox",
@@ -260,8 +266,28 @@ def validate_pilot_report(callback_context, llm_response):
     calls = _scientific_calls(completed.get("TaskExecutorAgent", []))
     evidence = json.dumps(completed, ensure_ascii=False, default=str)
     registry = callback_context.state.get("user_links") or {}
+    observed_urls = {
+        url
+        for call in calls
+        if isinstance(call, dict)
+        and call.get("result") not in (None, "", {})
+        and not (
+            isinstance(call.get("result"), dict)
+            and call["result"].get("truncated")
+        )
+        for url, _, _ in find_urls(json.dumps(
+            call["result"], ensure_ascii=False, default=str
+        ))
+    }
     for link_id in re.findall(r"\[\[link([0-9a-f]+)\]\]", report, re.IGNORECASE):
-        entry = registry.get(link_id.lower())
+        ref = f"link{link_id.lower()}"
+        entry = registry.get(ref)
+        if not isinstance(entry, dict):
+            matches = [url for url in observed_urls if link_id_for(url, registry) == ref]
+            if len(matches) == 1:
+                register_user_links(callback_context.state, matches[0], with_mentions=False)
+                registry = callback_context.state.get("user_links") or {}
+                entry = registry.get(ref)
         if not isinstance(entry, dict) or entry.get("url") not in evidence:
             raise RuntimeError(f"Pilot report has an unsupported artifact link: {link_id}")
     for target in re.findall(r"\]\(([^)]+\.(?:csv|tsv|png|svg|jpe?g|pdf)(?:\?[^)]*)?)\)", report, re.IGNORECASE):
