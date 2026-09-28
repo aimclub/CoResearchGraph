@@ -1110,8 +1110,38 @@ _cb("hitl_before_tool", "before_tool", factory=lambda ctx: _hitl_before_tool())
 _cb("WebSearchLimiter", "before_tool", factory=lambda ctx: _web_search_limiter())
 # Catch hallucinated tool calls (e.g. `find`) and correct instead of crashing.
 _cb("guard_unknown_tools", "after_model", factory=_guard_unknown_tools)
-from CoScientist.agents.callbacks.pilot_delegation import require_pilot_delegations
+from CoScientist.agents.callbacks.pilot_delegation import (
+    block_pilot_repeated_overview,
+    enforce_pilot_executor_route,
+    enforce_pilot_science_handoff,
+    preserve_pilot_target,
+    require_pilot_delegations,
+)
 _cb("require_pilot_delegations", "after_model", func=require_pilot_delegations)
+_cb("enforce_pilot_science_handoff", "before_tool", func=enforce_pilot_science_handoff)
+_cb("block_pilot_repeated_overview", "before_tool", func=block_pilot_repeated_overview)
+_cb("enforce_pilot_executor_route", "before_tool", func=enforce_pilot_executor_route)
+_cb("preserve_pilot_target", "before_tool", func=preserve_pilot_target)
+from CoScientist.agents.callbacks.experiment_execution import (
+    attest_executor_science,
+    capture_scientific_pipeline_receipt,
+    record_scientific_mcp_result,
+    reset_pilot_overview_cache,
+    reuse_pilot_overview_result,
+    require_first_scientific_tool_call,
+    require_scientific_execution,
+    reset_executor_science_receipt,
+    reset_scientific_execution,
+)
+_cb("require_scientific_execution", "after_model", func=require_scientific_execution)
+_cb("require_first_scientific_tool_call", "before_model", func=require_first_scientific_tool_call)
+_cb("record_scientific_mcp_result", "after_tool", func=record_scientific_mcp_result)
+_cb("reuse_pilot_overview_result", "before_tool", func=reuse_pilot_overview_result)
+_cb("reset_pilot_overview_cache", "before_agent", func=reset_pilot_overview_cache)
+_cb("reset_scientific_execution", "before_agent", func=reset_scientific_execution)
+_cb("capture_scientific_pipeline_receipt", "after_tool", func=capture_scientific_pipeline_receipt)
+_cb("attest_executor_science", "after_model", func=attest_executor_science)
+_cb("reset_executor_science_receipt", "before_agent", func=reset_executor_science_receipt)
 # End the planner's turn once its plan is registered, so it cannot loop
 # re-registering to undo create_plan's own normalisation.
 _cb("finish_after_plan_registered", "after_model",
