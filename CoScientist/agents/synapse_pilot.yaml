@@ -30,4 +30,4 @@ agents:
       after_tool: [register_tool_result_links]
       # The missing-tool patch handles older ADK; ADK 2.9 handles unknown
       # calls natively. guard_unknown_tools would end the turn on prose.
-      after_model: [require_pilot_delegations, expand_link_refs]
+      after_model: [require_pilot_delegations, validate_pilot_report, expand_link_refs]

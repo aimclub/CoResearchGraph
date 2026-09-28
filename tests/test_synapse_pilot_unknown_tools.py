@@ -33,6 +33,19 @@ SCIENCE_RESULT = json.dumps({
     ],
 })
 
+FINAL_REPORT = (
+    "## Научный отчёт по Heracleum\n\n"
+    "| Этап | Наблюдение |\n|---|---|\n"
+    "| Обзор | MCP подтвердил 225 реконструированных соединений |\n"
+    "| Кластеризация | Результат получен вычислительным инструментом |\n"
+    "| LD50 | Значения являются прогнозом модели |\n"
+    "| Профиль | Получен отдельным вызовом MCP |\n\n"
+    "Полные строки молекул и SMILES недоступны из агрегированного обзора. "
+    "Экспериментальная проверка LD50 в доступных результатах не подтверждена. "
+    "Тепловая карта и дендрограмма не приложены: инструменты не вернули "
+    "файлы изображений. Таблица отражает только наблюдённые вычисления."
+)
+
 
 class PilotModel(BaseLlm):
     _calls: int = PrivateAttr(default=0)
@@ -69,7 +82,7 @@ class PilotModel(BaseLlm):
             )
         else:
             content = types.Content(
-                role="model", parts=[types.Part(text="Pilot delegation completed")]
+                role="model", parts=[types.Part(text=FINAL_REPORT)]
             )
         self._calls += 1
         yield LlmResponse(content=content)
@@ -139,6 +152,80 @@ def test_synapse_pilot_observes_real_calls_and_responses_without_forcing_order()
     assert seen == list(CALLS)
     assert all(set(CALLS).issubset(offered) for offered in model.offered)
     assert all(config is None for config in model.tool_configs)
+    assert events[-1].content.parts[0].text == FINAL_REPORT
+
+
+def test_pilot_a2a_artifact_contains_full_report_not_receipt():
+    import httpx
+    from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
+    from a2a.server.request_handlers import DefaultRequestHandler
+    from a2a.server.tasks import InMemoryTaskStore
+    from a2a.types import AgentCapabilities, AgentCard
+    from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+
+    async def retrieve_tools(query: str) -> dict:
+        return {"status": "ok"}
+
+    async def HypothesesAgent(request: str) -> dict:
+        return {"status": "ok"}
+
+    async def TaskExecutorAgent(request: str) -> dict:
+        return {"result": SCIENCE_RESULT}
+
+    async def ResearchAgent(request: str) -> dict:
+        return {"status": "ok"}
+
+    async def run():
+        pilot = build_system(
+            load_config(resolve_config_path("synapse_pilot")), remote_subagents=True
+        )
+        agent = LlmAgent(
+            name="PilotA2AReportProbe", model=PilotModel(),
+            instruction="Complete the pilot report.",
+            tools=[retrieve_tools, HypothesesAgent, TaskExecutorAgent, ResearchAgent],
+            after_model_callback=pilot.root.after_model_callback,
+        )
+        runner = Runner(
+            agent=agent, app_name="pilot_a2a_report",
+            session_service=InMemorySessionService(),
+        )
+        card = AgentCard(
+            name="PilotA2AReportProbe", description="Report test",
+            url="http://pilot.test/", version="1",
+            capabilities=AgentCapabilities(streaming=True),
+            defaultInputModes=["text/plain"], defaultOutputModes=["text/plain"],
+            skills=[],
+        )
+        handler = DefaultRequestHandler(
+            agent_executor=A2aAgentExecutor(runner=runner),
+            task_store=InMemoryTaskStore(),
+        )
+        app = A2AFastAPIApplication(agent_card=card, http_handler=handler).build()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://pilot.test"
+        ) as client:
+            response = await client.post("/", json={
+                "jsonrpc": "2.0", "id": "pilot-report",
+                "method": "message/send",
+                "params": {"message": {
+                    "kind": "message", "role": "user", "messageId": "pilot-message",
+                    "parts": [{"kind": "text", "text": "Составь научный отчёт"}],
+                }},
+            })
+        response.raise_for_status()
+        return response.json()
+
+    payload = asyncio.run(run())
+    assert "error" not in payload
+    result = payload["result"]
+    artifact_texts = [
+        part.get("text", "")
+        for artifact in result.get("artifacts", [])
+        for part in artifact.get("parts", [])
+        if part.get("kind") == "text"
+    ]
+    assert any(FINAL_REPORT in text for text in artifact_texts)
+    assert all("Observed scientific MCP results:" not in text for text in artifact_texts)
 
 
 def test_pilot_final_response_runs_missing_profile_through_adk_tool_call():
@@ -206,7 +293,7 @@ def test_pilot_final_response_runs_missing_profile_through_adk_tool_call():
     assert calls == [*CALLS, "TaskExecutorAgent"]
     assert len(requests) == 2
     assert "name_or_smiles=xanthotoxin" in requests[1]
-    assert "ld50_mgkg" in events[-1].content.parts[0].text
+    assert events[-1].content.parts[0].text == FINAL_REPORT
 
 
 class UnknownFirstModel(PilotModel):
@@ -299,7 +386,4 @@ def test_unknown_orchestrator_tool_returns_error_then_model_retries():
         assert [r.name for r in responses] == ["invented_subagent", *CALLS]
         assert seen == list(CALLS)
         text = events[-1].content.parts[0].text
-        if profile == "synapse_pilot":
-            assert "225" in text and "Pilot delegation completed" not in text
-        else:
-            assert text == "Pilot delegation completed"
+        assert text == FINAL_REPORT

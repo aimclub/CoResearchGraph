@@ -288,9 +288,63 @@ def require_pilot_delegations(callback_context, llm_response):
     missing_science = [name for name in _PILOT_SCIENCE_TOOLS if name not in verified_names]
     if missing_science:
         return _request_missing_science(callback_context, missing_science[0])
-    receipt = {"status": "computed", "scientific_mcp_calls": calls}
-    return LlmResponse(content=types.Content(role="model", parts=[types.Part(
-        text="Observed scientific MCP results:\n" + json.dumps(
-            receipt, ensure_ascii=False, indent=2
+    return None
+
+
+def validate_pilot_report(callback_context, llm_response):
+    """Keep the narrative report while refusing claims the observed work cannot support."""
+    if llm_response.partial:
+        return None
+    parts = getattr(llm_response.content, "parts", None) or []
+    if any(getattr(part, "function_call", None) for part in parts):
+        return None
+    report = "\n".join(part.text or "" for part in parts)
+    if len(report.strip()) < 250 or sum(line.startswith("|") for line in report.splitlines()) < 3:
+        raise RuntimeError("Pilot report is incomplete: a substantive report with a table is required")
+    if report.lstrip().startswith(("Observed scientific MCP results:", "{")):
+        raise RuntimeError("Pilot report is a raw receipt rather than a scientific report")
+
+    completed = _completed_delegations(callback_context)
+    calls = _scientific_calls(completed.get("TaskExecutorAgent", []))
+    evidence = json.dumps(completed, ensure_ascii=False, default=str)
+    registry = callback_context.state.get("user_links") or {}
+    for link_id in re.findall(r"\[\[link([0-9a-f]+)\]\]", report, re.IGNORECASE):
+        entry = registry.get(link_id.lower())
+        if not isinstance(entry, dict) or entry.get("url") not in evidence:
+            raise RuntimeError(f"Pilot report has an unsupported artifact link: {link_id}")
+    for target in re.findall(r"\]\(([^)]+\.(?:csv|tsv|png|svg|jpe?g|pdf)(?:\?[^)]*)?)\)", report, re.IGNORECASE):
+        if target not in evidence:
+            raise RuntimeError(f"Pilot report has an unsupported artifact: {target}")
+
+    for percentage in re.findall(r"\d+(?:[.,]\d+)?[\s\u202f]*%", report):
+        if percentage not in evidence:
+            raise RuntimeError(f"Pilot report has an unsupported percentage: {percentage}")
+
+    result_text = json.dumps(calls, ensure_ascii=False, default=str).lower()
+    for line in report.splitlines():
+        lowered = line.lower()
+        figure_type = "heatmap" if "теплов" in lowered else (
+            "dendrogram" if "дендрограмм" in lowered else None
         )
-    )]))
+        if not figure_type or figure_type in result_text:
+            continue
+        if re.search(r"\bне\s+(?:создан|построен|приложен)|отсутств|недоступ", lowered):
+            continue
+        if re.search(r"✅|создан|построен|сгенерирован|см\.\s*рисунок", lowered):
+            raise RuntimeError("Pilot report has an unsupported figure claim")
+
+    if re.search(r"согласуетс[яь].{0,100}экспериментальн", report, re.IGNORECASE | re.DOTALL):
+        research = json.dumps(completed.get("ResearchAgent", []), ensure_ascii=False, default=str)
+        if not re.search(r"\b(?:10\.\d{4,9}/\S+|PMID[:\s]*\d+)\b", research, re.IGNORECASE):
+            raise RuntimeError("Pilot report has an unsupported experimental comparison")
+
+    for source in re.findall(r"\b10\.\d{4,9}/[^\s|)]+|Supplementary\s+Tables?\s+S\d+(?:[-–]\s*S?\d+)?", report, re.IGNORECASE):
+        if source.rstrip(".,;*") not in evidence:
+            raise RuntimeError(f"Pilot report cites an unsupported source: {source}")
+    if re.search(r"не\s+найдено\s+никаких\s+публикац|отсутствуют\s+DOI/PMID", report, re.IGNORECASE):
+        raise RuntimeError("Pilot report makes an unsupported categorical literature claim")
+
+    if not (re.search(r"SMILES", report, re.IGNORECASE)
+            and re.search(r"недоступ|не\s+доступ|отсутств|не\s+содерж|не\s+предостав", report, re.IGNORECASE)):
+        raise RuntimeError("Pilot report must disclose the missing molecule-level SMILES data")
+    return None
