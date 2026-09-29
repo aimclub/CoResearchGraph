@@ -547,6 +547,14 @@ def _apply_frontend_settings(frontend: dict) -> None:
     if "mode" in coder:
         web.coder_mode = str(coder["mode"])
 
+    hub = frontend.get("alembicHub", {})
+    if "searchEnabled" in hub:
+        web.alembic_hub_search_enabled = bool(hub["searchEnabled"])
+    if "autoUpload" in hub:
+        web.alembic_hub_auto_upload = bool(hub["autoUpload"])
+    if "agentBuildEnabled" in hub:
+        web.alembic_agent_build_enabled = bool(hub["agentBuildEnabled"])
+
 
 _startup_settings_snapshot: dict | None = None
 
@@ -654,6 +662,11 @@ def _current_settings() -> dict:
             "mode": web.coder_mode,
         },
         "agents": current_agent_settings(),
+        "alembicHub": {
+            "searchEnabled": web.alembic_hub_search_enabled,
+            "autoUpload": web.alembic_hub_auto_upload,
+            "agentBuildEnabled": web.alembic_agent_build_enabled,
+        },
     }
 
 
@@ -4221,6 +4234,19 @@ async def _run_chat_invocation(
             GRAPH_SCOPE_USER_KEY: user_id,
             GRAPH_SCOPE_SESSION_KEY: session_id,
         }
+        # The tool-provenance section reads the experiment runtime (which task
+        # used which built server) and writes in the session's language.
+        try:
+            final_session = await runtime.session_service.get_session(
+                app_name=APP_NAME, user_id=user_id, session_id=session_id,
+            )
+            final_state = final_session.state if final_session else {}
+            for state_key in ("experiment_runtime", "report_language"):
+                if final_state.get(state_key) is not None:
+                    finalize_state[state_key] = final_state[state_key]
+        except Exception as exc:  # noqa: BLE001 - the report is written without it
+            logging.getLogger("CoScientist.web").warning(
+                "finalize: session state unavailable (%s)", exc)
         from CoScientist.execution_control import before_tool_action
         await before_tool_action("finalize_report")
         result = await asyncio.to_thread(

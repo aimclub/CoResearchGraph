@@ -231,9 +231,34 @@ def find_urls(text: str, bare_hosts: bool = False) -> List[Tuple[str, int, int]]
     pattern = _URL_RE_BARE if bare_hosts else _URL_RE
     for match in pattern.finditer(text or ""):
         url = _trim_trailing(match.group(0))
-        if url:
+        if url and not _looks_like_filename(url):
             out.append((url, match.start(), match.start() + len(url)))
     return out
+
+
+# File extensions that are also country-code TLDs in `_BARE_TLDS`. A task text
+# lists its artifacts by name ("fno_darcy_model.pt (model: weights)"), and a
+# loose read once registered that name as a Portuguese host: the coder then
+# had `torch.save(..., "https://fno_darcy_model.pt")` spliced into its script
+# by egress repair and lost a twenty-minute training run. A real `.pt` site
+# written without scheme or path is the price; one typed with `https://` or
+# a path is still read.
+_FILE_EXT_TLDS = frozenset({"pt"})
+
+
+def _looks_like_filename(candidate: str) -> bool:
+    """Is a scheme-less match a file name rather than a host?
+
+    Two tells, both of which a DNS name cannot show: an underscore in a label
+    (RFC 1123 forbids it) and, for a match without a path, a last label from
+    `_FILE_EXT_TLDS`.
+    """
+    if "://" in candidate or candidate.lower().startswith("www."):
+        return False
+    host = re.split(r"[/?#]", candidate, 1)[0]
+    if "_" in host:
+        return True
+    return host == candidate and host.rsplit(".", 1)[-1].lower() in _FILE_EXT_TLDS
 
 
 def normalize_url(url: str) -> str:

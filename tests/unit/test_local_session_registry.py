@@ -59,3 +59,17 @@ def test_hide_old_sessions_keeps_the_given_and_running_ones():
 
     assert registry.unhide_sessions(user["id"]) == 1
     assert not any(item.get("hidden") for item in registry.list_sessions(user["id"]))
+
+
+def test_imported_session_survives_a_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEB_STATE_DIR", str(tmp_path))
+    registry = LocalSessionRegistry()
+    user = registry.create_user("Gleb")
+    registry.import_session(user["id"], "session_imported", "KM-ARL run 11",
+                            created_at="2026-09-27T13:05:32+00:00")
+
+    reopened = LocalSessionRegistry()
+    session = reopened.get_session(user["id"], "session_imported")
+    assert session is not None
+    assert session["title"] == "KM-ARL run 11"
+    assert session["created_at"] == "2026-09-27T13:05:32+00:00"

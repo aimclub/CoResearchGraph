@@ -20,7 +20,7 @@ from alembic.tools.fs import (
 )
 from alembic.tools.venv import setup_venv, check_venv_compat, ensure_pytest
 from alembic.tools.invoke import (
-    check_server, check_tool_artefacts, invoke_tool_function, run_tool_tests,
+    check_server, check_tool_artefacts, invoke_tool_function, run_tool_tests, set_sample_args,
 )
 
 __all__ = [
@@ -29,5 +29,5 @@ __all__ = [
     "clone_repo", "read_file", "search", "read_report",
     "write_file", "read_output_file", "update_file", "write_report",
     "setup_venv", "check_venv_compat", "ensure_pytest",
-    "check_server", "check_tool_artefacts", "invoke_tool_function", "run_tool_tests",
+    "check_server", "check_tool_artefacts", "invoke_tool_function", "run_tool_tests", "set_sample_args",
 ]

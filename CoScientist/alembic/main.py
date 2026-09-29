@@ -27,6 +27,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -57,6 +58,7 @@ from alembic.staging import stage_task_inputs, task_mounts
 from alembic.tools.codegen import function_param_names, render_code_py, write_server, write_setup_sh
 from alembic.tools.fs import _clone_repo_sync
 from alembic.tools.invoke import check_repo_imports
+from alembic.tools.invoke import coder_rollback_paths, materialise_expression_args
 from alembic.tools.paths import MOUNT_DATA, MOUNT_INPUT, output_dir, repo_path, reports_dir, server_python, tools_python
 from alembic.tools.shell import record_env_command
 from alembic.tools.venv import _check_venv_compat_sync
@@ -253,11 +255,13 @@ async def run_pipeline(repo_url: str, resume_from: str | None = None,
         # ── 3. Coder + artefact gate ────────────────────────────────────────
         if plan_ok and _should_run("coder"):
             _banner(3, f"Coder ({repo_url})")
+            planned = load_plan()
             await _staged_llm(
                 "coder", coder_agent, name, metrics, session_service,
                 message_fn=lambda note: _coder_message(repo_url, tasks) + note,
                 gate_fn=lambda: _coder_gate(),
-                owned=[output_dir() / "tools", output_dir() / "tests"],
+                owned=_coder_failed_paths,
+                max_steps=config.coder_max_steps(len(planned.tools) if planned else 0),
             )
 
         # ── 4. Validator (deterministic loop + batched debugger) ────────────
@@ -283,9 +287,11 @@ async def run_pipeline(repo_url: str, resume_from: str | None = None,
 # ── LLM stage runner with reset loop (R1) ─────────────────────────────────────
 async def _staged_llm(stage, agent, name, metrics, session_service, message_fn,
                       gate_fn, owned, required_report=None, post_fn=None,
-                      on_reset=None) -> bool:
+                      on_reset=None, max_steps=None) -> bool:
     """Run one LLM stage; verify its exit gate; on failure roll back the
     stage-owned paths and rerun with a note (≤ STAGE_RESET extra loops).
+    ``owned`` is a list of paths, or a callable taking the failed gate and
+    returning the paths to roll back (the coder keeps its passing tools).
     Returns whether the gate ever passed."""
     await emit({"type": "stage", "stage": stage, "status": "running"})
     note = ""
@@ -294,7 +300,8 @@ async def _staged_llm(stage, agent, name, metrics, session_service, message_fn,
         await session_service.create_session(
             app_name=config.APP_NAME, user_id=config.USER_ID, session_id=sid)
         final = await _run_llm_stage(stage, agent, sid, message_fn(note),
-                                     metrics, session_service, required_report)
+                                     metrics, session_service, required_report,
+                                     max_steps=max_steps)
         if post_fn:
             post_fn(final)
         gate = gate_fn()
@@ -311,7 +318,7 @@ async def _staged_llm(stage, agent, name, metrics, session_service, message_fn,
         note = ("\n\nNOTE — previous attempt failed its exit gate; do better this time:\n"
                 + gate.get("note", "unknown failure"))
         if attempt < config.STAGE_RESET:
-            _rollback(owned)
+            _rollback(owned(gate) if callable(owned) else owned)
             if on_reset:
                 on_reset()
             logger.warning(f"[{stage}] gate FAILED — reset "
@@ -322,12 +329,13 @@ async def _staged_llm(stage, agent, name, metrics, session_service, message_fn,
 
 
 async def _run_llm_stage(stage, agent, session_id, message, metrics,
-                         session_service, required_report=None) -> str:
+                         session_service, required_report=None, max_steps=None) -> str:
     started = time.monotonic()
     timeout = config.STAGE_TIMEOUT.get(stage)          # None = no wall clock (R1)
     deadline = started + timeout * config.REPORT_GRACE_FRACTION if timeout else None
     coro = run_agent(agent, session_service, session_id, message,
-                     required_report=required_report, deadline=deadline)
+                     required_report=required_report, deadline=deadline,
+                     max_steps=max_steps)
     try:
         if timeout:
             final, steps, tokens, sm = await asyncio.wait_for(coro, timeout=timeout)
@@ -567,7 +575,21 @@ def _coder_gate() -> dict:
     if r["passed"]:
         return {"ok": True, "info": {"tools": names}}
     note = "\n".join(f"{tool}: {'; '.join(errs)}" for tool, errs in r["errors"].items())
+    done = [n for n in names if n not in r["errors"]]
+    if done:
+        # A reset keeps these files (see _coder_failed_paths); rewriting them
+        # would spend the new attempt's steps on work that already passed.
+        note += ("\nAlready complete, kept from the previous attempt, do NOT rewrite: "
+                 + ", ".join(done) + ". Spend this attempt on the tools listed above.")
     return {"ok": False, "info": {"errors": r["errors"]}, "note": note}
+
+
+def _coder_failed_paths(gate: dict) -> list[Path]:
+    """The files a coder reset removes (see invoke.coder_rollback_paths)."""
+    errors = (gate.get("info") or {}).get("errors")
+    if not isinstance(errors, dict):
+        return [output_dir() / "tools", output_dir() / "tests"]
+    return coder_rollback_paths(errors, output_dir())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -591,11 +613,13 @@ async def _validate(repo_url, name, session_service, metrics):
 
     frozen: set[str] = set()          # tools whose failure didn't change → give up
     last_sig: dict[str, str] = {}
+    asked_for_args: set[str] = set()  # green tools without sample args, asked once
+    replaced: set[str] = set()        # sample args the debugger saved last round
     for rnd in range(config.DEBUGGING_ROUNDS + 1):
         failures: list[str] = []
         for t in plan.tools:
             rep = reports[t.name]
-            if (rnd and rep.passed) or t.name in frozen:
+            if (rnd and rep.passed and t.name not in replaced) or t.name in frozen:
                 continue                      # skip green + given-up tools
             fails = await _check_tool(t, rep)
             n_actions += 1 + bool(t.sample_args)
@@ -614,13 +638,22 @@ async def _validate(repo_url, name, session_service, metrics):
                 failures_by_class[classify_error(f)] = failures_by_class.get(classify_error(f), 0) + 1
             failures += fails
             write_validation(repo_url, name, v)   # incremental (R2)
-            # The args the tool was actually invoked with: plan keys the
-            # generated signature does not accept are dropped, as in _check_tool.
-            shown = _clean_sample_args(t) if t.sample_args is not None else {}
+            # The args the tool was actually invoked with (see _check_tool).
+            shown = rep.invocations[-1]["args"] if t.sample_args is not None and rep.invocations else {}
             await emit({"type": "validation", "tool": t.name,
                         "passed": rep.passed, "status": rep.status,
                         "exec_ok": rep.exec_ok, "input": shown,
                         "error": (rep.error or None) if not rep.passed else None})
+        # A tool whose tests call it fine but with no sample args was never run
+        # directly, and the page has nothing to call it with.
+        no_args = [t.name for t in plan.tools if t.sample_args is None
+                   and reports[t.name].passed and t.name not in asked_for_args]
+        asked_for_args.update(no_args)
+        failures += [f"'{n}' has no sample args, so it was never invoked directly and cannot be "
+                     f"called from the build page. Its tests call it successfully: save a cheap "
+                     f"real invocation taken from them with set_sample_args('{n}', {{...}}). If "
+                     f"every real call needs data this build does not have, say so and leave it."
+                     for n in no_args]
         if not failures:
             break
         if rnd >= config.DEBUGGING_ROUNDS:
@@ -635,8 +668,14 @@ async def _validate(repo_url, name, session_service, metrics):
             f"run_tool_tests / invoke_tool_function:\n\n" + "\n\n".join(failures[:12]),
             memory=v.debugger_actions)
         v.debugger_actions.append(summary[:300])
+        replaced = _take_saved_sample_args(plan)
 
     write_validation(repo_url, name, v)
+    # The plan travels in the image and fills the Call form, so it keeps the args the final code accepts.
+    for spec in plan.tools:
+        if spec.sample_args is not None:
+            spec.sample_args = _clean_sample_args(spec)
+    save_plan(plan)
     c = v.counts()
     update_stage_status("validator", status="passed", counts=c,
                         debugger_rounds=v.debugger_rounds)
@@ -651,6 +690,20 @@ async def _validate(repo_url, name, session_service, metrics):
     metrics["total_actions"] += n_actions
     for label, cnt in failures_by_class.items():
         metrics["failures_by_class"][label] = metrics["failures_by_class"].get(label, 0) + cnt
+
+
+def _take_saved_sample_args(plan) -> set[str]:
+    """Sample args the debugger saved with set_sample_args, for the next round;
+    the names of the tools whose args changed."""
+    saved = {t.name: t.sample_args for t in (load_plan() or plan).tools}
+    changed = set()
+    for spec in plan.tools:
+        if spec.name in saved and saved[spec.name] != spec.sample_args:
+            logger.info(f"[validator] {spec.name}: the debugger replaced the sample args "
+                        f"{spec.sample_args} with {saved[spec.name]}")
+            spec.sample_args = saved[spec.name]
+            changed.add(spec.name)
+    return changed
 
 
 def _clean_sample_args(t: ToolSpec) -> dict:
@@ -674,20 +727,25 @@ def _clean_sample_args(t: ToolSpec) -> dict:
     return args
 
 
+
 async def _check_tool(t: ToolSpec, rep: ToolReport) -> list[str]:
     """Run one tool's exec check + pytest file; update its report; return
     failure descriptions for the batched debugger."""
     fails: list[str] = []
 
     if t.sample_args is not None:
-        args = _clean_sample_args(t)
+        args, changed = materialise_expression_args(t.name, _clean_sample_args(t))
+        if changed:
+            t.sample_args = args
         r = await invoke_tool_function(t.name, args)
+        err = (r.get("error") or "")[:300]
+        rep.invocations.append({"args": args, "ok": bool(r.get("ok")), "error": err or None})
         if r.get("ok"):
             rep.exec_ok = True
             rep.exec_note = r.get("reason", "")        # runtime-success detail (R6)
         else:
             rep.exec_ok = False
-            rep.error = (r.get("error") or "")[:300]
+            rep.error = err
             fails.append(f"invoke_tool_function('{t.name}', {json.dumps(args)}) crashed:\n"
                          f"{r.get('error','')}\n{(r.get('traceback') or r.get('stderr') or '')[-1200:]}")
     else:
@@ -844,6 +902,13 @@ def _coder_message(repo_url: str, tasks: list[dict]) -> str:
             lines.append(f"      sample_args: {json.dumps(t.sample_args)}")
             lines.append(f"      evidence: {t.evidence or '(none — smoke tests only)'}")
     msg = "\n".join(lines) + _tasks_prompt(tasks)
+    if plan and plan.tools:
+        n = len(plan.tools)
+        msg += (f"\n\nStep budget: {config.coder_max_steps(n)} tool calls for {n} tools. "
+                "Write every tools/<name>.py and tests/test_<name>.py FIRST, a few calls "
+                "per tool, and only then check anything. Do not run the library to explore "
+                "it or wait on a long fit: the validator runs every tool afterwards and a "
+                "debugger fixes what fails. An attempt that ends with files missing fails.")
     if tasks:
         msg += ("\n\nFor each required task, the function signature must use EXACTLY the "
                 "task's argument names, and the returned dict must contain EXACTLY the "

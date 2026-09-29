@@ -120,6 +120,7 @@ CLOSED ENUMS (literals only):
 - success_criteria[].purpose: execution|assessment. Delivery/schema/artifact
   checks are execution; scientific thresholds and expert quality are assessment.
 - expected_artifacts[].role: data|model|plot|report|code|log|mcp_server
+- expected_artifacts[].name and input_data[].source_artifact_id: one FILE each (a data grid is one CSV/NPZ), never a directory like grid_data/
 - design.baselines[].kind: method|model|prior_result|external
 - design.metrics[].direction: maximize|minimize|compare
 - design.analysis_artifacts[].role: code|config|metrics_table|report
@@ -136,6 +137,9 @@ RULES:
    Never invent example.com/org/net, localhost, s3://artifacts, or dummy files.
    Generators: input_data=[] + launch_params. Prior outputs:
    kind=task_artifact, source_task_id, source_artifact_id + depends_on.
+   Keep free text short: description and rationale ≤ 300 characters each,
+   artifact descriptions ≤ 100, no context text repeated inside tasks. A plan
+   longer than the output limit is cut off and the whole revision is lost.
 3. total_est_duration_min = sum of task durations. Task ids: EXP-1…EXP-n.
    Keep the plan within context.plan_limits.max_tasks (the authoritative limit).
    Every extra task is another start_task →

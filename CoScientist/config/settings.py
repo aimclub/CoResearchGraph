@@ -435,6 +435,11 @@ class WebSettings(BaseModel):
     # for latency.
     hypotheses_reasoning: str = _os.getenv("HYPOTHESES__REASONING", "high")
     fedot_fallback_timeout_s: float = float(_os.getenv("EXECUTOR__FEDOT_FALLBACK_TIMEOUT", "900"))
+    # MCP hub (Docker Hub, credentials in .env): searched before a build, optional auto-upload.
+    alembic_hub_search_enabled: bool = _os.getenv("ALEMBIC_HUB__SEARCH_ENABLED", "true").lower() in ("true", "1", "yes")
+    alembic_hub_auto_upload: bool = _os.getenv("ALEMBIC_HUB__AUTO_UPLOAD", "false").lower() in ("true", "1", "yes")
+    # Whether an agent may start a conversion itself; the builds page always can.
+    alembic_agent_build_enabled: bool = _os.getenv("ALEMBIC__AGENT_BUILD_ENABLED", "false").lower() in ("true", "1", "yes")
     sandbox_url: str = _os.getenv("SANDBOX_URL", "")
     coder_workspace_id: _Optional[str] = _os.getenv("CODER_WORKSPACE_ID")
     coder_mode: str = _os.getenv("CODER__MODE", "local")        # "local" | "openhands"
@@ -505,6 +510,13 @@ class ExperimentsSettings(BaseModel):
     route_fedot: bool = False
     route_coder_mcp: bool = False
     route_alembic: bool = False
+    # Which side of the Coder/Alembic fork a task that reuses a repository
+    # takes when nobody answers the review (HITL mode `auto`, or a timeout):
+    # "coder" runs the code directly, "alembic_build" wraps it as an MCP tool
+    # first. Coder stays the default because it skips the container build;
+    # a study that exists to leave a reusable tool behind sets
+    # EXPERIMENTS__ALEMBIC_ROUTE_DEFAULT=alembic_build.
+    alembic_route_default: Literal["coder", "alembic_build"] = "coder"
     task_max_attempts: int = Field(default=2, ge=1, le=2)
     # Cumulative across routes and automatic replans of the same operation.
     task_max_total_attempts: int = Field(default=3, ge=1, le=10)
@@ -613,6 +625,37 @@ class SynapseSettings(BaseModel):
 
 
 # =========================
+# BLIND REVIEW GUARD
+# =========================
+class BlindSettings(BaseModel):
+    """Blind-review guard for validation runs with a known answer.
+
+    A refuted claim is re-checked by the system; the guard keeps the outcome
+    of that check out of what search tools return (agents/blind.yaml wires it
+    onto the search-capable agents). Env: BLIND__ENABLED, BLIND__CUTOFF_YEAR,
+    BLIND__BLOCKLIST (JSON list), BLIND__CLAIM, BLIND__JUDGE, BLIND__JUDGE_MODEL.
+    """
+
+    enabled: bool = False
+    # Last publication year the run may read. OpenAlex queries get the filter;
+    # other results are dropped when they carry a later date.
+    cutoff_year: Optional[int] = None
+    # Case-insensitive terms that identify the refutation: authors, titles,
+    # method names, DOIs. A query naming one is refused; a result block naming
+    # one is dropped or redacted.
+    blocklist: List[str] = Field(default_factory=list)
+    # One sentence naming the claim under review, for the judge.
+    claim: str = ""
+    # An LLM judge reads the blocks that passed the blocklist and drops those
+    # that reveal the outcome of the check without using a listed term.
+    judge: bool = True
+    judge_model: Optional[str] = None  # falls back to llm.main_model
+    judge_timeout: float = 45.0
+    judge_max_items: int = 25
+    judge_max_chars: int = 1500
+
+
+# =========================
 # CRITIC
 # =========================
 class CriticSettings(BaseModel):
@@ -698,6 +741,7 @@ class Settings(BaseSettings):
     synapse: SynapseSettings = SynapseSettings()
     critic: CriticSettings = CriticSettings()
     agents: AgentsSettings = AgentsSettings()
+    blind: BlindSettings = BlindSettings()
 
     model_config = SettingsConfigDict(
         env_file=".env",          

@@ -291,7 +291,7 @@ def test_task_executor_is_a_router_over_both_execution_paths(config, system):
     AgentTools. The coder is therefore reached THROUGH it, not from the root."""
     executor = config.agent("TaskExecutorAgent")
     assert executor.cls == "llm"
-    assert executor.subordinates == ["ToolPipelineAgent", "CoderAgent"]
+    assert executor.subordinates == ["ToolPipelineAgent", "CoderAgent", "McpBuilderAgent"]
 
     # The old sequential body moved to ToolPipelineAgent, reachable only via the
     # router (no A2A card of its own).
@@ -313,7 +313,7 @@ def test_task_executor_is_a_router_over_both_execution_paths(config, system):
 
     attached = [t.agent.name for t in system.agent("TaskExecutorAgent").tools
                 if hasattr(t, "agent")]
-    assert attached == ["ToolPipelineAgent", "CoderAgent"]
+    assert attached == ["ToolPipelineAgent", "CoderAgent", "McpBuilderAgent"]
 
 
 def test_router_prompt_absorbs_the_no_matching_tool_handoff(config, system):
@@ -327,6 +327,18 @@ def test_router_prompt_absorbs_the_no_matching_tool_handoff(config, system):
     # The Executor-vs-Coder discriminator belongs to the router now.
     assert "re-route that step to" not in orch
     assert "Send ALL execution to TaskExecutorAgent" in orch
+
+
+def test_an_explicit_request_for_an_mcp_server_goes_to_the_builder_first(config, system):
+    """A catalogue tool that computes something similar used to win over a request
+    that asked for an MCP server from a named repository."""
+    router = system.agent("TaskExecutorAgent").instruction
+    assert "EXPLICITLY asks for an MCP server" in router
+    assert "does NOT trigger" in router
+
+    orch = system.agent("OrchestratorAgent").instruction
+    assert "a ready tool found by `retrieve_tools` does NOT" in orch
+    assert "keep the usual order" in orch
 
 
 def test_ready_mcp_is_prioritized_only_in_pilot_profile(system):

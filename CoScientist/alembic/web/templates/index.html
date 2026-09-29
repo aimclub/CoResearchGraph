@@ -96,7 +96,14 @@
     .kvv { font-family: 'IBM Plex Mono'; font-size: .72rem; color: #c2c6d8; word-break: break-word; }
     .out { font-family: 'IBM Plex Mono'; font-size: .7rem; line-height: 1.5; color: #c2c6d8;
       background: #0b0e14; border: 1px solid #475569; border-radius: 8px; padding: 8px 10px;
-      max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+      max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .out.wide { white-space: pre; word-break: normal; }
+    .datatable { font-family: 'IBM Plex Mono'; font-size: .7rem; border-collapse: collapse; }
+    .datatable th { position: sticky; top: 0; background: #191c22; color: #8c90a1; text-align: left;
+      font-weight: 500; padding: 3px 8px; border-bottom: 1px solid #424656; white-space: nowrap; }
+    .datatable td { padding: 3px 8px; border-bottom: 1px solid rgba(66,70,86,.35); white-space: nowrap; }
+    .datatable tbody tr:hover { background: #1d2026; }
+    .tablebox { max-height: 320px; overflow: auto; border: 1px solid #475569; border-radius: 8px; background: #0b0e14; }
     .err { font-family: 'IBM Plex Mono'; font-size: .69rem; line-height: 1.5; color: #ffb4ab;
       background: #0b0e14; border: 1px solid #93000a; border-radius: 8px; padding: 8px 10px;
       max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
@@ -162,6 +169,10 @@
           class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
           <span class="material-symbols-outlined text-[19px]">history</span> Builds
         </a>
+        <a id="hub-link" href="#"
+          class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
+          <span class="material-symbols-outlined text-[19px]">hub</span> MCP hub
+        </a>
         <a id="chat-link" href="/"
           class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition"
           title="Back to CoScientist chat">
@@ -171,6 +182,20 @@
           class="hidden items-center gap-1.5 bg-primary text-on-primary font-head font-semibold text-sm px-4 h-10 rounded-control hover:brightness-110 active:scale-[.98] transition">
           <span class="material-symbols-outlined text-[19px]">add</span> New MCP from repo
         </a>
+      </div>
+      <div id="build-options" class="flex items-center gap-2">
+        <div class="flex-1 flex items-center gap-2 bg-surface rounded-control border border-outline-variant/30 px-3 h-9 focus-within:border-primary/60 transition-colors"
+             title="Free text steering the explorer towards the kind of tool you need. It forces no tool name or signature (ALEMBIC_HINTS).">
+          <span class="material-symbols-outlined text-outline text-[17px]">lightbulb</span>
+          <input id="hints-input" type="text" spellcheck="false" placeholder="hint for the explorer, optional: the kind of tool you need"
+            class="flex-1 bg-transparent border-0 focus:ring-0 p-0 text-[13px] font-mono text-on-surface placeholder:text-outline/70" />
+        </div>
+        <div class="flex-1 flex items-center gap-2 bg-surface rounded-control border border-outline-variant/30 px-3 h-9 focus-within:border-primary/60 transition-colors"
+             title="The exact tools the server must expose: JSON/YAML text, or a path or link to it. Those tools become required and the build fails without them (ALEMBIC_TASKS).">
+          <span class="material-symbols-outlined text-outline text-[17px]">description</span>
+          <input id="tasks-input" type="text" spellcheck="false" placeholder="task spec, optional: JSON/YAML text, path or link"
+            class="flex-1 bg-transparent border-0 focus:ring-0 p-0 text-[13px] font-mono text-on-surface placeholder:text-outline/70" />
+        </div>
       </div>
     </div>
   </header>
@@ -203,6 +228,11 @@
           disabled>
           <span class="material-symbols-outlined text-[14px]">download</span>
         </button>
+        <button id="hub-upload-btn"
+          class="hidden items-center gap-1 text-[11px] font-mono text-outline px-2 h-6 rounded-full border border-outline-variant/25 hover:border-primary/40 hover:text-on-surface transition disabled:opacity-40"
+          disabled>
+          <span class="material-symbols-outlined text-[14px]">cloud_upload</span><span id="hub-upload-label"></span>
+        </button>
       </div>
       <div id="right-panel" class="flex-1 overflow-y-auto scroll grid-bg p-4 min-h-0"></div>
     </section>
@@ -221,6 +251,54 @@
   </footer>
 
   <div id="floating-tip"></div>
+
+  <!-- A file a tool left in S3: JSON and CSV get an explorer, images a zoom,
+       anything else a download. -->
+  <div id="file-modal" class="hidden fixed inset-0 z-50 bg-black/70 items-center justify-center p-6">
+    <div class="w-full max-w-5xl max-h-[88vh] flex flex-col bg-surface border border-outline-variant/30 rounded-card shadow-xl">
+      <div class="flex items-center gap-2 px-4 h-12 border-b border-outline-variant/20 shrink-0">
+        <span class="material-symbols-outlined text-primary text-[19px]" id="file-icon">draft</span>
+        <div class="min-w-0">
+          <div id="file-title" class="font-head text-sm font-semibold text-on-surface truncate"></div>
+          <div id="file-sub" class="text-[10px] font-mono text-outline truncate"></div>
+        </div>
+        <div id="file-tools" class="ml-auto flex items-center gap-1"></div>
+        <a id="file-download" href="#" download
+          class="flex items-center gap-1 text-[11px] font-mono text-outline px-2 h-7 rounded-control border border-outline-variant/30 hover:border-primary/50 hover:text-on-surface transition">
+          <span class="material-symbols-outlined text-[15px]">download</span> download
+        </a>
+        <button id="file-close" class="flex items-center justify-center w-7 h-7 rounded-control text-outline hover:text-on-surface transition">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+      <div id="file-body" class="flex-1 overflow-auto scroll p-4 min-h-0"></div>
+    </div>
+  </div>
+
+  <!-- Convert a repository that already has a server: the same two fields as the
+       header, asked again so a rebuild can aim somewhere else. -->
+  <div id="rebuild-modal" class="hidden fixed inset-0 z-50 bg-black/60 items-center justify-center p-6">
+    <div class="w-full max-w-xl bg-surface border border-outline-variant/30 rounded-card p-5 shadow-xl">
+      <h3 class="font-head text-base font-semibold text-on-surface">Convert this repository again</h3>
+      <p id="rebuild-note" class="text-[12px] font-mono text-on-surface-dim mt-2 leading-relaxed"></p>
+      <label class="block mt-4 text-[11px] font-head uppercase tracking-widest text-outline">Hint for the explorer</label>
+      <input id="rebuild-hint" type="text" spellcheck="false"
+        placeholder="optional: the kind of tool you need, in your own words"
+        class="mt-1 w-full bg-surface-low border border-outline-variant/30 rounded-control h-10 px-3 text-[13px] font-mono text-on-surface placeholder:text-outline/70 focus:ring-0 focus:border-primary/60" />
+      <label class="block mt-3 text-[11px] font-head uppercase tracking-widest text-outline">Task spec</label>
+      <input id="rebuild-tasks" type="text" spellcheck="false"
+        placeholder="optional: JSON/YAML text, a path or a link; these tools become required"
+        class="mt-1 w-full bg-surface-low border border-outline-variant/30 rounded-control h-10 px-3 text-[13px] font-mono text-on-surface placeholder:text-outline/70 focus:ring-0 focus:border-primary/60" />
+      <div class="flex items-center justify-end gap-2 mt-5">
+        <button id="rebuild-cancel"
+          class="font-head font-semibold text-sm px-4 h-9 rounded-control border border-outline-variant/30 text-on-surface-dim hover:text-on-surface transition">Cancel</button>
+        <button id="rebuild-go"
+          class="flex items-center gap-1.5 bg-primary text-on-primary font-head font-semibold text-sm px-4 h-9 rounded-control hover:brightness-110 active:scale-[.98] transition">
+          <span class="material-symbols-outlined text-[18px]">restart_alt</span> Rebuild
+        </button>
+      </div>
+    </div>
+  </div>
 
   <script>
     // ─── stages ─────────────────────────────────────────────────────
@@ -268,6 +346,8 @@
 
     // ─── markdown ───────────────────────────────────────────────────
     const esc = s => (s || "").replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    // The same, for a value that goes inside an attribute.
+    const attr = s => esc(s).replace(/"/g, "&quot;");
     const inline = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     function renderMd(md) {
       const out = [];
@@ -473,25 +553,149 @@
       if (!open) return;
 
       const runs = toolRuns[name] || [];
+      // The validator records every invocation, and the debugger repairs a tool
+      // between them: a failure here can be an attempt that a later run passed.
+      const repaired = (r, i) => !r.passed && runs.slice(i + 1).some(
+        later => later.passed && JSON.stringify(later.input) === JSON.stringify(r.input));
       let html = runs.length
-        ? runs.map((r, i) => runHtml(r, i, runs.length)).join("")
+        ? runs.map((r, i) => runHtml(r, i, runs.length, repaired(r, i))).join("")
         : `<div class="px-3.5 py-3 text-xs font-mono text-outline">No invocation yet — the validator calls each tool during the Validator stage, or call it live below.</div>`;
       html += callFormHtml(name);           // always callable (the tool-function exists)
       box.innerHTML = html;
       wireCallForm(name);
+      hydrateFull(box);
     }
 
-    // Default Call args: the last recorded invocation, else the defaults from
-    // the served tool's input schema.
+    // Default Call args: the last recorded invocation, else the tool's invocation
+    // example from the plan, else the defaults from the served tool's input schema.
+    // A server taken from a tool image has no build log, so no recorded invocations.
     function defaultArgs(name) {
       const runs = toolRuns[name] || [];
       const last = runs.length ? runs[runs.length - 1].input : null;
       if (last && Object.keys(last).length) return last;
+      const example = (left.examples || []).find(e => e.name === name);
+      if (example && example.args && Object.keys(example.args).length) return example.args;
       const props = (mcpTools[name] || {}).properties || {};
       const out = {};
-      for (const [k, p] of Object.entries(props)) out[k] = p.default !== undefined ? p.default : "";
+      // user_id and session_id are added by the server wrapper to scope S3 files.
+      for (const [k, p] of Object.entries(props))
+        if (k !== "user_id" && k !== "session_id") out[k] = schemaBlank(p);
       return out;
     }
+    // A starting value of the parameter's own type. Filling every field with ""
+    // sent a string where the tool wanted a list, and the call was refused on the
+    // type before the tool ever saw it.
+    function schemaBlank(p) {
+      if (p.default !== undefined) return p.default;
+      if (Array.isArray(p.examples) && p.examples.length) return p.examples[0];
+      if (Array.isArray(p.enum) && p.enum.length) return p.enum[0];
+      // A nullable parameter is declared as anyOf [type, null]; take the type.
+      const types = [].concat(p.type || (p.anyOf || []).map(a => a.type));
+      const type = types.find(x => x && x !== "null");
+      if (type === "array") return [];
+      if (type === "object") return {};
+      if (type === "boolean") return false;
+      if (type === "integer" || type === "number") return 0;
+      return "";
+    }
+    // ── files a tool left in S3 ─────────────────────────────────────
+    // Every uploaded file comes back as {bucket, s3_key, presigned_url} under
+    // <field>_s3, and a shortened result as result_s3.
+    const FILE_LIMIT = 5;
+    const s3Url = ref => `${BASE}/api/s3/object?key=${encodeURIComponent(ref.key)}` +
+                         (ref.bucket ? `&bucket=${encodeURIComponent(ref.bucket)}` : "");
+    // A small outlined button; the attributes carry what it opens.
+    const smallButton = (attrs, icon, label) =>
+      `<button ${attrs} class="inline-flex items-center gap-1 whitespace-nowrap leading-none text-[11px] font-mono px-2 h-7 rounded-control border border-outline-variant/30 text-on-surface-dim hover:border-primary/60 hover:text-primary transition"><span class="material-symbols-outlined text-[14px] leading-none">${icon}</span>${esc(label)}</button>`;
+    const s3Button = (ref, icon) => smallButton(
+      `data-s3-key="${attr(ref.key)}" data-s3-bucket="${attr(ref.bucket)}" data-s3-label="${attr(ref.label)}" title="${attr(ref.key)}"`,
+      icon, ref.label);
+
+    function s3Refs(value, path = "", depth = 0, out = []) {
+      if (!value || typeof value !== "object" || depth > 5 || out.length > 50) return out;
+      if (Array.isArray(value)) {
+        value.forEach((item, i) => s3Refs(item, `${path}[${i}]`, depth + 1, out));
+        return out;
+      }
+      if (typeof value.s3_key === "string" && value.s3_key) {
+        out.push({ label: (path || value.s3_key).replace(/_s3$/, ""), bucket: value.bucket || "", key: value.s3_key });
+        return out;
+      }
+      for (const [k, v] of Object.entries(value)) s3Refs(v, path ? `${path}.${k}` : k, depth + 1, out);
+      return out;
+    }
+    const FILE_ICON = { json: "data_object", csv: "table", tsv: "table", png: "image", jpg: "image",
+                        jpeg: "image", gif: "image", webp: "image", svg: "image", pdf: "picture_as_pdf" };
+    const fileExt = key => (key.split(".").pop() || "").toLowerCase();
+
+    const previewRefs = {};   // button id -> the result value itself
+    let previewSeq = 0;
+    function openButton(output, label) {
+      const big = typeof output === "string"
+        ? (output.length > 1500 || output.split("\n").length > 10)
+        : (output && typeof output === "object" && (asTable(output) || JSON.stringify(output).length > 1500));
+      if (!big) return "";
+      const id = `res${++previewSeq}`;
+      previewRefs[id] = { label, value: output };
+      return smallButton(`data-result-ref="${id}" title="Open the whole result in a panel"`, "open_in_full", "open");
+    }
+
+    // A server shortens a big result and keeps the whole one in S3. The card
+    // shows what the caller got, and renders the artifacts from the full copy
+    // below it: an agent must not be handed a 20 KB image, an operator must see it.
+    const fullCache = {};      // s3 key -> the parsed full result
+    function fullFromS3(output) {
+      const ref = output && typeof output === "object" ? output.result_s3 : null;
+      if (!ref || !ref.s3_key) return "";
+      return `<div class="mt-2" data-full-key="${attr(ref.s3_key)}" data-full-bucket="${attr(ref.bucket || "")}"></div>`;
+    }
+    // The object at ``ref`` as a fetch response; an error carries the server's detail.
+    async function fetchS3(ref) {
+      const resp = await fetch(s3Url(ref), { cache: "no-store" });
+      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+      return resp;
+    }
+
+    async function hydrateFull(box) {
+      for (const holder of box.querySelectorAll("[data-full-key]")) {
+        const ref = { key: holder.dataset.fullKey, bucket: holder.dataset.fullBucket, label: "whole result" };
+        holder.innerHTML = `<div class="text-[11px] font-mono text-outline">loading the whole result from S3…</div>`;
+        try {
+          if (!fullCache[ref.key]) fullCache[ref.key] = await (await fetchS3(ref)).json();
+        } catch (e) {
+          holder.innerHTML = `<div class="text-[11px] font-mono text-error">the whole result could not be read: ${esc(e.message)}</div>`;
+          continue;
+        }
+        const images = imageFields(fullCache[ref.key]);
+        const open = s3Button(ref, "data_object");
+        holder.innerHTML = images.length
+          ? `<div class="lbl">From the whole result in S3</div>${images.map(([k, v]) =>
+               `<div class="text-[11px] font-mono text-outline mt-1">${esc(k)}</div>${vizOutput(v)}`).join("")}` +
+            `<div class="flex items-center gap-1.5 flex-wrap mt-2">${open}</div>`
+          : `<div class="flex items-center gap-1.5 flex-wrap">${open}</div>`;
+      }
+    }
+    // Fields of the full result that are pictures: an SVG document or a data URI.
+    function imageFields(value, depth = 0, out = []) {
+      if (!value || typeof value !== "object" || depth > 3 || out.length >= 5) return out;
+      for (const [k, v] of Object.entries(value)) {
+        if (typeof v === "string" && (/<svg[\s>][\s\S]*<\/svg>/i.test(v) || /^data:image\//.test(v)))
+          out.push([k, v]);
+        else if (v && typeof v === "object") imageFields(v, depth + 1, out);
+      }
+      return out;
+    }
+
+    function fileButtons(output) {
+      // The top-level result_s3 is the whole result, which fullFromS3 already offers.
+      const refs = s3Refs(output).filter(ref => ref.label !== "result");
+      if (!refs.length) return "";
+      const shown = refs.slice(0, FILE_LIMIT).map(ref => s3Button(ref, FILE_ICON[fileExt(ref.key)] || "draft")).join("");
+      const more = refs.length > FILE_LIMIT
+        ? `<span class="text-[11px] font-mono text-outline" title="${attr(refs.slice(FILE_LIMIT).map(r => r.key).join("\n"))}">and ${refs.length - FILE_LIMIT} more in S3</span>` : "";
+      return `<div class="flex items-center gap-1.5 flex-wrap mt-2">${shown}${more}</div>`;
+    }
+
     function callFormHtml(name) {
       const cs = callState[name] || {};
       const def = cs.argsText != null ? cs.argsText : JSON.stringify(defaultArgs(name), null, 2);
@@ -499,7 +703,9 @@
       const via = cs.via === "container" ? "container (debug)" : "MCP";
       let result = "";
       if (cs.status === "done")
-        result = `<div class="lbl mt-2">Result · via ${via}</div>${vizOutput(cs.output)}${cs.reason ? `<div class="text-[11px] text-outline font-mono mt-1">${esc(cs.reason)}</div>` : ""}`;
+        result = `<div class="lbl mt-2">Result · via ${via}</div>${vizOutput(cs.output)}${fullFromS3(cs.output)}` +
+          `<div class="flex items-center gap-1.5 flex-wrap mt-2">${openButton(cs.output, `${name} · result`)}</div>` +
+          `${fileButtons(cs.output)}${cs.reason ? `<div class="text-[11px] text-outline font-mono mt-1">${esc(cs.reason)}</div>` : ""}`;
       else if (cs.status === "error")
         result = `<div class="lbl mt-2">Error · via ${via}</div><pre class="err">${esc(cs.error || 'call failed')}${cs.traceback ? "\n\n" + esc(cs.traceback) : ""}</pre>`;
       return `
@@ -548,9 +754,12 @@
       renderRuns(name);
       ws.send(JSON.stringify({ type: "invoke", tool: name, args, call_id: id, mode }));
     }
-    function runHtml(r, i, total) {
+    function runHtml(r, i, total, repaired) {
       const s = r.passed ? { c: "#40e56c", t: "pass", ic: "check_circle" }
         : { c: "#ffb4ab", t: "fail", ic: "error" };
+      const note = repaired
+        ? `<span class="text-[#ffcf6b] ml-1 cursor-help" title="The validator called the tool again with the same arguments after the debugger repaired it, and that run passed. The verdict above is the state the build ended in.">repaired after this</span>`
+        : "";
       const hasIn = r.input && typeof r.input === "object" && Object.keys(r.input).length;
       const input = hasIn ? kvTable(r.input)
         : `<span class="text-outline text-xs font-mono">no arguments</span>`;
@@ -560,7 +769,7 @@
         <div class="px-3.5 py-3 border-b border-outline-variant/5 space-y-2.5">
           <div class="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wide" style="color:${s.c}">
             <span class="material-symbols-outlined text-[15px]">${s.ic}</span>${s.t}
-            ${total > 1 ? `<span class="text-outline ml-1">run ${i + 1}/${total}</span>` : ""}
+            ${total > 1 ? `<span class="text-outline ml-1">run ${i + 1}/${total}</span>` : ""}${note}
           </div>
           <div><div class="lbl">Input parameters</div>${input}</div>
           <div><div class="lbl">Output</div>${output}</div>
@@ -576,6 +785,73 @@
         })
         .join("") + `</div>`;
     }
+    // {index, columns, data} (pandas "split") or a list of flat records.
+    function asTable(v) {
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        const entries = Object.entries(v);
+        if (entries.length === 1 && entries[0][1] && typeof entries[0][1] === "object")
+          return asTable(entries[0][1]);
+      }
+      if (Array.isArray(v) && v.length && v.length <= 5000 &&
+          v.every(r => r && typeof r === "object" && !Array.isArray(r) &&
+                       Object.values(r).every(c => c === null || typeof c !== "object"))) {
+        const head = [...new Set(v.flatMap(r => Object.keys(r)))];
+        return { head, rows: v.map(r => head.map(c => r[c])) };
+      }
+      if (v && typeof v === "object" && Array.isArray(v.columns)) {
+        const index = Array.isArray(v.index) ? v.index : [];
+        const head = (index.length ? [""] : []).concat(v.columns.map(String));
+        // A frame travels either as rows (pandas "split") or as nested objects,
+        // keyed by row label or by column name (to_dict of either orientation).
+        if (Array.isArray(v.data))
+          return { head, rows: v.data.map((row, i) => (index.length ? [index[i]] : []).concat(row)) };
+        if (v.data && typeof v.data === "object" && index.length) {
+          const byRow = index.some(i => Object.prototype.hasOwnProperty.call(v.data, String(i)));
+          const cell = (i, c) => byRow ? (v.data[String(i)] || {})[String(c)]
+                                       : (v.data[String(c)] || {})[String(i)];
+          return { head, rows: index.map(i => [i].concat(v.columns.map(c => cell(i, c)))) };
+        }
+      }
+      return null;
+    }
+    // ``opened``: in the panel, which scrolls itself, so the table is not boxed.
+    function tableHtml(table, limit, opened = false) {
+      const rows = table.rows.slice(0, limit);
+      const cut = rows.length < table.rows.length
+        ? `showing ${rows.length} of ${table.rows.length} rows${opened ? "" : "; open it to see the rest"}` : "";
+      // A frame the server printed was already elided by pandas ("..." columns).
+      const printed = table.footer
+        ? `the server sent this table as printed text, so its middle columns are the "…" pandas left; rebuild the server to get them` : "";
+      const note = (cut || printed)
+        ? `<div class="text-[11px] font-mono text-outline mt-1">${esc([cut, printed].filter(Boolean).join(" · "))}</div>` : "";
+      const cell = c => esc(c === null || c === undefined ? "" : typeof c === "object" ? JSON.stringify(c) : String(c));
+      return `<div class="${opened ? "" : "tablebox"}"><table class="datatable">
+          <thead><tr>${table.head.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+          <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${cell(c)}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table></div>${note}`;
+    }
+    // A printed table (pandas to_string) keeps its columns only without wrapping.
+    const looksAligned = s => s.includes("\n") && /\n\S.*  +\S/.test(s);
+
+    // Servers built before the runner sent frames as data print them instead:
+    // columns separated by tabs or by runs of spaces. Read them back as a table.
+    function textTable(text) {
+      let lines = String(text).replace(/\r/g, "").split("\n").filter(l => l.trim());
+      // pandas signs its printed frames off with "[51 rows x 33 columns]".
+      const footer = /^\[\d+ rows? x \d+ columns?\]$/.test(lines[lines.length - 1] || "")
+        ? lines.pop() : null;
+      if (lines.length < 2 || lines.length > 5000) return null;
+      const sep = lines[0].includes("\t") ? /\t/ : /\s{2,}/;
+      const rows = lines.map(l => l.split(sep).map(c => c.trim()));
+      const width = Math.max(...rows.map(r => r.length));
+      if (width < 2) return null;
+      // Every row must look like the same table, give or take the index column.
+      if (rows.some(r => r.length < width - 1)) return null;
+      const head = rows[0].length === width - 1 ? [""].concat(rows[0]) : rows[0];
+      return { head, footer,
+               rows: rows.slice(1).map(r => r.concat(Array(width - r.length).fill(""))) };
+    }
+
     const prettyJson = v => {
       let s = JSON.stringify(v, null, 2);
       return s.length > 6000 ? s.slice(0, 6000) + "\n… (truncated)" : s;
@@ -593,10 +869,14 @@
         if (/^data:image\//.test(t))
           return `<img src="${t}" class="max-h-64 rounded-card border border-outline-variant/20"/>`;
         if (/<svg[\s>]/i.test(t))
-          return `<div class="svgbox">${stripScripts(t)}</div>`;
+          return /<\/svg>/i.test(t)
+            ? `<div class="svgbox">${stripScripts(t)}</div>`
+            : `<div class="text-[11px] font-mono text-[#ffcf6b]">the image is cut off in this result; the whole one is below</div><pre class="out">${esc(t.slice(0, 400))}…</pre>`;
         if (IMG_RE.test(t))
           return `<div class="filechip"><span class="material-symbols-outlined text-[15px]">image</span>${esc(t)}</div>`;
-        return `<pre class="out">${esc(v)}</pre>`;
+        if (!looksAligned(v)) return `<pre class="out">${esc(v)}</pre>`;
+        const printed = textTable(v);
+        return printed ? tableHtml(printed, 50) : `<pre class="out wide">${esc(v)}</pre>`;
       }
       if (typeof v === "number" || typeof v === "boolean")
         return `<div class="stat">${esc(String(v))}</div>`;
@@ -606,6 +886,8 @@
         if (v.length && v.every(x => typeof x === "number")) return bars(v);
         if (v.length && v.length <= 60 && v.every(x => typeof x === "string" && x.length <= 48))
           return v.map(x => `<span class="chip">${esc(x)}</span>`).join("");
+        const rows = asTable(v);
+        if (rows) return tableHtml(rows, 50);
         return `<pre class="out">${esc(prettyJson(v))}</pre>`;
       }
       for (const k of ["svg", "image", "img", "plot", "figure"]) {
@@ -621,6 +903,12 @@
         if (typeof val === "string" && IMG_RE.test(val))
           return `<div class="filechip"><span class="material-symbols-outlined text-[15px]">image</span>${esc(val)}</div>` + kvTable(omit(v, k));
       }
+      const table = asTable(v);
+      if (table) return tableHtml(table, 50);
+      const entries = Object.entries(v);
+      const only = entries.length === 1 ? entries[0] : null;
+      if (only && typeof only[1] === "string" && looksAligned(only[1]))
+        return `<div class="lbl">${esc(only[0])}</div>${vizOutput(only[1])}`;
       const flat = Object.values(v).every(x => x === null || typeof x !== "object");
       return flat ? kvTable(v) : `<pre class="out">${esc(prettyJson(v))}</pre>`;
     }
@@ -735,10 +1023,20 @@
           break;
         case "files": left.files = m.files || []; renderLeft(); break;
         case "setup": left.setup = m.content || ""; renderLeft(); break;
-        case "examples": left.examples = m.examples || []; renderLeft(); break;
+        case "examples":
+          left.examples = m.examples || []; renderLeft();
+          expandedTools.forEach(name => renderRuns(name));  // Call forms take their defaults from them
+          break;
         case "server":
-          serverTools = m.tools || []; renderServer();
+          serverTools = m.tools || [];
+          // A build pulled from the hub has no log to replay, so its recorded
+          // invocations arrive with the cards instead.
+          for (const tool of serverTools)
+            if ((tool.runs || []).length && !(toolRuns[tool.name] || []).length)
+              toolRuns[tool.name] = tool.runs.map(r => ({ ...r, output: null }));
+          renderServer();
           document.getElementById("download-btn").disabled = !serverTools.length;
+          refreshHubButton();
           break;
         case "validation": patchValidation(m); break;
         case "check": setCheck(m.name, m.passed, m.detail); break;
@@ -832,30 +1130,241 @@
       document.getElementById("stop-btn").classList.toggle("hidden", !on);
       document.getElementById("stop-btn").classList.toggle("flex", on);
     }
+    const buildBody = (url, extra) => JSON.stringify({
+      repo_url: url,
+      hints: document.getElementById("hints-input").value.trim() || null,
+      task_spec: document.getElementById("tasks-input").value.trim() || null,
+      ...extra,
+    });
+
+    // ── the file viewer ─────────────────────────────────────────────
+    const TEXT_EXT = new Set(["txt", "md", "log", "yaml", "yml", "xml", "smi", "fasta", "pro", "py"]);
+    function fileModal() { return document.getElementById("file-modal"); }
+    function closeFile() {
+      fileModal().classList.add("hidden");
+      fileModal().classList.remove("flex");
+      document.getElementById("file-body").innerHTML = "";
+      document.getElementById("file-tools").innerHTML = "";
+    }
+    document.getElementById("file-close").onclick = closeFile;
+    fileModal().addEventListener("click", e => { if (e.target.id === "file-modal") closeFile(); });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && !fileModal().classList.contains("hidden")) closeFile();
+    });
+
+    async function openFile(ref) {
+      const body = document.getElementById("file-body");
+      const ext = fileExt(ref.key);
+      document.getElementById("file-title").textContent = ref.label;
+      document.getElementById("file-sub").textContent = ref.key;
+      document.getElementById("file-icon").textContent = FILE_ICON[ext] || "draft";
+      const link = document.getElementById("file-download");
+      link.href = s3Url(ref);
+      link.setAttribute("download", ref.key.split("/").pop());
+      document.getElementById("file-tools").innerHTML = "";
+      body.innerHTML = `<div class="text-outline font-mono text-xs">loading…</div>`;
+      fileModal().classList.remove("hidden"); fileModal().classList.add("flex");
+      let resp;
+      try {
+        resp = await fetchS3(ref);
+      } catch (e) {
+        body.innerHTML = `<pre class="err">${esc(e.message)}</pre>`; return;
+      }
+      const type = resp.headers.get("content-type") || "";
+      if (type.startsWith("image/") || FILE_ICON[ext] === "image") {
+        renderImage(body, URL.createObjectURL(await resp.blob()));
+        return;
+      }
+      if (type.startsWith("application/pdf") || FILE_ICON[ext] === "picture_as_pdf") {
+        body.innerHTML = `<iframe src="${URL.createObjectURL(await resp.blob())}" class="w-full h-[70vh] rounded-card border border-outline-variant/20"></iframe>`;
+        return;
+      }
+      const text = await resp.text();
+      if (ext === "json" || type.includes("json")) {
+        try { renderJson(body, JSON.parse(text)); return; } catch (e) { /* shown as text */ }
+      }
+      if (["csv", "tsv"].includes(ext)) { renderTable(body, text, ext === "tsv" ? "\t" : ","); return; }
+      if (TEXT_EXT.has(ext) || type.startsWith("text/"))
+        body.innerHTML = `<pre class="font-mono text-[12px] leading-relaxed whitespace-pre-wrap">${esc(text.slice(0, 500000))}</pre>`;
+      else
+        body.innerHTML = `<div class="text-outline font-mono text-xs">This file has no viewer here (${esc(type || ext || "unknown type")}). Use download.</div>`;
+    }
+
+    // An image fills the panel; the buttons zoom it and the panel scrolls.
+    function renderImage(body, src) {
+      body.innerHTML = `<img id="file-image" src="${src}" class="rounded-card border border-outline-variant/20" style="width:100%"/>`;
+      let zoom = 100;
+      const img = document.getElementById("file-image");
+      const apply = () => { img.style.width = zoom + "%"; img.style.maxWidth = "none"; };
+      const tool = (icon, title, fn) => {
+        const b = document.createElement("button");
+        b.className = "flex items-center justify-center w-7 h-7 rounded-control border border-outline-variant/30 text-outline hover:text-on-surface transition";
+        b.innerHTML = `<span class="material-symbols-outlined text-[16px]">${icon}</span>`;
+        b.title = title; b.onclick = fn;
+        document.getElementById("file-tools").appendChild(b);
+      };
+      tool("zoom_out", "zoom out", () => { zoom = Math.max(25, zoom - 25); apply(); });
+      tool("fit_screen", "fit the panel", () => { zoom = 100; apply(); });
+      tool("zoom_in", "zoom in", () => { zoom = Math.min(800, zoom + 25); apply(); });
+      img.addEventListener("wheel", e => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        e.preventDefault();
+        zoom = Math.min(800, Math.max(25, zoom + (e.deltaY < 0 ? 20 : -20)));
+        apply();
+      }, { passive: false });
+    }
+
+    // JSON as a tree: every object and array folds, so a big document opens fast.
+    function renderJson(body, data) {
+      body.innerHTML = `<div class="font-mono text-[12px] leading-relaxed">${jsonNode(data, "", 0)}</div>`;
+    }
+    function jsonNode(value, key, depth) {
+      const label = key === "" ? "" : `<span class="text-primary">${esc(key)}</span>: `;
+      if (value === null) return `<div>${label}<span class="text-outline">null</span></div>`;
+      if (typeof value !== "object")
+        return `<div>${label}<span class="${typeof value === "string" ? "text-on-surface" : "text-secondary"}">${esc(JSON.stringify(value))}</span></div>`;
+      const entries = Array.isArray(value)
+        ? value.map((v, i) => [String(i), v]) : Object.entries(value);
+      const size = Array.isArray(value) ? `list[${entries.length}]` : `{${entries.length}}`;
+      const shown = entries.slice(0, 500);
+      const rest = entries.length > shown.length
+        ? `<div class="text-outline pl-4">… ${entries.length - shown.length} more</div>` : "";
+      return `<details ${depth < 2 ? "open" : ""}>
+        <summary class="cursor-pointer">${label}<span class="text-outline">${size}</span></summary>
+        <div class="pl-4 border-l border-outline-variant/20">${shown.map(([k, v]) => jsonNode(v, k, depth + 1)).join("")}${rest}</div>
+      </details>`;
+    }
+
+    // CSV/TSV as a table: the first rows, enough to see what the tool produced.
+    function renderTable(body, text, sep) {
+      const [head, ...rows] = csvRows(text, sep);
+      body.innerHTML = head
+        ? `<div class="text-[11px] font-mono text-outline mb-2">${head.length} columns${rows.length > 500 ? ", the first 500 rows" : ""}</div>${tableHtml({ head, rows }, 500, true)}`
+        : `<div class="text-outline font-mono text-xs">empty file</div>`;
+    }
+    function csvRows(text, sep) {
+      const rows = [];
+      let row = [], field = "", quoted = false;
+      for (let i = 0; i < text.length && rows.length <= 501; i++) {
+        const c = text[i];
+        if (quoted) {
+          if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+          else if (c === '"') quoted = false;
+          else field += c;
+        } else if (c === '"') quoted = true;
+        else if (c === sep) { row.push(field); field = ""; }
+        else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+        else if (c !== "\r") field += c;
+      }
+      if (field || row.length) { row.push(field); rows.push(row); }
+      return rows;
+    }
+
+    function openValue(label, value) {
+      const body = document.getElementById("file-body");
+      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      const table = typeof value === "string"
+        ? (looksAligned(value) ? textTable(value) : null) : asTable(value);
+      document.getElementById("file-title").textContent = label;
+      document.getElementById("file-sub").textContent = table
+        ? `${table.rows.length} rows, ${table.head.length} columns`
+        : `${text.length} characters`;
+      document.getElementById("file-icon").textContent = table ? "table" : "data_object";
+      document.getElementById("file-tools").innerHTML = "";
+      const blob = new Blob([text], { type: typeof value === "string" ? "text/plain" : "application/json" });
+      const link = document.getElementById("file-download");
+      link.href = URL.createObjectURL(blob);
+      link.setAttribute("download", typeof value === "string" ? "result.txt" : "result.json");
+      if (table) body.innerHTML = tableHtml(table, 2000, true);
+      else if (typeof value === "string")
+        body.innerHTML = `<pre class="font-mono text-[12px] leading-relaxed whitespace-pre">${esc(text)}</pre>`;
+      else renderJson(body, value);
+      fileModal().classList.remove("hidden"); fileModal().classList.add("flex");
+    }
+
+    document.addEventListener("click", e => {
+      const file = e.target.closest("[data-s3-key]");
+      if (file) {
+        openFile({ key: file.dataset.s3Key, bucket: file.dataset.s3Bucket, label: file.dataset.s3Label });
+        return;
+      }
+      const result = e.target.closest("[data-result-ref]");
+      if (result && previewRefs[result.dataset.resultRef]) {
+        const ref = previewRefs[result.dataset.resultRef];
+        openValue(ref.label, ref.value);
+      }
+    });
+
+    // The rebuild dialog: resolves with what to aim the new build at, or null.
+    let rebuildResolve = null;
+    function askRebuild(note) {
+      const modal = document.getElementById("rebuild-modal");
+      document.getElementById("rebuild-note").textContent = note;
+      document.getElementById("rebuild-hint").value = document.getElementById("hints-input").value.trim();
+      document.getElementById("rebuild-tasks").value = document.getElementById("tasks-input").value.trim();
+      modal.classList.remove("hidden"); modal.classList.add("flex");
+      document.getElementById("rebuild-hint").focus();
+      return new Promise(resolve => { rebuildResolve = resolve; });
+    }
+    function closeRebuild(answer) {
+      const modal = document.getElementById("rebuild-modal");
+      modal.classList.add("hidden"); modal.classList.remove("flex");
+      const resolve = rebuildResolve;
+      rebuildResolve = null;
+      if (resolve) resolve(answer);
+    }
+    document.getElementById("rebuild-cancel").onclick = () => closeRebuild(null);
+    document.getElementById("rebuild-go").onclick = () => closeRebuild({
+      hints: document.getElementById("rebuild-hint").value.trim() || null,
+      task_spec: document.getElementById("rebuild-tasks").value.trim() || null,
+    });
+    document.getElementById("rebuild-modal").addEventListener("click", e => {
+      if (e.target.id === "rebuild-modal") closeRebuild(null);
+    });
+    document.addEventListener("keydown", e => {
+      if (!rebuildResolve) return;
+      if (e.key === "Escape") closeRebuild(null);
+      if (e.key === "Enter" && e.target.tagName === "INPUT") document.getElementById("rebuild-go").click();
+    });
+
+    // A build started from the page, force_rebuild and all: its job page follows.
+    async function startBuild(url, extra, btn) {
+      try {
+        const r = await fetch(`${BASE}/api/builds`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: buildBody(url, extra),
+        });
+        const body = await r.json();
+        if (r.ok && body.status !== "error") return body;
+        setNow("error: " + (body.detail || body.error || r.statusText), "#ffb4ab");
+      } catch (e) {
+        setNow("error: " + e.message, "#ffb4ab");
+      }
+      btn.disabled = false;
+      return null;
+    }
+    const openBuild = jobId => { location.href = `${BASE}/builds/${encodeURIComponent(jobId)}`; };
+
     document.getElementById("run-btn").onclick = async () => {
       const url = document.getElementById("repo-input").value.trim();
       if (!url) return;
       const btn = document.getElementById("run-btn");
       btn.disabled = true;
-      try {
-        const r = await fetch(`${BASE}/api/builds`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_url: url }),
-        });
-        const body = await r.json();
-        if (!r.ok || body.status === "error") {
-          setNow("error: " + (body.detail || body.error || r.statusText), "#ffb4ab");
-          btn.disabled = false;
-          return;
-        }
-        // Build now runs as a detached subprocess. Jump to its detail page —
-        // closing this tab, navigating elsewhere, or refreshing has no effect.
-        location.href = `${BASE}/builds/${encodeURIComponent(body.job_id)}`;
-      } catch (e) {
-        setNow("error: " + e.message, "#ffb4ab");
-        btn.disabled = false;
+      // On a build's own page the button converts the repository again; the
+      // build being watched, and its server, stay as they are.
+      if (MODE === "history") {
+        const answer = await askRebuild(
+          `${url}\n\nThe build on this page and its server stay; a new conversion starts beside them.`);
+        if (answer === null) { btn.disabled = false; return; }
+        const fresh = await startBuild(url, { force_rebuild: true, ...answer }, btn);
+        if (fresh) openBuild(fresh.job_id);
+        return;
       }
+      // A run started by hand converts the repository. Reusing a local build or
+      // pulling one from the MCP hub is the agent's cascade, never this button's.
+      const body = await startBuild(url, { force_rebuild: true }, btn);
+      // The build runs detached; closing or refreshing its page has no effect on it.
+      if (body) openBuild(body.job_id);
     };
     document.getElementById("stop-btn").onclick = () => {
       if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "stop" }));
@@ -1057,15 +1566,79 @@
       });
     })();
 
+    // ─── MCP hub upload ─────────────────────────────────────────────
+    // Shown for a finished build when build controls are on and a hub namespace is
+    // set in .env. The push runs on the server in the background; the button
+    // polls the build until it has finished.
+    let hubConfig = null, hubTimer = null;
+    async function refreshHubButton() {
+      if (MODE !== "history" || !currentJobId) return;
+      const btn = document.getElementById("hub-upload-btn");
+      const label = document.getElementById("hub-upload-label");
+      let snap;
+      try {
+        if (!hubConfig) hubConfig = await (await fetch(`${BASE}/api/hub/config`, { cache: "no-store" })).json();
+        const r = await fetch(`${BASE}/api/builds/${encodeURIComponent(currentJobId)}`, { cache: "no-store" });
+        if (!r.ok) return;
+        snap = await r.json();
+      } catch (e) { return; }
+      if (!hubConfig.configured || !hubConfig.controls || snap.status !== "done") return;
+      btn.classList.remove("hidden"); btn.classList.add("flex");
+      const action = snap.action && snap.action.name === "hub-upload" ? snap.action : null;
+      const hub = snap.hub || {};
+      clearTimeout(hubTimer);
+      if (action && action.running) {
+        btn.disabled = true;
+        label.textContent = "uploading…";
+        btn.title = `pushing the image to Docker Hub (${hubConfig.namespace})`;
+        hubTimer = setTimeout(refreshHubButton, 3000);
+        return;
+      }
+      btn.disabled = !(hubConfig.can_upload && snap.runnable);
+      let tip = `Upload to the MCP hub: ${hubConfig.namespace}, tags ${currentJobId} and latest`;
+      if (!hubConfig.can_upload) tip = "Uploading needs DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in .env";
+      else if (!snap.runnable) tip = "This build has no image of its own on this host";
+      label.textContent = "";
+      if (action && action.result && !action.result.ok) {
+        label.textContent = "upload failed";
+        tip = action.result.error || tip;
+      } else if (hub.status === "skipped") {
+        label.textContent = "not auto-uploaded";
+        tip = (hub.error || "") + "\n\nClick to upload anyway.";
+      } else if (hub.status === "uploaded") {
+        label.textContent = hub.warning ? "on hub, no description" : "on hub";
+        tip = `${hub.image}: ${(hub.tags || []).join(", ")}` + (hub.warning ? `\n${hub.warning}` : "") + "\n\nClick to upload again.";
+      }
+      btn.title = tip;
+    }
+    document.getElementById("hub-upload-btn").onclick = async () => {
+      if (!hubConfig || !currentJobId) return;
+      if (!confirm(`Upload the image of ${currentJobId} to the public MCP hub?\n\n` +
+          `It is pushed to Docker Hub namespace ${hubConfig.namespace} with the tags ${currentJobId} and latest. ` +
+          `An existing latest of this repository is replaced, and anyone can pull the image.`)) return;
+      try {
+        const r = await fetch(`${BASE}/api/builds/${encodeURIComponent(currentJobId)}/hub-upload`, { method: "POST" });
+        if (r.status !== 202) {
+          const body = await r.json().catch(() => ({}));
+          alert("The upload did not start: " + (body.error || body.detail || r.statusText));
+        }
+      } catch (e) { alert("The upload did not start: " + e.message); }
+      refreshHubButton();
+    };
+
     // ─── mode-driven UI adjustments ─────────────────────────────────
     if (MODE === "history") {
       // The per-job page watches a build that already exists: hide the start
       // controls and show the "New MCP from repo" link. Stop comes back while
       // the build runs (setRunning).
-      for (const id of ["run-btn", "stop-btn", "repo-input"]) {
+      document.getElementById("build-options")?.classList.add("hidden");
+      for (const id of ["stop-btn", "repo-input"]) {
         const el = document.getElementById(id);
         if (el) el.classList.add("hidden");
       }
+      const runBtn = document.getElementById("run-btn");
+      runBtn.innerHTML = '<span class="material-symbols-outlined text-[19px]">restart_alt</span> Rebuild';
+      runBtn.title = "Convert this repository again as a new build; this one stays";
       // Also hide the wrapper div around repo-input for a clean header.
       const repoWrap = document.getElementById("repo-input")?.parentElement;
       if (repoWrap) repoWrap.classList.add("hidden");
@@ -1075,6 +1648,7 @@
 
     // Header "Builds" button → mount-local history index.
     document.getElementById("builds-link").href = `${BASE}/builds`;
+    document.getElementById("hub-link").href = `${BASE}/hub`;
     // Header logo → mount-local live entry (paste a repo, run new build).
     document.getElementById("home-link").href = `${BASE}/`;
 

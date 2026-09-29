@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>Alembic — MCP hub</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "primary": "#00daf3", "on-primary": "#00363d", "primary-container": "#007e8c",
+            "secondary": "#40e56c",
+            "error": "#ffb4ab", "error-strong": "#93000a",
+            "background": "#101319",
+            "surface-low": "#191c22", "surface": "#1d2026", "surface-lowest": "#0b0e14",
+            "surface-high": "#272a31",
+            "on-surface": "#e1e2eb", "on-surface-dim": "#c2c6d8",
+            "outline": "#8c90a1", "outline-variant": "#424656",
+          },
+          borderRadius: { "card": "0.75rem", "control": "0.5rem" },
+          fontFamily: {
+            head: ["Space Grotesk", "sans-serif"],
+            mono: ["JetBrains Mono", "monospace"],
+            body: ["Inter", "sans-serif"],
+          }
+        },
+      },
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+    tbody tr.server:hover { background: #1d2026; cursor: pointer; }
+    /* The description is short by construction; it wraps onto a second line. */
+    @keyframes spin { to { transform: rotate(360deg) } }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+    @media (prefers-reduced-motion: reduce) { .spin { animation: none !important; } }
+  </style>
+</head>
+
+<body class="bg-background text-on-surface min-h-screen">
+
+  <header class="flex items-center gap-5 px-6 min-h-16 py-2 border-b border-outline-variant/20 bg-surface-lowest">
+    <a id="home-link" href="#" class="flex items-center gap-2.5 hover:opacity-80 transition" title="New MCP from repo">
+      <span class="material-symbols-outlined text-primary text-[26px]">experiment</span>
+      <div class="leading-none">
+        <div class="font-head text-lg font-bold tracking-[0.2em] text-primary uppercase">Alembic</div>
+        <div class="text-[9px] font-mono text-outline tracking-[0.25em] uppercase mt-1">mcp hub</div>
+      </div>
+    </a>
+    <div class="flex-1"></div>
+    <a id="builds-link" href="#" class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
+      <span class="material-symbols-outlined text-[19px]">history</span> Builds
+    </a>
+    <a href="/" class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
+      <span class="material-symbols-outlined text-[19px]">chat</span> CoScientist chat
+    </a>
+    <a id="new-build-btn" href="#" class="flex items-center gap-1.5 bg-primary text-on-primary font-head font-semibold text-sm px-4 h-10 rounded-control hover:brightness-110 active:scale-[.98] transition">
+      <span class="material-symbols-outlined text-[19px]">add</span> New MCP from repo
+    </a>
+  </header>
+
+  <main class="p-6 max-w-[1800px] mx-auto">
+    <div class="mb-4 flex items-center gap-3 flex-wrap">
+      <span class="material-symbols-outlined text-outline text-[20px]">hub</span>
+      <h1 class="font-head text-xl font-semibold text-on-surface">MCP hub</h1>
+      <span id="count-chip" class="text-[11px] font-mono text-outline bg-surface rounded-full px-2 py-0.5">0</span>
+      <a id="namespace-link" href="#" target="_blank" rel="noopener" class="font-mono text-[12px] text-primary hover:underline"></a>
+      <span id="upload-note" class="text-[11px] font-mono text-outline cursor-help"></span>
+      <input id="search" type="search" spellcheck="false" placeholder="search servers, tools, repositories"
+        class="ml-auto w-72 bg-surface border border-outline-variant/30 rounded-control h-9 px-3 text-sm font-mono text-on-surface placeholder:text-outline/70 focus:ring-0 focus:border-primary/60" />
+      <button id="refresh-btn" title="Read the namespace again" class="flex items-center gap-1 text-xs font-mono text-outline hover:text-primary transition">
+        <span class="material-symbols-outlined text-[16px]">refresh</span> refresh
+      </button>
+    </div>
+
+    <div id="error" class="hidden mb-4 px-4 py-3 rounded-card border border-error/40 bg-error/10 text-error font-mono text-sm"></div>
+
+    <div class="bg-surface border border-outline-variant/20 rounded-card overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-low text-outline">
+          <tr>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Server</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Repository</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Tools</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Updated</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Pulls</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">On this host</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="hidden p-10 text-center text-outline font-mono text-sm"></div>
+    </div>
+  </main>
+
+  <script>
+    const _p = location.pathname;
+    const BASE = (_p === "/alembic" || _p.startsWith("/alembic/")) ? "/alembic" : "";
+    document.getElementById("home-link").href = `${BASE}/`;
+    document.getElementById("new-build-btn").href = `${BASE}/`;
+    document.getElementById("builds-link").href = `${BASE}/builds`;
+
+    const esc = s => (s == null ? "" : String(s)).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const attr = s => esc(s).replace(/"/g, "&quot;");
+    const spinner = size => `<span class="material-symbols-outlined text-[${size}px] spin">progress_activity</span>`;
+
+    let listing = null;
+    let query = "";
+    const expanded = new Set();
+    const tags = {};      // name -> {loading} | {ok, tags} | {ok: false, error}
+    const notes = {};     // name -> {ok, html}
+    const pulling = {};   // name -> true while the pull request is being sent
+
+    const toolsOf = s => (s.meta && s.meta.tools) || [];
+    // The validator's verdict per tool: "perfect" answered every invocation example,
+    // "passed" ran its tests. A failed or untested tool is served all the same.
+    const VERDICT = {
+      perfect: ["text-secondary", "every generated test and invocation example passed"],
+      passed: ["text-secondary", "its generated tests passed"],
+      failed: ["text-error", "it did not pass validation and may not work"],
+      untested: ["text-outline", "it was never validated"],
+    };
+    function verdictCell(t) {
+      const v = VERDICT[t.status];
+      if (!v) return "";
+      const calls = t.invoc ? ` ${t.invoc}` : "";
+      return `<span class="font-mono text-[11px] ${v[0]} cursor-help" title="${attr(v[1])}">${esc(t.status)}${esc(calls)}</span>`;
+    }
+    function fmtDate(iso) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      return isNaN(d) ? "—" : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    }
+    function matches(s) {
+      if (!query) return true;
+      const hay = [s.name, s.description, s.meta && s.meta.repo_url,
+                   ...toolsOf(s).map(t => `${t.name} ${t.description || ""}`)].join(" ").toLowerCase();
+      return query.toLowerCase().split(/\s+/).filter(Boolean).every(w => hay.includes(w));
+    }
+
+    function serverCell(s) {
+      // The short description and the summary in the metadata are the same line.
+      const text = s.description || (s.meta && s.meta.summary) || "";
+      return `<div class="font-mono text-[12px] text-on-surface">${esc(s.name)}</div>` +
+        (text ? `<div class="max-w-[26rem] text-[11px] text-outline mt-0.5 leading-snug" title="${attr(text)}">${esc(text)}</div>` : "");
+    }
+    function repoCell(s) {
+      const url = s.meta && s.meta.repo_url;
+      if (!url) return `<span class="text-outline">—</span>`;
+      const short = url.replace(/^https?:\/\/(www\.)?/, "").replace(/\.git$/, "");
+      return `<a href="${attr(url)}" target="_blank" rel="noopener" class="font-mono text-[12px] text-primary hover:underline break-all">${esc(short)}</a>`;
+    }
+    function toolsCell(s) {
+      if (!s.meta)
+        return `<span class="font-mono text-[11px] text-[#ffcf6b] cursor-help" title="Uploaded without alembic metadata. Its tools are known after a pull.">no metadata</span>`;
+      const tools = toolsOf(s);
+      const names = tools.map(t => t.name + (t.status ? ` (${t.status})` : "")).join(", ");
+      let chip = "";
+      const c = s.meta.tool_counts || {};
+      const passed = c.tools_passed || 0, total = c.tools_total || 0;
+      if (total) {
+        const tone = passed === total ? "text-secondary" : passed ? "text-[#ffcf6b]" : "text-error";
+        chip = `<div class="mt-1"><span class="font-mono text-[11px] ${tone} cursor-help" title="tools that passed validation: ${passed} of ${total}">${passed}/${total} valid</span></div>`;
+      }
+      return `<span class="font-mono text-[12px] text-on-surface-dim cursor-help" title="${attr(names)}">${tools.length} tools</span>${chip}`;
+    }
+    function localCell(s) {
+      const builds = s.local_builds || [];
+      if (!builds.length) return `<span class="text-outline">—</span>`;
+      return builds.map(b => `<a href="${BASE}/builds/${encodeURIComponent(b.job_id)}" class="block font-mono text-[11px] text-primary hover:underline" title="${attr(b.origin === "hub" ? "pulled from the hub" : "uploaded from this host")}">${esc(b.job_id)}</a>`).join("");
+    }
+    function actionCell(s) {
+      const note = notes[s.name] ? `<div class="text-[10px] font-mono mt-1 ${notes[s.name].ok ? "text-secondary" : "text-error"}">${notes[s.name].html}</div>` : "";
+      if (!listing.controls) return note;
+      if (pulling[s.name]) return `<span class="inline-flex items-center gap-1 text-[11px] font-mono text-primary">${spinner(15)}starting pull…</span>`;
+      return `<button data-pull="${attr(s.name)}" title="Pull the latest image and start its MCP server on this host" class="inline-flex items-center gap-1 whitespace-nowrap leading-none text-[11px] font-mono px-2.5 h-7 rounded-control border text-on-surface-dim border-outline-variant/30 hover:border-primary/60 hover:text-primary transition"><span class="material-symbols-outlined text-[14px] leading-none">download</span>Pull &amp; start</button>${note}`;
+    }
+    function detailRow(s) {
+      const tools = toolsOf(s);
+      const toolRows = tools.length
+        ? tools.map(t => `<tr><td class="pr-4 py-1 font-mono text-[12px] text-on-surface align-top">${esc(t.name)}</td><td class="pr-4 py-1 align-top whitespace-nowrap">${verdictCell(t)}</td><td class="py-1 text-[12px] text-on-surface-dim">${esc(t.description || "")}</td></tr>`).join("")
+        : `<tr><td class="py-1 text-[12px] text-outline">${s.meta ? "no tools listed" : "no metadata: pull the image to see its tools"}</td></tr>`;
+      const t = tags[s.name];
+      let tagRows;
+      if (!t || t.loading) tagRows = `<tr><td class="py-1 text-[12px] text-outline">${spinner(13)} loading tags…</td></tr>`;
+      else if (!t.ok) tagRows = `<tr><td class="py-1 text-[12px] text-error">${esc(t.error)}</td></tr>`;
+      else tagRows = t.tags.map(x => `<tr><td class="pr-4 py-1 font-mono text-[12px] text-on-surface">${esc(x.tag)}</td><td class="pr-4 py-1 font-mono text-[11px] text-on-surface-dim">${esc(x.size || "")}</td><td class="py-1 font-mono text-[11px] text-outline">${fmtDate(x.last_updated)}</td></tr>`).join("");
+      const origin = s.meta && s.meta.job_id
+        ? `<div class="text-[11px] font-mono text-outline mb-3">uploaded from build ${esc(s.meta.job_id)}${s.meta.uploaded_at ? " on " + new Date(s.meta.uploaded_at * 1000).toLocaleString() : ""}</div>` : "";
+      return `<tr class="bg-surface-low/60"><td colspan="7" class="px-6 py-4">
+        ${origin}
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="lg:col-span-2"><div class="font-head text-[11px] uppercase tracking-widest text-outline mb-2">Tools</div><table>${toolRows}</table></div>
+          <div><div class="font-head text-[11px] uppercase tracking-widest text-outline mb-2">Tags</div><table>${tagRows}</table>
+            <a href="https://hub.docker.com/r/${attr(s.image)}" target="_blank" rel="noopener" class="inline-block mt-3 text-[11px] font-mono text-primary hover:underline">open on Docker Hub</a></div>
+        </div></td></tr>`;
+    }
+    function render() {
+      const rows = document.getElementById("rows");
+      const empty = document.getElementById("empty");
+      const servers = (listing && listing.ok) ? listing.servers : [];
+      const shown = servers.filter(matches);
+      document.getElementById("count-chip").textContent = query ? `${shown.length} / ${servers.length}` : servers.length;
+      rows.innerHTML = shown.map(s => `<tr class="server" data-name="${attr(s.name)}">
+          <td class="px-4 py-3">${serverCell(s)}</td>
+          <td class="px-4 py-3">${repoCell(s)}</td>
+          <td class="px-4 py-3">${toolsCell(s)}</td>
+          <td class="px-4 py-3 font-mono text-[11px] text-on-surface-dim">${fmtDate(s.last_updated)}</td>
+          <td class="px-4 py-3 font-mono text-[11px] text-on-surface-dim">${s.pull_count ?? "—"}</td>
+          <td class="px-4 py-3">${localCell(s)}</td>
+          <td class="px-4 py-3 whitespace-nowrap">${actionCell(s)}</td>
+        </tr>` + (expanded.has(s.name) ? detailRow(s) : "")).join("");
+      if (shown.length) { empty.classList.add("hidden"); return; }
+      empty.classList.remove("hidden");
+      empty.textContent = !listing ? "loading…" : !listing.ok ? "" : servers.length ? "No server matches the search." : "The namespace has no alembic servers yet.";
+    }
+    function renderHeader() {
+      const error = document.getElementById("error");
+      const nsLink = document.getElementById("namespace-link");
+      const note = document.getElementById("upload-note");
+      if (listing && listing.namespace) {
+        nsLink.textContent = listing.namespace;
+        nsLink.href = `https://hub.docker.com/u/${encodeURIComponent(listing.namespace)}`;
+      }
+      if (listing && listing.ok) {
+        note.textContent = listing.can_upload ? "uploads on" : "read only";
+        note.title = listing.can_upload ? "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are set in .env"
+          : "Uploading needs DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in .env";
+      }
+      const failed = listing && !listing.ok;
+      error.classList.toggle("hidden", !failed);
+      if (failed) error.textContent = listing.configured === false
+        ? "No MCP hub is configured: set DOCKERHUB_NAMESPACE or DOCKERHUB_USERNAME in .env."
+        : listing.error;
+    }
+    async function load(refresh) {
+      try {
+        const r = await fetch(`${BASE}/api/hub${refresh ? "?refresh=1" : ""}`, { cache: "no-store" });
+        listing = await r.json();
+      } catch (e) {
+        listing = { ok: false, error: "no response from the server: " + e.message };
+      }
+      renderHeader();
+      render();
+    }
+    function loadTags(name) {
+      const loading = fetch(`${BASE}/api/hub/${encodeURIComponent(name)}/tags`, { cache: "no-store" })
+        .then(r => r.json()).catch(e => ({ ok: false, error: e.message }))
+        .then(result => { tags[name] = result; render(); });
+      tags[name] = { loading };
+      render();
+      return loading;
+    }
+    async function pull(name) {
+      const s = listing.servers.find(x => x.name === name);
+      if (!s) return;
+      await (tags[name] ? tags[name].loading : loadTags(name));
+      const latest = (tags[name].tags || []).find(t => t.tag === "latest");
+      if (!confirm(`Pull ${s.image}:latest${latest && latest.size ? ` (${latest.size})` : ""} and start its MCP server on this host?\n\n` +
+                   `It appears in the builds list and is served the same way as a local build.`)) return;
+      // An image uploaded by hand names no repository, and the server needs one.
+      // The image is asked first; this is the fallback when it says nothing either.
+      let repoUrl = (s.meta && s.meta.repo_url) || null;
+      if (!repoUrl) {
+        repoUrl = prompt(`${s.image} carries no alembic metadata. If the image does not name its ` +
+                         `repository either, the pull needs it here (leave empty to try anyway):`, "");
+        if (repoUrl === null) return;
+        repoUrl = repoUrl.trim() || null;
+      }
+      pulling[name] = true;
+      delete notes[name];
+      render();
+      try {
+        const r = await fetch(`${BASE}/api/hub/pull`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, tag: "latest", repo_url: repoUrl }),
+        });
+        const body = await r.json().catch(() => ({}));
+        notes[name] = r.status === 202
+          ? { ok: true, html: `pulling as <a class="underline" href="${BASE}/builds/${encodeURIComponent(body.job_id)}">${esc(body.job_id)}</a>` }
+          : { ok: false, html: esc("failed: " + (body.error || body.detail || r.statusText)) };
+      } catch (e) {
+        notes[name] = { ok: false, html: esc("no response from the server: " + e.message) };
+      }
+      delete pulling[name];
+      render();
+    }
+
+    document.getElementById("rows").addEventListener("click", e => {
+      const button = e.target.closest("button[data-pull]");
+      if (button) { pull(button.dataset.pull); return; }
+      if (e.target.closest("a")) return;
+      const tr = e.target.closest("tr.server");
+      if (!tr) return;
+      const name = tr.dataset.name;
+      if (expanded.has(name)) expanded.delete(name);
+      else { expanded.add(name); if (!tags[name]) loadTags(name); }
+      render();
+    });
+    document.getElementById("search").addEventListener("input", e => { query = e.target.value.trim(); render(); });
+    document.getElementById("refresh-btn").addEventListener("click", () => load(true));
+    render();
+    load(false);
+  </script>
+</body>
+</html>

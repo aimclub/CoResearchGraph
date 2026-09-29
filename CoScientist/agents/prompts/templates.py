@@ -1108,6 +1108,11 @@ sub-pipeline.
 
 {links_context?}
 ## FIRST: do the available tools actually cover this task?
+Judge ONLY by the tools attached to you right now. An earlier step searched a
+shared catalogue and may have reported that nothing matched; that verdict covers
+the catalogue only. If a tool with the requested name or capability IS in your
+list, call it, whatever an earlier step concluded.
+
 Judge whether the tools genuinely implement the REQUESTED operation — not merely
 the same domain (being molecule-related is not enough). If the task needs a
 specific method/algorithm/architecture that NO available tool implements, do NOT
@@ -1121,6 +1126,12 @@ improvise from unrelated tools. Respond with EXACTLY one line and nothing else:
    schema/description). Chain tools when needed (e.g. generate → score → filter).
 3. Inspect each result; if a call errors or returns nothing useful, adjust the
    arguments or try a better-suited tool. Do not loop pointlessly.
+   A result with `result_truncated` and `result_s3` was shortened by its server;
+   the complete JSON is in `result_s3`. If the values you need were cut, call
+   `read_result` with the `result_s3` link, the names in `find` and top-level
+   fields in `keys`; do not call the tool again or assume it lacks them. For real
+   processing of the file (joins, statistics, plots), hand the `result_s3` link
+   and `s3_key` to CoderAgent.
 4. Return the final answer, INCLUDING the concrete results and any artifact URLs.
 
 ### LONG-RUNNING JOBS (status/log checks)
@@ -1169,8 +1180,23 @@ def _sibling_compute_executor_name(ctx: PromptContext) -> str | None:
 def task_router(ctx: PromptContext) -> str:
     tools_path = "ToolPipelineAgent" if ctx.has_subordinate("ToolPipelineAgent") else ""
     coder_path = "CoderAgent" if ctx.has_subordinate("CoderAgent") else ""
+    builder_path = "McpBuilderAgent" if ctx.has_subordinate("McpBuilderAgent") else ""
 
     rules: list[str] = []
+    if builder_path:
+        # REMINDER(#331, PR #305): this rule assumes McpBuilderAgent is reachable
+        # from the task router. When Alembic moves into the experiment module it
+        # sits under ExperimentExecutorAgent instead; move the rule there rather
+        # than keep a route that no longer exists.
+        rules.append(
+            "The request EXPLICITLY asks for an MCP server or MCP tools made from a\n"
+            "   named code repository (\"build/get an MCP server from repo X\") ⇒\n"
+            f"   {builder_path} first, even when a similar ready tool exists. Then run\n"
+            f"   the computation through {tools_path or 'the tool path'}, naming the server's tools\n"
+            f"   exactly as {builder_path} reported them. A repository mentioned only as\n"
+            "   background, without asking for an MCP server from it, does NOT trigger\n"
+            "   this rule."
+        )
     if coder_path:
         rules.append(
             "The task needs ENGINEERING — writing/running code, a named repository,\n"
@@ -1939,6 +1965,7 @@ def orchestrator(ctx: PromptContext) -> str:
     exec_routes_to_coder = has_exec and _executor_routes_to_coder(ctx)
     has_retrieval = ctx.has_tool("retrieval")
     has_research_graph = ctx.has_tool("research_graph_orchestrator")
+    has_builder = ctx.has_subordinate("McpBuilderAgent")
 
     # The numbered instruction steps are built as a list and numbered
     # programmatically — no brittle hardcoded "3."/"5." around conditional ones.
@@ -2032,6 +2059,19 @@ def orchestrator(ctx: PromptContext) -> str:
             f"{discovery_clause}\n"
             "   Retrieved tools accumulate — do not repeat near-identical queries, and\n"
             "   never invent server ids (`get_server_info` only takes ids it returned)."
+        )
+
+    if has_builder:
+        # REMINDER(#331, PR #305): the orchestrator will not reach McpBuilderAgent
+        # once Alembic moves into the experiment module; this step must follow it
+        # there (ExperimentModuleAgent / ExperimentExecutorAgent).
+        steps.append(
+            "If the request EXPLICITLY asks for an MCP server or MCP tools built from a\n"
+            "   named code repository, a ready tool found by `retrieve_tools` does NOT\n"
+            "   replace it: delegate so that the server is built or reused from THAT\n"
+            "   repository (McpBuilderAgent, directly or via TaskExecutorAgent), and do\n"
+            "   not offer a catalogue tool as a substitute. When the repository is only\n"
+            "   mentioned, or not mentioned at all, keep the usual order."
         )
 
     steps.append(
