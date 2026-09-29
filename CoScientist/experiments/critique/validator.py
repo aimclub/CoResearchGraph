@@ -761,11 +761,20 @@ def _drop_invented_hypotheses(
     only known ids. The dropped ids are returned for the audit line.
     """
     ctx = _normalize_hypothesis_ids(hypothesis_refs)
-    if not ctx or not plan.hypotheses:
+    if not ctx:
         return plan, []
     known = set(ctx)
-    extra = [h.hypothesis_id.strip().upper() for h in plan.hypotheses
-             if h.hypothesis_id.strip().upper() not in known]
+    # A task can name an id the plan's hypothesis list does not carry: the
+    # post-merge FEDOT run put H2 into also_tests only, start_task refused the
+    # task as testing an ineligible hypothesis, and amend_task cannot edit
+    # also_tests, so the executor was stuck.
+    named = [h.hypothesis_id for h in plan.hypotheses]
+    for task in plan.tasks:
+        named += [task.design.hypothesis_ref, *task.design.also_tests]
+    extra = list(dict.fromkeys(
+        str(h).strip().upper() for h in named
+        if str(h).strip() and str(h).strip().upper() not in known
+    ))
     if not extra:
         return plan, []
     fallback = ctx[0]

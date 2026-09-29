@@ -564,6 +564,26 @@ def test_invented_hypothesis_ids_are_dropped_instead_of_costing_a_revision():
     assert not any("invents ids" in issue.message for issue in critique.issues)
 
 
+def test_an_ineligible_id_named_only_in_also_tests_is_dropped():
+    """The plan's hypothesis list held H1 alone and a task named H2 in
+    also_tests; start_task refused the task and amend_task cannot edit
+    also_tests, so the executor stopped."""
+    from CoScientist.experiments.critique import validate_and_critique_plan
+
+    payload = _plan(
+        _task("EXP-1", hypothesis_ref="H1", design={**_design("H1"), "also_tests": ["H2"]}),
+        hypotheses=[{"hypothesis_id": "H1", "statement": "Authoritative."}],
+    ).model_dump(mode="json")
+    plan, _ = validate_and_critique_plan(
+        payload,
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Authoritative."}],
+    )
+    assert plan.tasks[0].design.hypothesis_ref == "H1"
+    assert plan.tasks[0].design.also_tests == []
+
+
 def test_a_directory_named_as_an_artifact_is_refused():
     """record_result registers files; a required grid_data/ is never found and
     the tasks that need it are blocked with the producer terminal."""

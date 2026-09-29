@@ -1288,6 +1288,24 @@ def start_task(
         *(str(item).strip().upper() for item in task_model.design.also_tests),
     }
     blocked_hypotheses = sorted(task_hypotheses - allowed_hypotheses) if allowed_hypotheses else []
+    primary = task_model.design.hypothesis_ref.strip().upper()
+    if blocked_hypotheses and primary in allowed_hypotheses:
+        # Only secondary ids are ineligible. amend_task cannot edit also_tests,
+        # so refusing here left the executor with no way to start the task
+        # (post-merge FEDOT run). The task tests its primary hypothesis; the
+        # secondary ids are dropped from this task and plan copy.
+        kept = [h for h in task_model.design.also_tests
+                if str(h).strip().upper() in allowed_hypotheses]
+        design = task_model.design.model_copy(update={"also_tests": kept})
+        task_model = task_model.model_copy(update={"design": design})
+        task_runtime["task"] = task_model.model_dump(mode="json")
+        plan = runtime.get("plan")
+        if isinstance(plan, dict):
+            for item in plan.get("tasks") or []:
+                if isinstance(item, dict) and item.get("id") == task_model.id:
+                    item.setdefault("design", {})["also_tests"] = list(kept)
+        audit(logger, f"EXPERIMENT_INELIGIBLE_ALSO_TESTS_DROPPED task_id={task_model.id} ids={blocked_hypotheses}")
+        blocked_hypotheses = []
     if blocked_hypotheses:
         raise ExperimentRuntimeError(
             "hypothesis_not_eligible",
