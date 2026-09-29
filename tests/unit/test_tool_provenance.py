@@ -155,6 +155,29 @@ def test_build_found_by_session_scope_without_runtime(builds_dir):
     assert "No plan task had the server attached." in out
 
 
+def test_a_catalogue_server_built_earlier_gets_the_section(builds_dir):
+    """The post-merge FEDOT run took the server from the catalogue: source
+    "explicit", another run id. The build is found by the server URL."""
+    _write_build(builds_dir, run_id="EXRUN-earlier")
+    state = _state()
+    for entry in state["experiment_runtime"]["tasks"].values():
+        for server in entry["task"]["mcp_servers"]:
+            server["source"] = "explicit"
+    out = tp.with_tool_provenance(REPORT, state)
+
+    assert tp.START_MARK in out
+    assert "**EXP-1** Adapter" in out
+
+
+def test_a_non_alembic_server_adds_no_section(builds_dir):
+    _write_build(builds_dir, run_id="EXRUN-earlier")
+    state = _state()
+    for entry in state["experiment_runtime"]["tasks"].values():
+        for server in entry["task"]["mcp_servers"]:
+            server.update(source="explicit", url="http://10.0.0.5:9000/mcp")
+    assert tp.with_tool_provenance(REPORT, state) == REPORT
+
+
 def test_failed_build_is_reported_with_its_status(builds_dir):
     _write_build(builds_dir, status="failed")
 

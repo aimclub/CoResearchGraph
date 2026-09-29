@@ -215,7 +215,10 @@ def _session_usage(state: Mapping[str, Any]) -> Dict[str, Any]:
         if built:
             repos.add(_norm_repo(task.get("repo_url")))
         for server in task.get("mcp_servers") or []:
-            if not isinstance(server, Mapping) or str(server.get("source") or "") != "alembic":
+            # Any source: a server Alembic built earlier reaches a task from the
+            # catalogue as "explicit". session_builds keeps only the URLs a
+            # finished build record serves.
+            if not isinstance(server, Mapping):
                 continue
             url = str(server.get("url") or "").strip()
             if not url.startswith("http"):
