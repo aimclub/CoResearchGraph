@@ -4,7 +4,6 @@ import argparse
 import fcntl
 import json
 import logging
-import os
 import sys
 import types
 from pathlib import Path
@@ -21,7 +20,7 @@ if not __package__:
 from .client import SapphireClient
 from .pipeline import SapphirePipeline
 from .registry import PublicationRegistry
-from CoScientist.papers_processing_refactoring.app.settings import OpenAlexSettings
+from .settings import OpenAlexSettings, PDFCrawlerSettings, SapphireSettings
 from CoScientist.papers_processing_refactoring.definitions import CONFIG_PATH
 
 
@@ -33,7 +32,6 @@ def main():
     Close the HTTP client when the pass finishes or fails.
     """
     parser = argparse.ArgumentParser(description='Update RAG from Sapphire (one complete pass)')
-    parser.add_argument('--url', default=os.getenv('SAPPHIRE_URL', 'http://fpin-projects.ru:12280'))
     parser.add_argument('--page-size', type=int, default=100, help='Number of records to fetch per request')
     parser.add_argument('--max-articles', type=int, help='Maximum number of records to inspect, including skips and failures')
     parser.add_argument('--timeout', type=float, default=60)
@@ -44,12 +42,17 @@ def main():
         help='SQLite file used to persist publication statuses between runs',
     )
     args = parser.parse_args()
-    if args.max_articles is not None and args.max_articles < 1:
-        parser.error('--max-articles must be positive')
+
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    sapphire = SapphireSettings(_env_file=CONFIG_PATH)
+    crawler = PDFCrawlerSettings(_env_file=CONFIG_PATH)
     openalex = OpenAlexSettings(_env_file=CONFIG_PATH)
     client = SapphireClient(
-        args.url, args.page_size, args.timeout, args.max_pdf_mb * 1024 * 1024,
+        sapphire.url, args.page_size, args.timeout, args.max_pdf_mb * 1024 * 1024,
+        pdf_crawler_url=crawler.url,
+        pdf_crawler_username=crawler.username,
+        pdf_crawler_password=crawler.password.get_secret_value() if crawler.password else None,
+        pdf_crawler_timeout=crawler.timeout,
         openalex_email=openalex.email,
         openalex_api_key=openalex.api_key.get_secret_value() if openalex.api_key else None,
     )

@@ -4,6 +4,7 @@ import hashlib
 import logging
 import math
 from collections import Counter
+from urllib.parse import urlsplit
 
 import requests
 
@@ -49,18 +50,28 @@ def classification(work):
     return domain, field
 
 
-def pdf_urls(publication, work):
-    """Return unique, nonempty PDF candidate URLs in download priority order.
+def download_source(publication, doi):
+    """Use a DOI URL, or an explicit DBLP URL when no DOI is available."""
+    if doi:
+        return f'https://doi.org/{doi}'
+    url = publication.get('dblp_url')
+    if isinstance(url, str):
+        url = url.strip()
+        parsed = urlsplit(url)
+        if (parsed.scheme in ('http', 'https') and parsed.hostname in ('dblp.org', 'www.dblp.org')
+                and not parsed.username and not parsed.password):
+            return url
+    return None
 
-    Prefer the Sapphire URL, then OpenAlex's content URL and OA locations.
-    Ignore malformed locations and URLs while preserving candidate order.
-    """
+
+def pdf_urls(publication, work):
+    """Return deduplicated fallback URLs in the original download order."""
     candidates = [publication.get('pdf_url')]
-    content_urls = work.get('content_urls')
-    if isinstance(content_urls, dict):
-        candidates.append(content_urls.get('pdf'))
-    for key in ('best_oa_location', 'primary_location'):
-        location = work.get(key)
+    content = work.get('content_urls')
+    if isinstance(content, dict):
+        candidates.append(content.get('pdf'))
+    for name in ('best_oa_location', 'primary_location'):
+        location = work.get(name)
         if isinstance(location, dict) and location.get('is_oa') is not False:
             candidates.append(location.get('pdf_url'))
     locations = work.get('locations')
@@ -82,10 +93,10 @@ class SapphirePipeline:
     def process(self, publication):
         """Process one publication and return its ingestion or skip reason.
 
-        Check domain scores, DOI, open access, and the work ID; enrich metadata; try PDF candidates;
+        Check domain scores, DOI, open access, and the work ID; enrich metadata; request a PDF from the crawler;
         check the PDF hash; then upload to S3 and run ETL. Return ingested,
         domain_filtered, already_in_rag, not_open_access, missing_openalex_id, or no_usable_pdf.
-        Candidate download errors are logged and skipped; other errors propagate.
+        Try the PDF crawler first, then direct PDF URLs. Preserve transient failures for retry.
         """
         if not allowed_domains(publication):
             return 'domain_filtered'
@@ -108,27 +119,47 @@ class SapphirePipeline:
         metadata['doi'] = metadata['doi'] or normalize_doi(work.get('doi')) or ''
         if metadata['doi'] and metadata['doi'] != publication_doi and self.backend.contains(metadata):
             return 'already_in_rag'
-        network_error = False
-        for url in pdf_urls(publication, work):
+        source_url = download_source(publication, metadata['doi'])
+        pdf = None
+        retry_error = None
+        if source_url is not None:
             try:
-                pdf = self.client.download_pdf(url)
-            except Exception as error:
-                if isinstance(error, (requests.RequestException, TimeoutError)) and not isinstance(error, requests.HTTPError):
-                    network_error = True
-                logger.warning('PDF candidate unavailable for %s', identifier, exc_info=True)
-                continue
-            # Same content ID as LocalSource: catches previously ingested local PDFs.
-            article_id = hashlib.md5(pdf).hexdigest()
-            if self.backend.contains({'article_id': article_id}):
-                return 'already_in_rag'
-            key = f'articles/{domain}/{article_id}/paper.pdf'
-            metadata.update(pdf_url=url, s3_key=key, ingestion_source='sapphire')
-            self.backend.upload(key, pdf)
-            self.backend.ingest(article_id, publication.get('name') or work.get('display_name') or identifier, metadata)
-            return 'ingested'
-        if network_error:
-            raise RuntimeError('PDF candidates could not be checked because of a network error')
-        return 'no_usable_pdf'
+                logger.info('Requesting PDF from crawler for %s', identifier)
+                pdf = self.client.download_pdf(source_url)
+            except (requests.RequestException, TimeoutError, ValueError) as error:
+                if not (isinstance(error, requests.HTTPError) and getattr(error, 'status_code', None) == 422):
+                    retry_error = error
+                logger.warning('PDF crawler failed for %s; trying direct PDF URLs (%s)',
+                               identifier, type(error).__name__)
+        if pdf is None:
+            for url in pdf_urls(publication, work):
+                try:
+                    pdf = self.client.download_pdf_direct(url)
+                except (requests.RequestException, TimeoutError, ValueError) as error:
+                    if isinstance(error, requests.HTTPError):
+                        status = getattr(error, 'status_code', None)
+                        if status is None or status in (401, 403, 408, 429) or status >= 500:
+                            retry_error = error
+                    elif isinstance(error, (requests.RequestException, TimeoutError)):
+                        retry_error = error
+                    logger.warning('Direct PDF unavailable for %s (%s)', identifier, type(error).__name__)
+                    continue
+                source_url = url
+                metadata['pdf_url'] = url
+                break
+        if pdf is None:
+            if retry_error is not None:
+                raise retry_error
+            return 'no_usable_pdf'
+        # Same content ID as LocalSource: catches previously ingested local PDFs.
+        article_id = hashlib.md5(pdf).hexdigest()
+        if self.backend.contains({'article_id': article_id}):
+            return 'already_in_rag'
+        key = f'articles/{domain}/{article_id}/paper.pdf'
+        metadata.update(download_source_url=source_url, s3_key=key, ingestion_source='sapphire')
+        self.backend.upload(key, pdf)
+        self.backend.ingest(article_id, publication.get('name') or work.get('display_name') or identifier, metadata)
+        return 'ingested'
 
     def run(self, max_articles=None):
         """Process publications sequentially and return counters by outcome.
