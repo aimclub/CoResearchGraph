@@ -413,13 +413,67 @@
 
     /* Collapsible left rail: the sidebar slides out of view and everything that
        was offset by its width (header, main) reclaims the space. */
+    :root {
+      --nav-w: 16rem;
+    }
+
     #side-nav {
+      width: var(--nav-w);
       transition: transform .25s ease;
+    }
+
+    #top-nav {
+      margin-left: var(--nav-w);
+      width: calc(100% - var(--nav-w));
+    }
+
+    #main-content {
+      margin-left: var(--nav-w);
     }
 
     #top-nav,
     #main-content {
       transition: margin-left .25s ease, width .25s ease;
+    }
+
+    /* The left rail's grip: on its right edge, same look as the right one's. */
+    #nav-grip {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: -5px;
+      width: 10px;
+      z-index: 1;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    #nav-grip::after {
+      content: '';
+      position: absolute;
+      top: 15%;
+      bottom: 15%;
+      left: 4px;
+      width: 2px;
+      border-radius: 2px;
+      background: transparent;
+      transition: background .15s ease;
+    }
+
+    #nav-grip:hover::after,
+    #nav-grip.on::after {
+      background: rgb(var(--c-primary));
+    }
+
+    body.nav-collapsed #nav-grip {
+      display: none;
+    }
+
+    /* Dragging must track the pointer, not ease after it. */
+    body.resizing #top-nav,
+    body.resizing #main-content,
+    body.resizing #side-rail {
+      transition: none;
     }
 
     body.nav-collapsed #side-nav {
@@ -1265,3 +1319,22 @@
   padding: 3px 7px; text-align: left; white-space: nowrap; }
 .art-table th { position: sticky; top: 0; background: rgb(var(--c-surface-container-high)); color: rgb(var(--c-on-surface)); }
 .art-table td { color: rgb(var(--c-on-surface-variant)); }
+
+/* ── Side-nav call graph (call_graph.js) ─────────────────────────────── */
+.cg-edge { fill: none; stroke: rgb(var(--c-outline-variant) / 0.55); stroke-width: 1.25; }
+.cg-edge-nested { stroke-dasharray: 3 3; }
+.cg-edge-live { stroke: rgb(var(--c-primary) / 0.8); }
+.cg-box { fill: rgb(var(--c-surface-container-lowest)); stroke: rgb(var(--c-hairline)); stroke-width: 1; }
+.cg-label { fill: rgb(var(--c-on-surface)); font-family: inherit; }
+.cg-dot { fill: rgb(var(--c-secondary)); }
+.cg-root .cg-box { fill: rgb(var(--c-primary-container)); stroke: rgb(var(--c-primary) / 0.6); }
+.cg-root .cg-label { fill: rgb(var(--c-on-primary-container)); font-weight: 600; }
+.cg-root .cg-dot { fill: rgb(var(--c-primary)); }
+.cg-running .cg-box { stroke: rgb(var(--c-primary)); }
+.cg-running .cg-dot { fill: rgb(var(--c-primary)); animation: cgPulse 1.2s ease-in-out infinite; }
+.cg-error .cg-box { stroke: rgb(var(--c-error) / 0.8); }
+.cg-error .cg-dot { fill: rgb(var(--c-error)); }
+#call-graph-scroll { cursor: grab; touch-action: none; user-select: none; }
+#call-graph-scroll.dragging { cursor: grabbing; }
+@keyframes cgPulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .cg-running .cg-dot { animation: none; } }

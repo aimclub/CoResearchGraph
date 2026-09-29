@@ -71,7 +71,7 @@
 
   <!-- SideNavBar: brand, the session being viewed, where to go, who is here. -->
   <aside id="side-nav"
-    class="w-64 h-full fixed left-0 top-0 border-r border-outline-variant/10 bg-surface-container-lowest flex flex-col h-screen pt-4 pb-3 font-body z-50">
+    class="h-full fixed left-0 top-0 border-r border-outline-variant/10 bg-surface-container-lowest flex flex-col h-screen pt-4 pb-3 font-body z-50">
     <div class="px-5 mb-4 flex items-center gap-2.5">
       <span class="w-7 h-7 rounded-md bg-primary text-on-primary flex items-center justify-center text-[14px] font-semibold"
         aria-hidden="true">C</span>
@@ -122,9 +122,27 @@
       </div>
     </div>
 
-    <nav id="agent-nav" class="flex-1 px-2 overflow-y-auto no-scrollbar">
+    <nav id="agent-nav" class="shrink min-h-0 px-2 overflow-y-auto no-scrollbar">
       <!-- Populated by JS -->
     </nav>
+
+    <!-- Live call graph: which agents the run has called, in order. -->
+    <section id="side-nav-panel" aria-labelledby="call-graph-title"
+      class="mx-2 mt-3 flex-1 min-h-[14rem] flex flex-col rounded-md bg-surface-container-high overflow-hidden">
+      <div class="flex items-center gap-1.5 px-3 pt-2 pb-1">
+        <span class="material-symbols-outlined text-[16px] text-outline-variant" aria-hidden="true">account_tree</span>
+        <h3 id="call-graph-title" class="text-[11px] font-medium text-on-surface-variant" data-i18n="nav.callGraph">Call graph</h3>
+        <span id="call-graph-count" class="ml-auto text-[10px] text-outline-variant tabular-nums"></span>
+      </div>
+      <div id="call-graph-scroll" class="flex-1 min-h-0 overflow-hidden"
+        data-i18n-title="nav.callGraphHint" title="Drag to move · wheel to zoom · double-click to fit">
+        <p id="call-graph-empty" class="px-3 py-4 text-[11px] text-outline-variant" data-i18n="nav.callGraphEmpty">Agents appear here as they are called</p>
+        <svg id="call-graph-svg" class="hidden block w-full h-full" role="img" aria-labelledby="call-graph-title"></svg>
+      </div>
+    </section>
+
+    <!-- Drag to resize the column, double-click to put it back. -->
+    <div id="nav-grip" data-i18n-title="rail.resize" title="Drag to resize · double-click to reset"></div>
 
     <div class="px-3 pt-3 mt-2 border-t border-outline-variant/10 flex items-center gap-1">
       <button type="button" onclick="openIdentityModal()" data-i18n-title="nav.switchUser" title="Switch or add a user"
@@ -150,7 +168,7 @@
 
   <!-- TopNavBar: where you are, what the run is doing, the view toggles. -->
   <header id="top-nav"
-    class="flex items-center gap-4 px-5 h-14 ml-64 w-[calc(100%-16rem)] top-0 sticky z-50 bg-background border-b border-outline-variant/10">
+    class="flex items-center gap-4 px-5 h-14 top-0 sticky z-50 bg-background border-b border-outline-variant/10">
     <button type="button" id="side-nav-toggle" onclick="toggleSideNav()" data-i18n-aria="nav.toggleSidebar"
       aria-label="Show or hide the sidebar" title="Show/hide sidebar"
       class="w-8 h-8 -ml-1.5 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center justify-center shrink-0">
@@ -198,7 +216,7 @@
   </header>
 
   <!-- Main Content -->
-  <main id="main-content" class="ml-64 flex h-[calc(100vh-56px)] overflow-hidden">
+  <main id="main-content" class="flex h-[calc(100vh-56px)] overflow-hidden">
 
     <!-- Central Chat Area -->
     <section class="flex-1 min-w-0 flex flex-col relative">
@@ -1059,6 +1077,7 @@
   <script src="/static/js/state.js"></script>
   <script src="/static/js/i18n.js"></script>
   <script src="/static/js/activity_rail.js"></script>
+  <script src="/static/js/call_graph.js"></script>
   <script src="/static/js/chat.js"></script>
   <script src="/static/js/doc_viewer.js"></script>
   <script src="/static/js/hitl.js"></script>

@@ -15,6 +15,9 @@ const i18n = {
   'nav.noUser': { en: 'No user selected', ru: 'Пользователь не выбран' },
   'nav.connected': { en: 'Connected', ru: 'Подключено' },
   'nav.disconnected': { en: 'Disconnected', ru: 'Отключено' },
+  'nav.callGraph': { en: 'Call graph', ru: 'Граф вызовов' },
+  'nav.callGraphHint': { en: 'Drag to move · wheel to zoom · double-click to fit', ru: 'Перетаскивание — перемещение · колесо — масштаб · двойной клик — вписать' },
+  'nav.callGraphEmpty': { en: 'Agents appear here as they are called', ru: 'Агенты появятся здесь по мере вызова' },
   'nav.orchestrator': { en: 'Orchestrator', ru: 'Оркестратор' },
   'rail.resize': {
     en: 'Drag to resize · double-click to reset',

@@ -237,6 +237,10 @@
         if (!resp.ok) return;
         const data = await resp.json();
         (data.internal_agents || []).forEach(name => INTERNAL_AGENTS.add(name));
+        CallGraph.setAgentMeta({
+          names: [...(data.delegatable_names || []), ...(data.agents || []).map(a => a.name)],
+          titles: data.titles, composites: data.composites, roots: data.roots,
+        });
         // Events that arrived before the list did may have recorded internal
         // agents; the render filter drops them now.
         renderActivityRail();
@@ -431,6 +435,7 @@
     // at every nesting level (top-level agents and AgentTool sub-agents alike).
     function applyToolActivity(data, quiet = false) {
       const author = data.author || 'system';
+      CallGraph.feed(data);
 
       if (data.phase === 'agent_start' || data.phase === 'agent_end') {
         if (isInternalAgent(author)) return;
@@ -517,6 +522,7 @@
     }
 
     function activityReset() {
+      CallGraph.reset();
       activityAgents = new Map();
       activitySelected = null;
       activityPinned = false;
@@ -524,6 +530,7 @@
     }
 
     function activityMarkIdle() {
+      CallGraph.markIdle();
       activityAgents.forEach(entry => activityCloseAgent(entry.name));
       renderActivityRail();
     }
@@ -754,6 +761,56 @@
       const collapsed = document.body.classList.contains('nav-collapsed');
       localStorage.setItem(SIDE_NAV_KEY, collapsed ? 'on' : 'off');
       applySideNavState();
+    }
+
+    const NAV_DEFAULT = 256, NAV_MIN = 200;
+
+    function setSideNavWidth(px, save) {
+      const max = Math.max(NAV_MIN, Math.round(window.innerWidth * 0.45));
+      const width = Math.min(max, Math.max(NAV_MIN, Math.round(px)));
+      document.documentElement.style.setProperty('--nav-w', width + 'px');
+      if (save) {
+        try { localStorage.setItem(SIDE_NAV_WIDTH_KEY, String(width)); } catch (_) { }
+      }
+      return width;
+    }
+
+    // The left rail resizes the same way the right one does, from a grip on
+    // its inner edge; the call graph in it follows through its own observer.
+    function initSideNav() {
+      let saved = null;
+      try { saved = parseInt(localStorage.getItem(SIDE_NAV_WIDTH_KEY), 10); } catch (_) { }
+      if (saved) setSideNavWidth(saved, false);
+      applySideNavState();
+
+      const grip = document.getElementById('nav-grip');
+      if (!grip) return;
+      // The rail is the FIRST column, so its width is the pointer's x.
+      const widthFrom = event => event.clientX;
+      grip.addEventListener('pointerdown', event => {
+        event.preventDefault();
+        grip.setPointerCapture(event.pointerId);
+        grip.classList.add('on');
+        document.body.classList.add('resizing');
+        const move = ev => setSideNavWidth(widthFrom(ev), false);
+        const up = ev => {
+          grip.removeEventListener('pointermove', move);
+          grip.removeEventListener('pointerup', up);
+          grip.removeEventListener('pointercancel', up);
+          grip.classList.remove('on');
+          document.body.classList.remove('resizing');
+          setSideNavWidth(widthFrom(ev), true);
+        };
+        grip.addEventListener('pointermove', move);
+        grip.addEventListener('pointerup', up);
+        grip.addEventListener('pointercancel', up);
+      });
+      grip.addEventListener('dblclick', () => setSideNavWidth(NAV_DEFAULT, true));
+      // Only a width the reader set needs re-clamping to the new window.
+      window.addEventListener('resize', () => {
+        const set = parseInt(document.documentElement.style.getPropertyValue('--nav-w'), 10);
+        if (set) setSideNavWidth(set, false);
+      });
     }
 
     // ── The right rail: plan, pending question, spend ──────────────────────

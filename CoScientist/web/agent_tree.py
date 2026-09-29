@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from functools import lru_cache
 from typing import Any, Mapping
 
 from CoScientist.assembly.registry import REGISTRY
@@ -46,6 +47,150 @@ _TITLES: dict[str, tuple[str, str]] = {
     "ReactorAgent": ("Эксперименты на реакторе", "Reactor experiments"),
     "ReportAgent": ("Итоговый отчёт по синтезу", "Synthesis report"),
 }
+
+
+@lru_cache(maxsize=1)
+def agent_structure() -> dict[str, Any]:
+    """Which agents are modules, and which are roots, across every profile.
+
+    A module (a sequential, parallel or loop agent, or a router over child
+    agents) does no work of its own: the call graph draws the agents inside
+    it instead. Read straight from the profile YAML rather than through
+    ``load_config``, which would import each profile's plugins; every
+    profile is read so a session recorded under another one still resolves.
+    """
+    import yaml
+
+    from CoScientist.assembly.schema import profile_paths
+
+    composites: dict[str, dict[str, Any]] = {}
+    roots: set[str] = {"OrchestratorAgent"}
+    for path in profile_paths():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 — one broken profile must not hide the rest
+            continue
+        agents = data.get("agents") if isinstance(data, dict) else None
+        if not isinstance(agents, dict):
+            continue
+        for name, spec in agents.items():
+            if not isinstance(spec, dict):
+                continue
+            cls = str(spec.get("class") or "llm")
+            children = [str(c) for c in spec.get("children") or []]
+            if spec.get("root"):
+                roots.add(str(name))
+            if cls in COMPOSITE_CLASSES or (children and cls != "llm"):
+                composites[str(name)] = {
+                    # A router runs one child of its choosing, not all.
+                    "kind": cls if cls in COMPOSITE_CLASSES else "switch",
+                    "children": children,
+                }
+    composites.setdefault(PIPELINE_ROOT_NAME, {"kind": "sequential", "children": []})
+    return {"composites": composites, "roots": sorted(roots)}
+
+
+def agent_run_events(execution: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The agent runs of an execution graph, replayed as ``tool_activity``
+    ``agent_start``/``agent_end`` records in time order.
+
+    Sessions recorded before agent runs reached the transcript still have
+    them in the execution graph — every run with its own clock, parallel
+    ones included — so the call graph can be drawn from agents, not from
+    the modules the orchestrator named. The parent is the run that
+    delegated to it; runs the graph left unattached carry none.
+    """
+    nodes = {
+        node["id"]: node for node in execution.get("nodes") or []
+        if isinstance(node, dict) and node.get("kind") == "agent" and node.get("id")
+    }
+    parent_of: dict[str, str] = {}
+    for edge in execution.get("edges") or []:
+        if (isinstance(edge, dict) and edge.get("type") == "delegated_to"
+                and edge.get("src") in nodes and edge.get("dst") in nodes):
+            parent_of.setdefault(edge["dst"], edge["src"])
+
+    events: list[tuple[float, int, dict[str, Any]]] = []
+    for node_id, node in nodes.items():
+        name = node.get("executor_agent") or node.get("label")
+        start = node.get("t_start")
+        if not name or not isinstance(start, (int, float)):
+            continue
+        parent_id = parent_of.get(node_id)
+        parent = nodes.get(parent_id) if parent_id else None
+        events.append((float(start), 1, {
+            "type": "tool_activity", "phase": "agent_start", "author": name,
+            "agent_instance": node_id,
+            "parent": (parent.get("executor_agent") or parent.get("label")) if parent else None,
+            "parent_instance": parent_id,
+            "timestamp": start,
+        }))
+        end = node.get("t_end")
+        if isinstance(end, (int, float)):
+            # An end sorts before a start at the same instant: the next step
+            # of a sequence begins once the last has finished.
+            events.append((float(end), 0, {
+                "type": "tool_activity", "phase": "agent_end", "author": name,
+                "agent_instance": node_id, "timestamp": end,
+                "failed": node.get("status") in ("error", "failed"),
+            }))
+    events.sort(key=lambda item: (item[0], item[1]))
+    return [event for _, _, event in events]
+
+
+# Short names for the side-nav call graph. Separate from _TITLES on purpose:
+# that one names the stages of the /agent-tree scheme, this one names who is
+# working — "Агент-планировщик" — and must fit a small box.
+_CALL_GRAPH_TITLES: dict[str, str] = {
+    "OrchestratorAgent": "Агент-оркестратор",
+    "RootOrchestrator": "Агент-оркестратор",
+    "PlannerAgent": "Агент-планировщик",
+    "PlanCriticAgent": "Агент-критик плана",
+    "ContextInitAgent": "Агент-постановщик",
+    "InitAgent": "Агент-постановщик",
+    "TZSpecAgent": "Агент ТЗ",
+    "TZSpecAgent_task": "Агент ТЗ: задача",
+    "TZSpecAgent_quality": "Агент ТЗ: качество",
+    "TZSpecAgent_limits": "Агент ТЗ: ограничения",
+    "TZQueryGenAgent": "Агент запросов",
+    "HypothesesAgent": "Агент гипотез",
+    "ResearchAgent": "Агент-исследователь",
+    "TaskExecutorAgent": "Агент-исполнитель",
+    "ExperimentPlannerAgent": "Агент-планировщик эксперимента",
+    "ExperimentExecutorAgent": "Агент-экспериментатор",
+    "ExperimentResultReviewAgent": "Агент-рецензент",
+    "ExperimentAgent": "Агент инструментов",
+    "FedotAgent": "Агент FEDOT",
+    "CoderAgent": "Агент-разработчик",
+    "DatasetCollectorAgent": "Агент-сборщик данных",
+    "MedicalAgent": "Агент-медик",
+    "McpBuilderAgent": "Агент-сборщик MCP",
+    "LiteratureOrchestrator": "Агент-библиограф",
+    "PaperRetriever": "Агент поиска статей",
+    "LiteratureSynthesisAgent": "Агент-обозреватель",
+    "EvidenceVerifierAgent": "Агент-проверяющий",
+    "RouteSelectionAgent": "Агент выбора маршрута",
+    "MolDesignAgent": "Агент-дизайнер молекул",
+    "SynthRouteAgent": "Агент-синтетик",
+    "EconomicsAgent": "Агент-экономист",
+    "OptimizationAgent": "Агент-оптимизатор",
+    "OptimizerAgent": "Агент-оптимизатор",
+    "ReactorAgent": "Агент реактора",
+    "CampaignAgent": "Агент кампании",
+    "ReportAgent": "Агент отчёта",
+    "ResultAggregatorAgent": "Агент отчёта",
+    "NirReportAgent": "Агент отчёта НИР",
+    "ToolRetrieverAgent": "Агент поиска инструментов",
+    "ToolReranker": "Агент-ранжировщик",
+    "FullSetToolReranker": "Агент-ранжировщик",
+    "ToolWebSearcherAgent": "Агент веб-поиска",
+    "WebToolsDeployerAgent": "Агент развёртывания",
+}
+
+
+def call_graph_titles() -> dict[str, str]:
+    """Short Russian names of the agents the side-nav call graph can show."""
+    return dict(_CALL_GRAPH_TITLES)
 
 
 # UI copy is deliberately separate from the English model-facing descriptions.

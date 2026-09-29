@@ -88,6 +88,7 @@
             break;
           case 'agent_event':
             activityTouchAgent(data.author, data.timestamp);
+            CallGraph.feedAgentEvent(data);
             if (isPostPlanAgent(data.author)) releasePlanGate();
             if (hasText(data.content) && isChatNoise(data)) {
               addTelemetry('NOTE :: ' + data.author + ' :: ' + stripThinking(data.content).slice(0, 200));
