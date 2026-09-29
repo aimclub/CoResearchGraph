@@ -99,17 +99,24 @@ class MetadataExtractionStep(ETLStep):
             )
         else:
             doi = doi.strip()
-        openalex_metadata = get_openalex_metadata(
-            doi=doi,
-            title=paper_metadata.paper_title,
-            publication_year=paper_metadata.publication_year,
-        )
         domain = field = None
         source = paper_metadata.source
-        if openalex_metadata is not None:
-            domain, field, openalex_source = openalex_metadata
-            if openalex_source is not None:
-                source = openalex_source
+        if article_metadata.get("ingestion_source") == "sapphire":
+            # Sapphire already fetched the OpenAlex work before downloading the PDF.
+            domain = article_metadata.get("domain")
+            field = article_metadata.get("field")
+            domain = domain.strip() if isinstance(domain, str) and domain.strip() else None
+            field = field.strip() if isinstance(field, str) and field.strip() else None
+        if domain is None or field is None:
+            openalex_metadata = get_openalex_metadata(
+                doi=doi,
+                title=paper_metadata.paper_title,
+                publication_year=paper_metadata.publication_year,
+            )
+            if openalex_metadata is not None:
+                domain, field, openalex_source = openalex_metadata
+                if openalex_source is not None:
+                    source = openalex_source
 
         if domain is None or field is None:
             classification_llm = ctx.llm.with_structured_output(OpenAlexClassification)
