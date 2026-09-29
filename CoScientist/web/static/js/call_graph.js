@@ -19,10 +19,14 @@
 // it changed in, so late metadata or history never leaves it half-applied.
 // =========================================================================
     const CallGraph = (() => {
-      const NODE_W = 150, NODE_H = 26, H_GAP = 10, V_GAP = 26, PAD = 12;
+      // Card size of the view being laid out: agent cards inside a block,
+      // block cards on the map (set by each renderer before layout).
+      let NODE_W = 132, NODE_H = 62;
+      const H_GAP = 12, V_GAP = 30, PAD = 16;
       const FONT = 10.5, CHAR_W = 6.1;
       const SVG_NS = 'http://www.w3.org/2000/svg';
       const COMPOSITE_CLASSES = new Set(['SequentialAgent', 'ParallelAgent', 'LoopAgent']);
+      const PREP_AGENTS = new Set(['ContextInitAgent', 'InitAgent', 'TZSpecAgent']);
 
       // Agent metadata from /api/agents (all profiles) and the session's own
       // skeleton; either arriving re-renders from the log.
@@ -232,7 +236,16 @@
           if (slot) return slot;
           const key = `${ownerId}|${name}`;
           if (!dynamic.has(key)) {
-            dynamic.set(key, { id: `d${dynamic.size}`, agent: name, parent: ownerId, owner: ownerId, kind: 'call', dynamic: true });
+            // Not in the config: it belongs to the block of the agent that ran it.
+            // Agents framing the task belong to the preparation wherever they ran.
+            const ownerSlot = ownerId && slotById.get(ownerId);
+            const prep = skeleton && (skeleton.blocks || []).find(b => b.kind === 'prep');
+            // One the coordinator ran is a branch of its own on the map.
+            const branch = skeleton && ownerId && ownerId === skeleton.rootSlot;
+            dynamic.set(key, {
+              id: `d${dynamic.size}`, agent: name, parent: ownerId, owner: ownerId, kind: 'call', dynamic: true,
+              block: PREP_AGENTS.has(name) && prep ? prep.id : branch ? `dyn:${name}` : ownerSlot ? ownerSlot.block : null,
+            });
           }
           return dynamic.get(key);
         }
@@ -314,7 +327,17 @@
           children.set(s.parent, list);
         });
         [...dynamic.values()].forEach(d => slotById.set(d.id, d));
-        return { top, children, slotById, calls: instances.filter(i => i !== rootInst).length, latest: instances[instances.length - 1] || null };
+        // A run with a run still going below it waits; one without works.
+        const below = inst => {
+          inst.runningBelow = false;
+          inst.children.forEach(c => { if (below(c) || c.status === 'running') inst.runningBelow = true; });
+          return inst.runningBelow;
+        };
+        below(top);
+        return {
+          top, children, slotById, instances, rootInst, active: runs.length > 0,
+          calls: instances.filter(i => i !== rootInst).length, latest: instances[instances.length - 1] || null,
+        };
       }
 
       // ── Instances → the drawn tree ───────────────────────────────────────
@@ -354,7 +377,7 @@
           return [{
             name: runs[0].name, called: true, kind: runs[0].slot.kind,
             status: statuses.includes('running') ? 'running' : statuses.includes('error') ? 'error' : 'done',
-            key: `g${key}`, group: { key, count: runs.length, mode, first: `i${runs[0].order}` }, inst: runs[runs.length - 1],
+            key: `g${key}`, group: { key, count: runs.length, mode, first: `i${runs[0].order}` }, inst: runs[runs.length - 1], members: runs,
             children: runs.flatMap((r, i) => kidsOf(r, r.slot.id, withPlaceholders && i === runs.length - 1)),
           }];
         }
@@ -386,7 +409,7 @@
           return { key: `i${inst.order}`, name: inst.name, status: inst.status, called: true, inst, kind: inst.slot.kind, children: kidsOf(inst, inst.slot.id, latest) };
         }
         function fromSlot(slot) {
-          return { key: `p${slot.id}`, name: slot.agent, status: 'idle', called: false, kind: slot.kind, children: kidsOf(null, slot.id, true) };
+          return { key: `p${slot.id}`, name: slot.agent, status: 'idle', called: false, kind: slot.kind, slotBlock: slot.block || null, children: kidsOf(null, slot.id, true) };
         }
         return kidsOf(model.top, null, true);
       }
@@ -456,7 +479,10 @@
         try {
           const data = await fetchSession('call-graph', userId, sessionId);
           if (!data) return;
-          skeleton = { slots: data.slots || [], rootSlot: data.rootSlot, composites: new Set(data.composites || []) };
+          skeleton = {
+            slots: data.slots || [], rootSlot: data.rootSlot, blocks: data.blocks || [], blockTitles: data.blockTitles || {},
+            composites: new Set(data.composites || []),
+          };
           schedule();
         } catch (_) { /* runs still draw, without placeholders */ }
       }
@@ -476,9 +502,77 @@
         } catch (_) { /* the transcript's own sources remain */ }
       }
 
+      // FEDOT.MAS runs: each builds a system of agents of its own, named by
+      // FEDOT, recorded in the session's own FEDOT journal. Read on opening
+      // the session and polled while a run is going.
+      let fedotRuns = [];
+      let fedotScope = null;
+      let fedotTimer = null;
+      let fedotLoading = false;
+      async function loadFedot(userId, sessionId) {
+        if (!userId || !sessionId) return;
+        fedotScope = [userId, sessionId];
+        clearTimeout(fedotTimer);
+        fedotTimer = null;
+        fedotLoading = true;
+        try {
+          const list = await fetchSession('fedot/runs', userId, sessionId);
+          if (!list) return;
+          const metas = (list.runs || []).slice().sort((a, b) => a.started_at - b.started_at);
+          const known = new Map(fedotRuns.map(r => [r.meta.run_id, r]));
+          const runs = [];
+          for (const meta of metas) {
+            const old = known.get(meta.run_id);
+            if (old && old.meta.status !== 'running' && meta.status === old.meta.status) { runs.push(old); continue; }
+            const data = await fetchSession(`fedot/runs/${meta.run_id}`, userId, sessionId);
+            if (!data) return;
+            runs.push(parseFedotRun(data.run || meta, data.events || []));
+          }
+          fedotRuns = runs;
+          schedule();
+        } catch (_) { /* the map still draws, without systems */ }
+        finally { fedotLoading = false; }
+        if (fedotRuns.some(r => r.running) || fedotWanted) {
+          fedotTimer = setTimeout(() => loadFedot(...fedotScope), 2500);
+        }
+      }
+      // A FEDOT-building agent is running: its system may appear any moment.
+      let fedotWanted = false;
+
+      function parseFedotRun(meta, events) {
+        const agents = new Map();
+        const touch = name => {
+          if (!agents.has(name)) agents.set(name, { name, starts: 0, done: 0, failed: false });
+          return agents.get(name);
+        };
+        let task = meta.task || '';
+        let ended = meta.status !== 'running';
+        let failed = meta.status === 'error' || meta.status === 'timeout';
+        events.forEach(e => {
+          if (e.type === 'run_start' && e.task) task = e.task;
+          if (e.type === 'config' && e.config) {
+            const c = e.config;
+            const listed = c.agents || [c.coordinator, ...(c.workers || [])];
+            listed.filter(Boolean).forEach(a => touch(String(a.name || a)));
+          }
+          if (e.type === 'agent_start' && e.agent) touch(e.agent).starts++;
+          if (e.type === 'agent_done' && e.agent) touch(e.agent).done++;
+          if (e.type === 'model_error' && e.agent) touch(e.agent).failed = true;
+          if (e.type === 'run_end') { ended = true; failed = failed || (e.status && e.status !== 'ok' && e.status !== 'success'); }
+        });
+        const list = [...agents.values()].map(a => ({
+          ...a,
+          status: a.starts === 0 ? 'idle'
+            : a.starts > a.done && !ended ? 'work'
+              : a.failed || (failed && a.starts > a.done) ? 'error' : 'done',
+        }));
+        return { meta, task, agents: list, running: !ended, failed };
+      }
+
       function loadSession(userId, sessionId) {
         loadSkeleton(userId, sessionId);
         loadHistory(userId, sessionId);
+        loadFedot(userId, sessionId);
       }
 
       function reset() {
@@ -492,6 +586,9 @@
         foldTimers.clear();
         log = [];
         skeleton = null;
+        fedotRuns = [];
+        clearTimeout(fedotTimer);
+        path = [];
         render();
       }
 
@@ -678,137 +775,541 @@
         return `M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}`;
       }
 
+      // ── Views ─────────────────────────────────────────────────────────────
+      // The map of blocks, or — a click away — the inside of one block, or
+      // of one FEDOT.MAS system. `path` is the way down, for the breadcrumbs.
+      let path = [];
+
+      const STATUS_TEXT = { idle: 'Не запущен', done: 'Завершён', wait: 'Ожидает', work: 'В работе', error: 'Ошибка' };
+      const GROUP_TEXT = { idle: 'Не запущен', done: 'Готово', wait: 'Ожидает', work: 'В работе', error: 'Ошибка' };
+      const ICONS = { idle: '–', done: '✓', wait: '◷', work: '●', error: '!' };
+
+      function plural(n, one, few, many) {
+        const m10 = n % 10, m100 = n % 100;
+        if (m10 === 1 && m100 !== 11) return one;
+        if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+        return many;
+      }
+
+      // A call's state on a card: a call still running with another running
+      // below it waits for it; one without works itself.
+      function instState(inst, model) {
+        if (!inst) return 'idle';
+        if (inst === model.rootInst) return inst.runningBelow ? 'wait' : model.active ? 'work' : 'done';
+        if (inst.status === 'running') {
+          if (inst.runningBelow) return 'wait';
+          if (FEDOT_AGENTS.test(inst.name) && fedotRuns.some(r => r.running)) return 'wait';
+          return 'work';
+        }
+        return inst.status === 'error' ? 'error' : 'done';
+      }
+
+      function mergeStates(states) {
+        if (!states.length) return 'idle';
+        if (states.includes('work')) return 'work';
+        if (states.includes('wait')) return 'wait';
+        if (states.includes('error')) return 'error';
+        return states.every(s => s === 'idle') ? 'idle' : 'done';
+      }
+
+      const FEDOT_AGENTS = /^FedotAgent$/;
+
+      function blockOf(inst) {
+        return (inst && inst.slot && inst.slot.block) || '__other__';
+      }
+
+      // The blocks of the map with what ran in them.
+      function mapBlocks(model) {
+        const blocks = (skeleton && skeleton.blocks || []).map(b => ({ ...b }));
+        // Branches the config does not have, found in what ran.
+        [...new Set(model.instances.map(blockOf).filter(id => id.startsWith('dyn:')))].forEach(id => {
+          const name = id.slice(4);
+          const title = (skeleton.blockTitles || {})[name]
+            || displayName(name).replace(/^Агент\s+/, '').replace(/^./, ch => ch.toUpperCase());
+          blocks.push({ id, kind: 'branch', title, parent: null, head: null, agent: name });
+        });
+        if (model.instances.some(i => blockOf(i) === '__other__')) {
+          blocks.push({ id: '__other__', kind: 'other', title: 'Другие агенты', parent: null });
+        }
+        blocks.forEach(b => {
+          b.insts = model.instances.filter(i => blockOf(i) === b.id);
+          b.state = mergeStates(b.insts.map(i => instState(i, model)));
+          const head = b.insts.filter(i => i.slot && (i.slot.id === b.head || (!b.head && i.name === b.agent)));
+          b.count = head.length || (b.insts.length ? 1 : 0);
+          // The agents of a group: every one it can run (critic included)
+          // and every one that did run in it — what opening it shows.
+          const agents = new Set(b.insts.map(i => i.name));
+          model.slotById.forEach(slot => { if (slot.block === b.id) agents.add(slot.agent); });
+          if (b.kind === 'prep') b.size = agents.size;
+          b.agents = agents.size;
+          b.group = !!b.size && (b.kind === 'prep' || !!b.module);
+        });
+        return blocks;
+      }
+
+      function navigate(to) {
+        path = to;
+        camera = null;
+        lastPos = new Map();
+        lastEls = new Map();
+        entering = true;
+        schedule();
+      }
+      let entering = false;
+
       function render() {
         const scroller = document.getElementById('call-graph-scroll');
         const svg = document.getElementById('call-graph-svg');
         const empty = document.getElementById('call-graph-empty');
-        const count = document.getElementById('call-graph-count');
         if (!scroller || !svg) return;
         const model = buildModel();
-        const forest = visualTree(model);
-        if (count) count.textContent = model.calls ? String(model.calls) : '';
-        empty.classList.toggle('hidden', forest.length > 0);
-        svg.classList.toggle('hidden', forest.length === 0);
+        fedotWanted = model.instances.some(i => FEDOT_AGENTS.test(i.name) && i.status === 'running');
+        if (fedotWanted && fedotScope && !fedotTimer && !fedotLoading) loadFedot(...fedotScope);
+        const blocks = mapBlocks(model);
+        const useMap = !!(skeleton && skeleton.blocks && skeleton.blocks.length);
+        // A view whose block is gone (another session's path) falls back.
+        const at = path[path.length - 1];
+        if (at && at.type === 'block' && !blocks.some(b => b.id === at.id)) path = [];
+        if (at && at.type === 'mas' && !fedotRuns.some(r => r.meta.run_id === at.id)) path = [];
+
+        let scene;
+        const view = path[path.length - 1];
+        if (!view && useMap) scene = mapScene(model, blocks);
+        else if (view && view.type === 'mas') scene = masScene(view.id, model, blocks);
+        else scene = treeScene(model, view ? view.id : null, blocks);
+
+        renderChrome(model, blocks, scene);
+        empty.classList.toggle('hidden', scene.cards.length > 0);
+        svg.classList.toggle('hidden', scene.cards.length === 0);
         const oldEls = lastEls;
         lastEls = new Map();
         svg.replaceChildren();
-        if (!forest.length) return;
+        if (!scene.cards.length) return;
+        drawScene(svg, scroller, scene, oldEls);
+      }
 
-        const { all, edges: links, totalW, totalH } = layout(forest);
+      // ── The map: blocks in the design of the research map ────────────────
+      const BLOCK_W = 116, BLOCK_H = 104, BLOCK_GAP = 28, FRAME_PAD = 20;
+
+      function mapScene(model, blocks) {
+        NODE_W = BLOCK_W;
+        NODE_H = BLOCK_H;
+        const cards = [];
+        const links = [];
+        const frames = [];
+        const card = (b, x, y) => {
+          const c = {
+            key: `B${b.id}`, x, y, w: BLOCK_W, h: BLOCK_H, title: b.title, state: b.state, count: b.count,
+            label: b.group ? 'ГРУППА' : null,
+            subtitle: b.group
+              ? `${b.size} ${b.kind === 'prep' ? plural(b.size, 'агент', 'агента', 'агентов') : plural(b.size, 'этап', 'этапа', 'этапов')} · ${GROUP_TEXT[b.state]}`
+              : STATUS_TEXT[b.state],
+            tip: `${b.title}${b.group ? ` — группа: ${b.kind === 'prep' ? `${b.size} ${plural(b.size, 'агент', 'агента', 'агентов')}` : `${b.size} ${plural(b.size, 'этап', 'этапа', 'этапов')}, ${b.agents} ${plural(b.agents, 'агент', 'агента', 'агентов')}`}` : ''}: ${STATUS_TEXT[b.state].toLowerCase()}, запусков ${b.count}. Щелчок — открыть.`,
+            attrs: { 'data-block': b.id }, big: true,
+          };
+          cards.push(c);
+          return c;
+        };
+        const prep = blocks.find(b => b.kind === 'prep');
+        const root = blocks.find(b => b.kind === 'root');
+        const row = [
+          ...blocks.filter(b => b.kind === 'branch' && !b.parent),
+          ...blocks.filter(b => b.kind === 'other'),
+          ...blocks.filter(b => b.kind === 'post'),
+        ];
+        const nestedOf = id => blocks.filter(b => b.parent === id);
+
+        // The branches, in a frame: a column each, nested blocks below.
+        const frameTop = PAD + BLOCK_H + 44;
+        let x = PAD + FRAME_PAD;
+        let bottom = frameTop + FRAME_PAD + BLOCK_H;
+        const placed = new Map();
+        row.forEach(b => {
+          const c = card(b, x, frameTop + FRAME_PAD);
+          placed.set(b.id, c);
+          let y = c.y;
+          let parent = c;
+          const walk = id => nestedOf(id).forEach(n => {
+            y += BLOCK_H + 34;
+            const nc = card(n, x, y);
+            placed.set(n.id, nc);
+            links.push({ from: parent, to: nc, kind: 'down' });
+            parent = nc;
+            walk(n.id);
+          });
+          walk(b.id);
+          bottom = Math.max(bottom, y + BLOCK_H);
+          x += BLOCK_W + BLOCK_GAP;
+        });
+        const frameW = Math.max(BLOCK_W, x - BLOCK_GAP - PAD - FRAME_PAD) + FRAME_PAD * 2;
+        if (row.length) frames.push({ x: PAD, y: frameTop, w: frameW, h: bottom + FRAME_PAD - frameTop });
+
+        // The coordinator above the middle of the frame, the preparation
+        // to its left.
+        let rootCard = null;
+        if (root) {
+          const rx = PAD + frameW / 2 - BLOCK_W / 2;
+          rootCard = card(root, rx, PAD);
+          placed.set(root.id, rootCard);
+          if (prep) {
+            const pc = card(prep, rx - BLOCK_W - 56, PAD);
+            placed.set(prep.id, pc);
+            links.push({ from: pc, to: rootCard, kind: 'side' });
+          }
+          row.forEach(b => links.push({ from: rootCard, to: placed.get(b.id), kind: 'bus', busY: frameTop - 14 }));
+        } else if (prep) {
+          placed.set(prep.id, card(prep, PAD, PAD));
+        }
+
+        // FEDOT.MAS systems: a frame each below, its agents in a row, fed by
+        // the block that builds them.
+        const topCards = cards.length, topFrames = frames.length;
+        const builder = blocks.find(b => b.kind === 'mas_builder' && placed.has(b.id))
+          || (root && placed.has(root.id) ? root : null);
+        let masY = bottom + FRAME_PAD + 56;
+        let masX = PAD;
+        const masW = BLOCK_W, masGap = 36, masHead = 44;
+        // Side by side, so no line to one system crosses another; a long
+        // queue of systems wraps.
+        const rowLimit = Math.max(frameW, 3 * (BLOCK_W * 3 + masGap * 2 + FRAME_PAD * 2 + 30));
+        let rowH = 0;
+        fedotRuns.forEach((run, i) => {
+          const n = Math.max(1, run.agents.length);
+          const w = FRAME_PAD * 2 + n * masW + (n - 1) * masGap;
+          const h = masHead + BLOCK_H + FRAME_PAD;
+          if (masX > PAD && masX + w > PAD + rowLimit) { masX = PAD; masY += rowH + 30; rowH = 0; }
+          const label = `FEDOT.MAS / ${String(i + 1).padStart(2, '0')}`;
+          const task = (run.task || '').replace(/\s+/g, ' ').trim();
+          const newAgents = `${run.agents.length} ${plural(run.agents.length, 'новый агент', 'новых агента', 'новых агентов')}`;
+          frames.push({
+            x: masX, y: masY, w, h, label, subtitle: `${task.length > 48 ? task.slice(0, 47) + '…' : task}${task ? ' · ' : ''}${newAgents}`,
+            mas: run.meta.run_id, state: run.running ? 'work' : run.failed ? 'error' : 'done',
+          });
+          let prev = null;
+          run.agents.forEach((a, j) => {
+            const c = {
+              key: `M${run.meta.run_id}:${a.name}`, x: masX + FRAME_PAD + j * (masW + masGap), y: masY + masHead,
+              w: masW, h: BLOCK_H, title: humanize(a.name), state: a.status, count: a.starts,
+              subtitle: STATUS_TEXT[a.status], tip: `${a.name} — агент FEDOT.MAS: ${STATUS_TEXT[a.status].toLowerCase()}, запусков ${a.starts}.`,
+              attrs: { 'data-mas': run.meta.run_id }, big: true,
+            };
+            cards.push(c);
+            if (prev) links.push({ from: prev, to: c, kind: 'side' });
+            prev = c;
+          });
+          const first = cards.find(c => c.key === `M${run.meta.run_id}:${(run.agents[0] || {}).name}`);
+          const from = builder && placed.get(builder.id);
+          if (from && first) links.push({ from, to: first, kind: 'mas', busY: bottom + FRAME_PAD + 22, entryX: masX - 14 });
+          masX += w + 30;
+          rowH = Math.max(rowH, h);
+        });
+
+        // Systems wider than the frame: centre the top of the map over them.
+        const masRight = Math.max(0, ...frames.slice(topFrames).map(f => f.x + f.w));
+        const topRight = PAD + frameW;
+        if (masRight > topRight) {
+          const dx = (masRight - topRight) / 2;
+          cards.slice(0, topCards).forEach(c => { c.x += dx; });
+          frames.slice(0, topFrames).forEach(f => { f.x += dx; });
+        }
+        // Shift everything right if the preparation sticks out on the left.
+        const minX = Math.min(...cards.map(c => c.x), ...frames.map(f => f.x));
+        if (minX < PAD) {
+          const dx = PAD - minX;
+          cards.forEach(c => { c.x += dx; });
+          frames.forEach(f => { f.x += dx; });
+        }
+        const maxX = Math.max(...cards.map(c => c.x + c.w), ...frames.map(f => f.x + f.w));
+        const maxY = Math.max(...cards.map(c => c.y + c.h), ...frames.map(f => f.y + f.h));
+        const notes = [];
+        const groups = blocks.filter(b => b.group);
+        if (groups.length) {
+          notes.push(groups.map(b => `${b.title} ${b.kind === 'prep' ? 'объединяет' : 'включает'} ${b.size} ${b.kind === 'prep' ? plural(b.size, 'агента', 'агентов', 'агентов') : plural(b.size, 'этап', 'этапа', 'этапов')}`).join(' · '));
+        }
+        return { cards, links, frames, totalW: maxX + PAD, totalH: maxY + PAD, notes, map: true };
+      }
+
+      function humanize(name) {
+        const s = String(name).replace(/[_-]+/g, ' ').replace(/([a-zа-я])([A-ZА-Я])/g, '$1 $2').trim();
+        return s.charAt(0).toUpperCase() + s.slice(1);
+      }
+
+      // ── Inside a block: its agents, as the detailed tree ─────────────────
+      function treeScene(model, blockId, blocks) {
+        NODE_W = 132;
+        NODE_H = 62;
+        let forest = visualTree(model);
+        const titleOf = id => (blocks.find(b => b.id === id) || {}).title || 'Блок';
+        const stateOf = id => (blocks.find(b => b.id === id) || {}).state || 'idle';
+        if (blockId) {
+          // The block's own agents; a call into another block is a link to it.
+          const vblock = v => (v.inst ? blockOf(v.inst) : v.slotBlock || '__other__');
+          const roots = [];
+          const find = (list, parentBlock) => list.forEach(v => {
+            const b = vblock(v);
+            if (b === blockId && parentBlock !== blockId) roots.push(v);
+            find(v.children, b);
+          });
+          find(forest, null);
+          const prune = v => {
+            const links = new Map();
+            v.children = v.children.flatMap(c => {
+              const b = vblock(c);
+              if (b === blockId) return [prune(c)];
+              if (!links.has(b)) {
+                links.set(b, { key: `L${b}`, name: titleOf(b), linkTo: b, status: 'link', linkState: stateOf(b), called: stateOf(b) !== 'idle', children: [] });
+                return [links.get(b)];
+              }
+              return [];
+            });
+            return v;
+          };
+          forest = roots.map(prune);
+        }
+        const { all, edges, totalW, totalH } = layout(forest);
+        const cards = all.map(v => agentCard(v, model));
+        const byNode = new Map(all.map((v, i) => [v, cards[i]]));
+        const links = edges.map(e => ({ ...e, from: byNode.get(e.from), to: byNode.get(e.to), tree: e }));
+        return { cards, links, frames: [], totalW, totalH, notes: [], map: false };
+      }
+
+      function agentCard(v, model) {
+        if (v.linkTo) {
+          return {
+            key: v.key, x: v.x, y: v.y, w: NODE_W, h: NODE_H, title: v.name, state: v.linkState, link: true,
+            subtitle: `Блок · ${STATUS_TEXT[v.linkState]}`, tip: `Блок «${v.name}» — щелчок открывает его.`,
+            attrs: { 'data-link': v.linkTo }, count: null,
+          };
+        }
+        const state = v.group
+          ? mergeStates(v.members.map(i => instState(i, model)))
+          : v.called ? instState(v.inst, model) : 'idle';
+        const title = displayName(v.name);
+        const how = v.group && { parallel: 'параллельно', sequential: 'по очереди', mixed: 'частью параллельно' }[v.group.mode];
+        const tip = (title === v.name ? v.name : `${title} (${v.name})`)
+          + (!v.called ? ' — не вызывался'
+            : v.group ? ` — ${v.group.count} вызовов, ${how}; щелчок раскрывает`
+              : v.memberOf ? ' — щелчок сворачивает' : `: ${STATUS_TEXT[state].toLowerCase()}`);
+        const attrs = {};
+        if (v.group) attrs['data-group'] = v.group.key;
+        if (v.memberOf) attrs['data-member'] = v.memberOf;
+        return {
+          key: v.key, x: v.x, y: v.y, w: NODE_W, h: NODE_H, title, state,
+          count: v.group ? v.group.count : v.rounds > 1 ? v.rounds : v.called ? 1 : 0,
+          countMode: v.group && v.group.mode !== 'parallel' ? '↓' : '×',
+          stack: v.group ? v.group.mode : null, subtitle: STATUS_TEXT[state], tip, attrs,
+          memberOf: v.memberOf, groupKey: v.group && v.group.key, first: v.group && v.group.first,
+        };
+      }
+
+      // ── Inside a FEDOT.MAS system ─────────────────────────────────────────
+      function masScene(runId, model, blocks) {
+        NODE_W = 132;
+        NODE_H = 62;
+        const run = fedotRuns.find(r => r.meta.run_id === runId);
+        const cards = [];
+        const links = [];
+        let prev = null;
+        (run ? run.agents : []).forEach((a, j) => {
+          const c = {
+            key: `A${a.name}`, x: PAD + j * (NODE_W + 40), y: PAD, w: NODE_W, h: NODE_H,
+            title: humanize(a.name), state: a.status, count: a.starts, subtitle: STATUS_TEXT[a.status],
+            tip: `${a.name}: ${STATUS_TEXT[a.status].toLowerCase()}, запусков ${a.starts}.`, attrs: {},
+          };
+          cards.push(c);
+          if (prev) links.push({ from: prev, to: c, kind: 'side' });
+          prev = c;
+        });
+        const n = cards.length;
+        const notes = run && run.task ? [run.task] : [];
+        return { cards, links, frames: [], totalW: PAD * 2 + n * NODE_W + Math.max(0, n - 1) * 40, totalH: PAD * 2 + NODE_H, notes, map: false };
+      }
+
+      // ── Drawing a scene ──────────────────────────────────────────────────
+      function linkPath(l) {
+        const a = l.from, b = l.to;
+        if (l.tree) return edgePath({ ...l.tree, from: { x: a.x, y: a.y }, to: { x: b.x, y: b.y } });
+        if (l.kind === 'side') {
+          const y = a.y + a.h / 2;
+          return `M${a.x + a.w},${y} L${b.x - 3},${b.y + b.h / 2}`;
+        }
+        const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x + b.w / 2, y2 = b.y - 3;
+        if (l.kind === 'mas') {
+          // Into a system from its left side: down to the bus, across to
+          // beside the frame, down, and in to the first agent.
+          const ym = b.y + b.h / 2;
+          return `M${x1},${y1} L${x1},${l.busY} L${l.entryX},${l.busY} L${l.entryX},${ym} L${b.x - 3},${ym}`;
+        }
+        if (l.kind === 'down' || Math.abs(x1 - x2) < 1) return `M${x1},${y1} L${x2},${y2}`;
+        // Right angles: down to the bus, across, down into the card.
+        const yb = l.busY != null ? l.busY : (y1 + y2) / 2;
+        return `M${x1},${y1} L${x1},${yb} L${x2},${yb} L${x2},${y2}`;
+      }
+
+      function wrapTitle(text, width, size) {
+        const perLine = Math.max(4, Math.floor(width / (size * 0.58)));
+        const words = String(text).split(/\s+/);
+        const lines = [''];
+        words.forEach(w => {
+          const cur = lines[lines.length - 1];
+          if (!cur) lines[lines.length - 1] = w;
+          else if ((cur + ' ' + w).length <= perLine) lines[lines.length - 1] = cur + ' ' + w;
+          else lines.push(w);
+        });
+        const out = lines.slice(0, 2);
+        if (lines.length > 2 || out.some(l => l.length > perLine)) {
+          out[out.length - 1] = out[out.length - 1].slice(0, perLine - 1) + '…';
+        }
+        return out;
+      }
+
+      function drawCard(parent, c, before, animate, moves) {
+        const g = svgEl('g', {
+          class: `cg-card cg-st-${c.state}${c.stack ? ' cg-stackcard' : ''}${c.link ? ' cg-link' : ''}`
+            + `${c.attrs['data-block'] || c.attrs['data-group'] || c.attrs['data-member'] || c.attrs['data-link'] || c.attrs['data-mas'] ? ' cg-clickable' : ''}`,
+        });
+        Object.entries(c.attrs).forEach(([k, v]) => g.setAttribute(k, v));
+        g.appendChild(svgEl('title', {}, c.tip));
+        if (c.stack) {
+          const side = c.stack === 'parallel';
+          [2, 1].forEach(k => g.appendChild(svgEl('rect', {
+            x: side ? 4 * k : 0, y: side ? 0 : 4 * k, width: c.w, height: c.h, rx: 8, class: 'cg-card-box cg-card-stack',
+          })));
+        }
+        // A group: more layers behind it, like a deck of the agents it holds.
+        if (c.label) {
+          [2, 1].forEach(k => g.appendChild(svgEl('rect', {
+            x: 5 * k, y: 5 * k, width: c.w, height: c.h, rx: 8, class: `cg-card-box cg-card-layer cg-card-layer-${k}`,
+          })));
+        }
+        g.appendChild(svgEl('rect', { width: c.w, height: c.h, rx: 8, class: 'cg-card-box' }));
+        const big = !!c.big;
+        const small = big ? 9 : 8.5;
+        // Top row: the group mark or the state icon, and the count.
+        g.appendChild(svgEl('text', { x: 10, y: big ? 18 : 15, 'font-size': c.label ? 7.5 : small + 1.5, class: `cg-card-mark${c.label ? ' cg-card-group' : ''}` },
+          c.label || (c.link ? '↗' : ICONS[c.state])));
+        if (c.count != null) {
+          g.appendChild(svgEl('text', { x: c.w - 10, y: big ? 18 : 15, 'font-size': small, 'text-anchor': 'end', class: 'cg-card-count' },
+            `${c.countMode || '×'}${c.count}`));
+        }
+        const size = big ? 12.5 : 10.5;
+        const lines = wrapTitle(c.title, c.w - 16, size);
+        const mid = big ? c.h / 2 + 2 : c.h / 2 + 3;
+        lines.forEach((line, i) => g.appendChild(svgEl('text', {
+          x: c.w / 2, y: mid + (i - (lines.length - 1) / 2) * (size + 3), 'font-size': size, 'text-anchor': 'middle', class: 'cg-card-title',
+        }, line)));
+        if (c.subtitle) {
+          g.appendChild(svgEl('text', { x: c.w / 2, y: c.h - (big ? 11 : 8), 'font-size': small, 'text-anchor': 'middle', class: 'cg-card-sub' },
+            c.subtitle.length > (big ? 26 : 24) ? c.subtitle.slice(0, big ? 25 : 23) + '…' : c.subtitle));
+        }
+        const at = `translate(${c.x}px, ${c.y}px)`;
+        const from = animate && (before.get(c.key)
+          || (c.memberOf && before.get(`g${c.memberOf}`))
+          || (c.first && before.get(c.first)));
+        if (from && (from.x !== c.x || from.y !== c.y)) {
+          g.style.transform = `translate(${from.x}px, ${from.y}px)`;
+          moves.push([g, at]);
+        } else {
+          g.style.transform = at;
+          if (animate && !from) { g.style.opacity = '0'; moves.push([g, at]); }
+        }
+        lastPos.set(c.key, { x: c.x, y: c.y });
+        lastEls.set(c.key, { el: g, memberOf: c.memberOf });
+        parent.appendChild(g);
+        return g;
+      }
+
+      function drawScene(svg, scroller, scene, oldEls) {
+        const defs = svgEl('defs');
+        ['', '-idle', '-live'].forEach(kind => {
+          const m = svgEl('marker', { id: `cg-arrow${kind}`, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
+          m.appendChild(svgEl('path', { d: 'M0,0 L8,4 L0,8 z', class: `cg-arrowhead${kind}` }));
+          defs.appendChild(m);
+        });
+        svg.appendChild(defs);
         const world = svgEl('g', { class: 'cg-world' });
         svg.appendChild(world);
-        // Start from where the last drawing left the view; it glides on below.
         if (shownView) world.style.transform = viewTransform(shownView);
 
-        // Every node moves from where it was drawn last: the calls of a stack
-        // fan out of it on a click and gather back into it on folding, and
-        // whatever the change pushed aside slides over. New nodes fade in.
+        scene.frames.forEach(f => {
+          const fg = svgEl('g', { class: `cg-frame${f.mas ? ' cg-frame-mas cg-clickable' : ''}` });
+          if (f.mas) fg.setAttribute('data-mas', f.mas);
+          fg.appendChild(svgEl('rect', { x: f.x, y: f.y, width: f.w, height: f.h, rx: 10, class: 'cg-frame-box' }));
+          if (f.label) {
+            fg.appendChild(svgEl('text', { x: f.x + 16, y: f.y + 20, 'font-size': 11, class: 'cg-frame-label' }, f.label));
+            fg.appendChild(svgEl('text', { x: f.x + 16, y: f.y + 34, 'font-size': 9, class: 'cg-frame-sub' }, f.subtitle || ''));
+            fg.appendChild(svgEl('title', {}, `${f.label} — система агентов FEDOT.MAS. Щелчок — открыть.`));
+          }
+          world.appendChild(fg);
+        });
+
+        const edges = svgEl('g', { class: 'cg-edges' });
+        scene.links.forEach(l => {
+          if (!l.from || !l.to) return;
+          const idle = l.to.state === 'idle' || l.from.state === 'idle';
+          const live = l.to.state === 'work' || l.to.state === 'wait';
+          const kind = idle ? '-idle' : live ? '-live' : '';
+          edges.appendChild(svgEl('path', {
+            d: linkPath(l), class: `cg-edge${idle ? ' cg-edge-idle' : ''}${live ? ' cg-edge-live' : ''}`,
+            'marker-end': `url(#cg-arrow${kind})`,
+          }));
+        });
+        world.appendChild(edges);
+
         const before = lastPos;
         const animate = before.size > 0 && !REDUCED_MOTION.matches;
         const moves = [];
         lastPos = new Map();
+        const nodes = svgEl('g', { class: 'cg-cards' });
+        world.appendChild(nodes);
+        scene.cards.forEach(c => drawCard(nodes, c, before, animate, moves));
 
-        const edges = svgEl('g', { class: 'cg-edges' });
-        links.forEach(e => edges.appendChild(svgEl('path', {
-          d: edgePath(e),
-          class: `cg-edge${e.to.called && e.from.called ? '' : ' cg-edge-idle'}${e.to.status === 'running' ? ' cg-edge-live' : ''}`,
-        })));
-        world.appendChild(edges);
-
-        let focus = null;
-        all.forEach(v => {
-          const g = svgEl('g', {
-            class: `cg-node cg-${v.status}${v.group ? ' cg-group' : ''}${v.memberOf ? ' cg-member' : ''}`,
-          });
-          const at = `translate(${v.x}px, ${v.y}px)`;
-          const from = animate && (before.get(v.key)
-            || (v.memberOf && before.get(`g${v.memberOf}`))
-            || (v.group && before.get(v.group.first)));
-          if (from && (from.x !== v.x || from.y !== v.y)) {
-            g.style.transform = `translate(${from.x}px, ${from.y}px)`;
-            moves.push([g, at]);
-          } else {
-            g.style.transform = at;
-            if (animate && !from) { g.style.opacity = '0'; moves.push([g, at]); }
-          }
-          lastPos.set(v.key, { x: v.x, y: v.y });
-          lastEls.set(v.key, { el: g, memberOf: v.memberOf });
-          if (v.group) g.setAttribute('data-group', v.group.key);
-          if (v.memberOf) g.setAttribute('data-member', v.memberOf);
-          const title = displayName(v.name);
-          const label = title;
-          const how = v.group && { parallel: 'параллельно', sequential: 'по очереди', mixed: 'частью параллельно' }[v.group.mode];
-          const state = !v.called ? ' — не вызывался'
-            : v.group ? ` — ${v.group.count} вызовов, ${how}; щелчок раскрывает`
-              : v.memberOf ? ' — щелчок сворачивает' : '';
-          g.appendChild(svgEl('title', {}, (title === v.name ? v.name : `${title} (${v.name})`) + state));
-          // A stack: cards peeking out from behind — to the side for calls
-          // that ran together, below for calls that ran one after another.
-          if (v.group) {
-            const side = v.group.mode === 'parallel';
-            [2, 1].forEach(k => g.appendChild(svgEl('rect', {
-              x: side ? 3 * k : 0, y: side ? 0 : 4 * k, width: NODE_W, height: NODE_H, rx: 6, class: 'cg-box cg-stack',
-            })));
-          }
-          g.appendChild(svgEl('rect', { width: NODE_W, height: NODE_H, rx: 6, class: 'cg-box' }));
-          // Dot and title centred together in the box; a stack keeps room on
-          // the right for its count.
-          // Only a state worth telling gets a dot: running, failed, not run
-          // yet, the coordinator. A finished call is plain.
-          const dotted = v.status !== 'done';
-          const gap = dotted ? 8 : 0;
-          const count = v.group ? v.group.count : v.rounds > 1 ? v.rounds : 0;
-          const badge = count ? 22 : 0;
-          const text = svgEl('text', {
-            x: (NODE_W - badge) / 2 + gap / 2, y: NODE_H / 2 + 4, 'font-size': FONT,
-            'text-anchor': 'middle', class: 'cg-label',
-          }, fitLabel(label, NODE_W - badge));
-          if (count) {
-            g.appendChild(svgEl('text', {
-              x: NODE_W - 7, y: NODE_H / 2 + 4, 'font-size': FONT, 'text-anchor': 'end', class: 'cg-count',
-            }, v.group && v.group.mode !== 'parallel' ? `↓${count}` : `×${count}`));
-          }
-          g.appendChild(text);
-          world.appendChild(g);
-          const tw = text.getComputedTextLength() || text.textContent.length * CHAR_W;
-          if (dotted) {
-            g.insertBefore(svgEl('circle', {
-              cx: (NODE_W - badge) / 2 + gap / 2 - tw / 2 - gap, cy: NODE_H / 2, r: 3, class: 'cg-dot',
-            }), text);
-          }
-          if (v.status === 'running' && (!focus || v.inst.order > focus.inst.order)) focus = v;
-        });
-
-        // Unless the reader has moved the view: while agents run, the latest
-        // of them is centred at a readable size; otherwise the whole graph is
-        // fitted into the middle of the panel as an overview.
+        // Unless the reader moved the view: while something runs, the busiest
+        // card is centred at a readable size; otherwise the whole scene fits.
         const W = scroller.clientWidth, H = scroller.clientHeight;
-        // Full screen has the room to draw it bigger than life size.
         const grow = document.fullscreenElement === document.getElementById('side-nav-panel') ? FULL_MAX : 1;
-        const whole = Math.min(grow, W / totalW, H / totalH);
-        const fit = focus ? Math.max(FIT_MIN, whole) : Math.max(OVERVIEW_MIN, whole);
-        const w = totalW * fit, h = totalH * fit;
+        const whole = Math.min(grow, W / scene.totalW, H / scene.totalH);
+        // The map is the overview: always whole. Inside a block the work in
+        // progress is what the reader came for.
+        const focus = scene.map ? null : [...scene.cards].reverse().find(c => c.state === 'work');
+        const fit = focus && whole < FIT_MIN ? FIT_MIN : Math.max(OVERVIEW_MIN, whole);
+        const w = scene.totalW * fit, h = scene.totalH * fit;
         const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
         autoView = {
-          tx: w <= W || !focus ? (W - w) / 2 : clamp(W / 2 - (focus.x + NODE_W / 2) * fit, W - w, 0),
-          ty: h <= H || !focus ? Math.max(0, (H - h) / 2) : clamp(H / 2 - (focus.y + NODE_H / 2) * fit, H - h, 0),
+          tx: w <= W || !focus ? (W - w) / 2 : clamp(W / 2 - (focus.x + focus.w / 2) * fit, W - w, 0),
+          ty: h <= H || !focus ? Math.max(0, (H - h) / 2) : clamp(H / 2 - (focus.y + focus.h / 2) * fit, H - h, 0),
           s: fit,
         };
-        // Calls of a stack that just folded: their old cards glide into it
-        // and fade, drawn under it.
+
+        // A stack that just folded: its old cards glide into it and fade.
         const ghosts = [];
         if (animate) {
-          const firstNode = world.querySelector('.cg-node');
           oldEls.forEach(({ el, memberOf }, key) => {
             const into = memberOf && !lastPos.has(key) && lastPos.get(`g${memberOf}`);
             if (!into) return;
             el.style.opacity = '1';
-            world.insertBefore(el, firstNode);
+            nodes.insertBefore(el, nodes.firstChild);
             ghosts.push([el, `translate(${into.x}px, ${into.y}px)`]);
           });
         }
+        if (entering && !REDUCED_MOTION.matches) {
+          // Arriving in another view: it settles in from slightly closer.
+          entering = false;
+          const v = camera || autoView;
+          world.style.opacity = '0';
+          world.style.transform = viewTransform({ ...v, s: v.s * 1.06, tx: v.tx - scene.totalW * v.s * 0.03, ty: v.ty - scene.totalH * v.s * 0.03 });
+          world.classList.add('cg-anim');
+          svg.getBoundingClientRect();
+          requestAnimationFrame(() => {
+            world.style.opacity = '';
+            applyCamera();
+            clearTimeout(animEnd);
+            animEnd = setTimeout(() => world.classList.remove('cg-anim'), ANIM_MS + 250);
+          });
+          return;
+        }
+        entering = false;
         if (!moves.length && !ghosts.length) { applyCamera(); return; }
-        // Transitions on, the old places committed, then the new ones set.
         world.classList.add('cg-anim');
         edges.style.opacity = '0';
         svg.getBoundingClientRect();
@@ -821,6 +1322,80 @@
           clearTimeout(animEnd);
           animEnd = setTimeout(() => world.classList.remove('cg-anim'), ANIM_MS + 250);
         });
+      }
+
+      // ── The panel around the graph: path, legend, counters, activity ────
+      const OPTIONS_KEY = 'coscientist.call_graph_options';
+      let options = { legend: true, stats: true, activity: true };
+      try { options = { ...options, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) || '{}') }; } catch (_) { /* defaults */ }
+
+      function setOption(name, value) {
+        options[name] = !!value;
+        try { localStorage.setItem(OPTIONS_KEY, JSON.stringify(options)); } catch (_) { /* this tab only */ }
+        schedule();
+      }
+
+      function toggleOptions(force) {
+        const menu = document.getElementById('call-graph-opts-menu');
+        if (!menu) return;
+        const open = force != null ? force : menu.classList.contains('hidden');
+        menu.classList.toggle('hidden', !open);
+        document.getElementById('call-graph-opts')?.setAttribute('aria-expanded', String(open));
+        if (open) {
+          menu.querySelectorAll('input[data-opt]').forEach(input => { input.checked = !!options[input.dataset.opt]; });
+        }
+      }
+
+      function renderChrome(model, blocks, scene) {
+        const esc = v => String(v).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+        // Breadcrumbs: the map, then each level down.
+        const crumbs = document.getElementById('call-graph-crumbs');
+        if (crumbs) {
+          const names = path.map(p => (p.type === 'mas'
+            ? `FEDOT.MAS / ${String(fedotRuns.findIndex(r => r.meta.run_id === p.id) + 1).padStart(2, '0')}`
+            : (blocks.find(b => b.id === p.id) || {}).title || 'Блок'));
+          crumbs.classList.toggle('hidden', !path.length);
+          crumbs.innerHTML = [`<button type="button" data-depth="0" class="cg-crumb">Карта</button>`,
+            ...names.map((n, i) => `<span class="cg-crumb-sep" aria-hidden="true">›</span>`
+              + (i === names.length - 1 ? `<span class="cg-crumb-here">${esc(n)}</span>`
+                : `<button type="button" data-depth="${i + 1}" class="cg-crumb">${esc(n)}</button>`))].join('');
+        }
+        const legend = document.getElementById('call-graph-legend');
+        if (legend) legend.classList.toggle('hidden', !options.legend);
+
+        // Counters: who works now, how much of the map the run reached, how
+        // many systems FEDOT built.
+        const working = model.instances.filter(i => i !== model.rootInst && instState(i, model) === 'work');
+        const fedotWorking = fedotRuns.flatMap((r, k) => r.agents.filter(a => a.status === 'work').map(a => ({ run: k, a })));
+        const mapCards = scene.map ? scene.cards : [];
+        const engaged = mapCards.filter(c => c.state !== 'idle').length;
+        const stats = document.getElementById('call-graph-stats');
+        if (stats) {
+          stats.classList.toggle('hidden', !options.stats);
+          stats.innerHTML = [
+            [working.length + fedotWorking.length, 'работают сейчас'],
+            [scene.map ? `${engaged}<small>/${mapCards.length}</small>` : `${model.calls}`, scene.map ? 'узлов задействовано' : 'вызовов'],
+            [fedotRuns.length, 'создано МАС'],
+          ].map(([n, l]) => `<div class="cg-stat"><b>${n}</b><span>${l}</span></div>`).join('');
+        }
+        const count = document.getElementById('call-graph-count');
+        if (count) count.textContent = options.stats || !model.calls ? '' : String(model.calls);
+
+        // "Working now": in full screen only, beside the graph.
+        const panel = document.getElementById('call-graph-activity');
+        if (panel) {
+          const full = document.fullscreenElement === document.getElementById('side-nav-panel');
+          panel.classList.toggle('hidden', !(full && options.activity));
+          const waiting = blocks.filter(b => b.state === 'wait').map(b => b.title);
+          const items = [
+            ...working.map(i => displayName(i.name)),
+            ...fedotWorking.map(({ run, a }) => `${humanize(a.name)} · МАС ${String(run + 1).padStart(2, '0')}`),
+          ];
+          panel.innerHTML = `<h4>В работе сейчас</h4>`
+            + (items.length ? `<ul>${items.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : `<p class="cg-muted">Сейчас никто не работает</p>`)
+            + (waiting.length ? `<p class="cg-muted">Ожидают результат: ${esc(waiting.join(', '))}</p>` : '')
+            + (scene.notes.length ? `<h4>На карте</h4><p class="cg-muted">${esc(scene.notes.join(' · '))}</p>` : '');
+        }
       }
 
       // ── View: drag to pan, wheel to zoom, double-click to fit ────────────
@@ -888,12 +1463,15 @@
         scroller.addEventListener('click', event => {
           if (dragged || event.detail > 1) return;
           const hit = document.elementFromPoint(event.clientX, event.clientY);
-          const node = hit && hit.closest && hit.closest('.cg-node');
+          const node = hit && hit.closest && hit.closest('.cg-card, .cg-frame-mas');
           if (!node) return;
-          const group = node.getAttribute('data-group');
-          const member = node.getAttribute('data-member');
-          if (group) unfold(group);
-          else if (member) fold(member);
+          const attr = name => node.getAttribute(name);
+          if (attr('data-group')) unfold(attr('data-group'));
+          else if (attr('data-member')) fold(attr('data-member'));
+          // Falling into a block, a linked block, or a FEDOT.MAS system.
+          else if (attr('data-block')) navigate([...path, { type: 'block', id: attr('data-block') }]);
+          else if (attr('data-link')) navigate([{ type: 'block', id: attr('data-link') }]);
+          else if (attr('data-mas')) navigate([...path.filter(p => p.type !== 'mas'), { type: 'mas', id: attr('data-mas') }]);
         });
         scroller.addEventListener('wheel', event => {
           event.preventDefault();
@@ -939,6 +1517,17 @@
         const scroller = document.getElementById('call-graph-scroll');
         if (!scroller) return;
         document.addEventListener('fullscreenchange', syncFullscreen);
+        document.getElementById('call-graph-crumbs')?.addEventListener('click', event => {
+          const depth = event.target.closest && event.target.closest('[data-depth]');
+          if (depth) navigate(path.slice(0, Number(depth.dataset.depth)));
+        });
+        document.getElementById('call-graph-opts-menu')?.addEventListener('change', event => {
+          if (event.target.dataset && event.target.dataset.opt) setOption(event.target.dataset.opt, event.target.checked);
+        });
+        document.addEventListener('click', event => {
+          const menu = document.getElementById('call-graph-opts-menu');
+          if (menu && !menu.classList.contains('hidden') && !event.target.closest('#call-graph-opts, #call-graph-opts-menu')) toggleOptions(false);
+        });
         const button = document.getElementById('call-graph-full');
         if (button && !document.fullscreenEnabled) button.classList.add('hidden');
         initView(scroller);
@@ -946,7 +1535,7 @@
         render();
       }
 
-      return { init, reset, feed, feedAgentEvent, markIdle, setAgentMeta, loadSession, loadSkeleton, toggleFullscreen };
+      return { init, reset, feed, feedAgentEvent, markIdle, setAgentMeta, loadSession, loadSkeleton, toggleFullscreen, toggleOptions };
     })();
 
     document.addEventListener('DOMContentLoaded', () => CallGraph.init());

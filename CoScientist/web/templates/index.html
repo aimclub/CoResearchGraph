@@ -129,20 +129,42 @@
     <!-- Live call graph: which agents the run has called, in order. -->
     <section id="side-nav-panel" aria-labelledby="call-graph-title"
       class="mx-2 mt-3 flex-1 min-h-[14rem] flex flex-col rounded-md bg-surface-container-high overflow-hidden">
-      <div class="flex items-center gap-1.5 px-3 pt-2 pb-1">
+      <div class="relative flex items-center gap-1.5 px-3 pt-2 pb-1">
         <span class="material-symbols-outlined text-[16px] text-outline-variant" aria-hidden="true">account_tree</span>
         <h3 id="call-graph-title" class="text-[11px] font-medium text-on-surface-variant" data-i18n="nav.callGraph">Call graph</h3>
         <span id="call-graph-count" class="ml-auto text-[10px] text-outline-variant tabular-nums"></span>
+        <button type="button" id="call-graph-opts" onclick="CallGraph.toggleOptions()" aria-haspopup="true" aria-expanded="false"
+          aria-controls="call-graph-opts-menu" title="Что показывать" aria-label="Что показывать"
+          class="w-6 h-6 rounded flex items-center justify-center text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors">
+          <span class="material-symbols-outlined text-[16px]" aria-hidden="true">tune</span>
+        </button>
         <button type="button" id="call-graph-full" onclick="CallGraph.toggleFullscreen()"
           data-i18n-title="nav.callGraphFull" data-i18n-aria="nav.callGraphFull" title="Full screen" aria-label="Full screen"
           class="w-6 h-6 -mr-1 rounded flex items-center justify-center text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors">
           <span id="call-graph-full-icon" class="material-symbols-outlined text-[16px]" aria-hidden="true">open_in_full</span>
         </button>
+        <div id="call-graph-opts-menu" class="cg-opts hidden" role="group" aria-label="Что показывать на графе">
+          <label><input type="checkbox" data-opt="legend"> Легенда статусов</label>
+          <label><input type="checkbox" data-opt="stats"> Счётчики</label>
+          <label><input type="checkbox" data-opt="activity"> «В работе сейчас» <small>(на весь экран)</small></label>
+        </div>
       </div>
-      <div id="call-graph-scroll" class="flex-1 min-h-0 overflow-hidden"
-        data-i18n-title="nav.callGraphHint" title="Drag to move · wheel to zoom · double-click to fit">
-        <p id="call-graph-empty" class="px-3 py-4 text-[11px] text-outline-variant" data-i18n="nav.callGraphEmpty">Agents appear here as they are called</p>
-        <svg id="call-graph-svg" class="hidden block w-full h-full" role="img" aria-labelledby="call-graph-title"></svg>
+      <nav id="call-graph-crumbs" class="cg-crumbs hidden" aria-label="Уровень графа"></nav>
+      <div id="call-graph-stats" class="cg-stats hidden"></div>
+      <div id="call-graph-legend" class="cg-legend hidden" aria-label="Обозначения">
+        <span><i class="cg-sw cg-sw-idle"></i>Не запускался</span>
+        <span><i class="cg-sw cg-sw-done"></i>Завершён</span>
+        <span><i class="cg-sw cg-sw-wait"></i>Ожидает</span>
+        <span><i class="cg-sw cg-sw-work"></i>Работает</span>
+        <span class="cg-legend-note">×N — число запусков</span>
+      </div>
+      <div class="flex-1 min-h-0 flex">
+        <div id="call-graph-scroll" class="flex-1 min-w-0 min-h-0 overflow-hidden"
+          data-i18n-title="nav.callGraphHint" title="Drag to move · wheel to zoom · double-click to fit">
+          <p id="call-graph-empty" class="px-3 py-4 text-[11px] text-outline-variant" data-i18n="nav.callGraphEmpty">Agents appear here as they are called</p>
+          <svg id="call-graph-svg" class="hidden block w-full h-full" role="img" aria-labelledby="call-graph-title"></svg>
+        </div>
+        <aside id="call-graph-activity" class="cg-activity hidden" aria-live="polite"></aside>
       </div>
     </section>
 

@@ -16,7 +16,7 @@ const i18n = {
   'nav.connected': { en: 'Connected', ru: 'Подключено' },
   'nav.disconnected': { en: 'Disconnected', ru: 'Отключено' },
   'nav.callGraph': { en: 'Call graph', ru: 'Граф вызовов' },
-  'nav.callGraphHint': { en: 'Drag to move · wheel to zoom · double-click to fit', ru: 'Перетаскивание — перемещение · колесо — масштаб · двойной клик — вписать' },
+  'nav.callGraphHint': { en: 'Click a block to open it · drag to move · wheel to zoom · double-click to fit', ru: 'Щелчок по блоку — открыть · перетаскивание — перемещение · колесо — масштаб · двойной клик — вписать' },
   'nav.callGraphFull': { en: 'Full screen', ru: 'На весь экран' },
   'nav.callGraphExitFull': { en: 'Exit full screen (Esc)', ru: 'Свернуть (Esc)' },
   'nav.callGraphEmpty': { en: 'Agents appear here as they are called', ru: 'Агенты появятся здесь по мере вызова' },

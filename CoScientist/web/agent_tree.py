@@ -185,48 +185,133 @@ def call_graph_skeleton(run_settings: Settings, profile: str | None = None) -> d
         return _skeleton(config, path.stem)
 
 
-def _skeleton(config: SystemConfig, profile: str) -> dict[str, Any]:
-    slots: list[dict[str, Any]] = []
+# Blocks of the call-graph map: what a group of agents is called there.
+_BLOCK_TITLES: dict[str, str] = {
+    "__prep__": "Подготовка",
+    "OrchestratorAgent": "Оркестратор",
+    "RootOrchestrator": "Оркестратор",
+    "ExperimentModuleAgent": "Эксперимент",
+    "ModuleA_TZLiterature": "Литература",
+    "ModuleB_Design": "Дизайн молекулы",
+    "ModuleC_Optimization": "Оптимизация",
+    "ModuleC_Reactor": "Реактор",
+    "ModuleC_Experiment": "Эксперимент",
+    "ModuleC_Campaign": "Кампания",
+    "ToolPipelineAgent": "Подбор инструментов",
+    "PlannerAgent": "Планирование",
+    "HypothesesAgent": "Гипотезы",
+    "ResearchAgent": "Литература",
+    "TaskExecutorAgent": "Исполнитель",
+    "CoderAgent": "Разработчик",
+    "MedicalAgent": "Медицина",
+    "DatasetCollectorAgent": "Сбор данных",
+    "McpBuilderAgent": "Сборщик MCP",
+    "FedotAgent": "Конструктор МАС",
+    "ExperimentAgent": "Инструменты",
+    "MolDesignAgent": "Дизайн молекулы",
+    "EconomicsAgent": "Экономика",
+    "OptimizationAgent": "Оптимизация",
+    "ReactorAgent": "Реактор",
+    "ResultAggregatorAgent": "Итоговый отчёт",
+    "ReportAgent": "Итоговый отчёт",
+    "NirReportAgent": "Отчёт НИР",
+}
 
-    def add(name: str, parent: str | None, owner: str | None, kind: str) -> str:
+# Agents that frame the task: they open the run, in "Подготовка".
+_PREP_AGENTS = frozenset({"ContextInitAgent", "InitAgent", "TZSpecAgent"})
+
+
+def _skeleton(config: SystemConfig, profile: str) -> dict[str, Any]:
+    """Slots, and the blocks of the map they fall into.
+
+    Blocks: "Подготовка" (the stages before the coordinator, and the agents
+    that frame the task wherever they sit), the coordinator, one per branch
+    it can call (a module is one block — a group of its stages), the stages
+    after it, and one per agent that builds FEDOT.MAS systems, below the
+    block that calls it.
+    """
+    slots: list[dict[str, Any]] = []
+    blocks: list[dict[str, Any]] = []
+    state: dict[str, Any] = {"prep": None, "root_slot": None}
+
+    def new_block(kind: str, agent: str, *, module: str | None = None, parent: str | None = None) -> str:
+        block_id = f"b{len(blocks)}"
+        key = module or agent
+        title = _BLOCK_TITLES.get(key) or _CALL_GRAPH_TITLES.get(key, key).replace("Агент ", "").capitalize()
+        blocks.append({"id": block_id, "kind": kind, "agent": agent, "module": module,
+                       "parent": parent, "title": title, "head": None})
+        return block_id
+
+    def prep_block() -> str:
+        if state["prep"] is None:
+            state["prep"] = new_block("prep", "__prep__")
+            blocks[-1]["title"] = _BLOCK_TITLES["__prep__"]
+        return state["prep"]
+
+    def add(name: str, parent: str | None, owner: str | None, kind: str, block: str | None) -> str:
         slot_id = f"s{len(slots)}"
-        slots.append({"id": slot_id, "agent": name, "parent": parent, "owner": owner, "kind": kind})
+        slots.append({"id": slot_id, "agent": name, "parent": parent, "owner": owner, "kind": kind, "block": block})
+        for b in blocks:
+            if b["id"] == block and b["head"] is None:
+                b["head"] = slot_id
         return slot_id
 
     def expand(name: str, parent: str | None, owner: str | None, kind: str,
-               ancestors: tuple[str, ...]) -> list[str | None]:
+               ancestors: tuple[str, ...], block: str | None) -> list[str | None]:
         """Lay out ``name`` below ``parent``; return where a next step attaches."""
         try:
             agent = config.agent(name)
         except KeyError:
-            return [add(name, parent, owner, kind)]
+            return [add(name, parent, owner, kind, block)]
         if not agent.is_enabled():
             return [parent]
         if name in ancestors:
-            return [add(name, parent, owner, kind)]
+            return [add(name, parent, owner, kind, block)]
         path = (*ancestors, name)
         if agent.cls in ("sequential", "loop"):
             tails: list[str | None] = [parent]
             step_kind = kind
             for child in agent.children:
-                tails = expand(child, tails[-1], owner, step_kind, path) or tails
+                tails = expand(child, tails[-1], owner, step_kind, path, block) or tails
                 step_kind = "step"
             return tails
         if agent.cls == "parallel" or (agent.children and agent.cls != "llm" and agent.cls not in COMPOSITE_CLASSES):
             # Side by side: a parallel module runs them all, a router one.
-            tails = [t for child in agent.children for t in expand(child, parent, owner, kind, path)]
+            tails = [t for child in agent.children for t in expand(child, parent, owner, kind, path, block)]
             return tails or [parent]
-        slot = add(name, parent, owner, kind)
+        if name in _PREP_AGENTS:
+            block = prep_block()
+        elif "fedot" in agent.tools and block is not None:
+            block = new_block("mas_builder", name, parent=block)
+        is_root = owner is None and state["root_slot"] is None and any(
+            _enabled(config, sub) for sub in agent.subordinates)
+        if owner is None and block is None:
+            # A pipeline stage: before the coordinator it prepares the run,
+            # after it it is a block of its own.
+            block = (new_block("root", name) if is_root
+                     else prep_block() if state["root_slot"] is None
+                     else new_block("post", name))
+        slot = add(name, parent, owner, kind, block)
+        if is_root:
+            state["root_slot"] = slot
         # Its critic reviews it in place (not a YAML agent: it reports under
         # this name), drawn beside it — only while the critic is switched on.
         if agent.uses_critic():
-            add(str(agent.options.get("critic_agent_name") or "PlanCriticAgent"), slot, slot, "critic")
+            add(str(agent.options.get("critic_agent_name") or "PlanCriticAgent"), slot, slot, "critic", block)
         # An agent that already ran as a pipeline stage (the planner in
         # "plan first" mode) is not offered again as a call.
         stages_run = {s["agent"] for s in slots if s["owner"] is None}
         for sub in agent.subordinates:
-            if sub not in stages_run:
-                expand(sub, slot, slot, "call", path)
+            if sub in stages_run:
+                continue
+            if is_root:
+                # Each branch of the coordinator is a block; a module one
+                # block for all its stages.
+                composite = _is_composite(config, sub)
+                sub_block = new_block("branch", sub, module=sub if composite else None)
+            else:
+                sub_block = block
+            expand(sub, slot, slot, "call", path, sub_block)
         return [slot]
 
     stages = [n for n in config.pipeline.pre if config.agent(n).is_enabled()]
@@ -234,20 +319,50 @@ def _skeleton(config: SystemConfig, profile: str) -> dict[str, Any]:
     stages.extend(n for n in config.pipeline.post if config.agent(n).is_enabled())
     tail: str | None = None
     for index, stage in enumerate(stages):
-        tail = expand(stage, tail, None, "step" if index else "root", ())[-1]
-    # The coordinator: the pipeline slot whose calls fan out.
-    owners = {slot["owner"] for slot in slots if slot["kind"] != "critic"}
-    root_slot = next((slot["id"] for slot in slots if slot["owner"] is None and slot["id"] in owners), None)
+        tail = expand(stage, tail, None, "step" if index else "root", (), None)
+
+    # A group's size: a module's stages (its own children), the agents
+    # preparing the run.
+    root_slot = state["root_slot"]
+    kept = []
+    for b in blocks:
+        members = [s for s in slots if s["block"] == b["id"] and s["kind"] != "critic"]
+        if not members:
+            continue
+        if b["kind"] == "prep":
+            b.update(size=len(members), unit="agents")
+        elif b["module"]:
+            stages = [c for c in config.agent(b["module"]).children if _enabled(config, c)]
+            b.update(size=len(stages) or len(members), unit="stages")
+        kept.append(b)
     return {
         "profile": profile,
         "slots": slots,
         "rootSlot": root_slot,
+        "blocks": kept,
+        # For agents the coordinator runs that this config does not have.
+        "blockTitles": _BLOCK_TITLES,
         "composites": sorted(
             name for name, agent in config.agents.items()
             if agent.cls in COMPOSITE_CLASSES
             or (agent.children and agent.cls != "llm")
         ),
     }
+
+
+def _enabled(config: SystemConfig, name: str) -> bool:
+    try:
+        return config.agent(name).is_enabled()
+    except KeyError:
+        return False
+
+
+def _is_composite(config: SystemConfig, name: str) -> bool:
+    try:
+        agent = config.agent(name)
+    except KeyError:
+        return False
+    return agent.cls in COMPOSITE_CLASSES or bool(agent.children and agent.cls != "llm")
 
 
 def agent_run_events(execution: Mapping[str, Any]) -> list[dict[str, Any]]:
