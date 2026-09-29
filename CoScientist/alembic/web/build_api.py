@@ -140,7 +140,10 @@ async def api_start_build(payload: dict):
     if not repo_url:
         raise HTTPException(status_code=400, detail="repo_url is required")
     return JSONResponse(
-        await alembic_tools.build_mcp_server(repo_url, force_rebuild=force)
+        await alembic_tools.build_mcp_server(
+            repo_url, force_rebuild=force,
+            hints=payload.get("hints"), task_spec=payload.get("task_spec"),
+            max_tools=payload.get("max_tools"))
     )
 
 
@@ -188,6 +191,15 @@ def _start_background(key: str, name: str, fn, *args, **kwargs) -> None:
     task = asyncio.create_task(run())
     _action_tasks.add(task)  # a task nothing references can be garbage-collected mid-run
     task.add_done_callback(_action_tasks.discard)
+
+
+@router.post("/api/builds/{job_id}/resume")
+async def api_resume_build(job_id: str, stage: str = "coder"):
+    """Run a finished build again from ``stage`` in its own workdir. Declared
+    before the generic action route, which would otherwise take "resume"."""
+    _require_controls()
+    result = await asyncio.to_thread(alembic_tools.resume_build, job_id, stage)
+    return JSONResponse(result, status_code=202 if result.get("ok") else 409)
 
 
 @router.post("/api/builds/{job_id}/{action}")

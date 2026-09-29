@@ -96,7 +96,9 @@ explorer_agent = Agent(
     name="explorer",
     model=_model(),
     description="Clones a scientific GitHub repo and reports its functionality, environment needs, and proposed tools.",
-    instruction=_const(explorer_instruction),
+    # The tool count comes from ALEMBIC_MAX_TOOLS (config.explorer_tool_count_rule).
+    instruction=_const(explorer_instruction.replace(
+        "__TOOL_COUNT_RULE__", config.explorer_tool_count_rule())),
     tools=[clone_repo, read_file, bash, search, write_report],
 )
 
