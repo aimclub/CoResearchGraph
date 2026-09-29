@@ -104,6 +104,7 @@ def _score_map(entries: Any, *, cast: Callable[[Any], Any]) -> Dict[int, Any]:
 _RERANK_SHORTLIST_KEY = "reranker_candidates"
 _RERANK_SHORTLIST_SIZE = int(os.getenv("RERANK_SHORTLIST_SIZE", "8"))
 _SHORTLIST_SCORES_KEY = "shortlist_scores"
+_EXPLICIT_TARGET_KEY = "explicit_tool_target"
 
 
 def _first_text(content) -> str:
@@ -132,6 +133,9 @@ async def shortlist_reranker_tools(callback_context: CallbackContext) -> None:
     # Set first: the prompt reads this key, so it must be populated on every path.
     state[_RERANK_SHORTLIST_KEY] = acc
     state[_SHORTLIST_SCORES_KEY] = {}
+    task = _first_text(getattr(callback_context, "user_content", None)).strip()
+    target = re.search(r"\bTarget tool:\s*([A-Za-z_][A-Za-z_0-9]*)\b", task)
+    state[_EXPLICIT_TARGET_KEY] = target.group(1) if target else None
 
     # Scored even when the list is short enough to need no truncation: the scores
     # themselves are the point now, not just the ordering. Costs one extra call
@@ -140,7 +144,6 @@ async def shortlist_reranker_tools(callback_context: CallbackContext) -> None:
     if not acc:
         return None
 
-    task = _first_text(getattr(callback_context, "user_content", None)).strip()
     if not task:
         logger.info(
             "shortlist: no task text on this invocation — passing all %d tools", len(acc)
@@ -181,6 +184,11 @@ async def shortlist_reranker_tools(callback_context: CallbackContext) -> None:
         return None
 
     shortlist = [acc[i] for i, _ in ranked[:_RERANK_SHORTLIST_SIZE] if 0 <= i < len(acc)]
+    if target:
+        shortlist.extend(
+            item for item in acc
+            if item.get("tool") == target.group(1) and item not in shortlist
+        )
     if not shortlist:
         return None
 
@@ -387,6 +395,14 @@ def apply_tool_rerank_scores(
                 if (_tool_rank_key(t) - 1) in top_ids or (_tool_rank_key(t) + 1) in top_ids
             ]
         matched = bool(filtered_tools)
+    target = state.get(_EXPLICIT_TARGET_KEY)
+    if target:
+        pinned = next((item for item in acc_tools if item.get("tool") == target), None)
+        if pinned is None:
+            raise RuntimeError(f"Explicit target tool {target} was not retrieved")
+        if pinned not in filtered_tools:
+            filtered_tools.append(pinned)
+        matched = True
     # else (best < _ABSTAIN): ABSTAIN — leave filtered_tools empty so the
     # redirect guard on ExperimentAgent sends the task to CoderAgent instead of
     # running an unrelated tool. Only for a reason that actually judged them.

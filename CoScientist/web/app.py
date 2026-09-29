@@ -485,6 +485,11 @@ def _apply_frontend_settings(frontend: dict) -> None:
     if "mergeTasksEnabled" in planner:
         web.merge_tasks_enabled = bool(planner["mergeTasksEnabled"])
 
+    if "callGraphCollapseSeconds" in general:
+        val = int(general["callGraphCollapseSeconds"])
+        if 1 <= val <= 600:
+            web.call_graph_collapse_seconds = val
+
     research = frontend.get("researchAgent", {})
     if "maxSearches" in research:
         val = int(research["maxSearches"])
@@ -611,6 +616,7 @@ def _current_settings() -> dict:
             "autoNamingEnabled": web.auto_naming_enabled,
             # Read-only here: the browser stores its own choice over this default.
             "showInternal": web.show_internal_enabled,
+            "callGraphCollapseSeconds": web.call_graph_collapse_seconds,
             "coscientistUsername": web.coscientist_username or "",
             "contextInitEnabled": settings.context_init.enabled,
             "knowledgeGraphEnabled": web.knowledge_graph_enabled,
@@ -1391,13 +1397,24 @@ def _wire_tool_activity(runtime: WebRuntime) -> None:
     """
     from CoScientist.logging.tool_activity import set_tool_activity_sink
 
+    def is_delegation_record(event: dict[str, Any]) -> bool:
+        """A hand-off between agents, or the start of the run it spawned.
+
+        These few records are what the side-nav call graph is drawn from, so
+        they outlive the trim and the process, unlike the bulk of tool calls.
+        """
+        return bool(event.get("is_delegation")) or (
+            event.get("phase") == "agent_start" and bool(event.get("spawn_call_id"))
+        )
+
     def trim(events: list[dict[str, Any]]) -> None:
-        """Bound replay history: drop the oldest tool records, keep the chat."""
+        """Bound replay history: drop the oldest tool records, keep the chat
+        and the delegations."""
         if len(events) <= MAX_TOOL_ACTIVITY_EVENTS + TOOL_ACTIVITY_TRIM_SLACK:
             return
         indexes = [
             index for index, event in enumerate(events)
-            if event.get("type") == "tool_activity"
+            if event.get("type") == "tool_activity" and not is_delegation_record(event)
         ]
         excess = len(indexes) - MAX_TOOL_ACTIVITY_EVENTS
         if excess <= 0:
@@ -1433,9 +1450,11 @@ def _wire_tool_activity(runtime: WebRuntime) -> None:
             return
         event = {"type": "tool_activity", **_json_safe(payload)}
         stash_full_values(key, event)
-        events = runtime.agent_events[key]
-        events.append(event)
-        trim(events)
+        if is_delegation_record(event):
+            runtime.record_event(key, event)
+        else:
+            runtime.agent_events[key].append(event)
+        trim(runtime.agent_events[key])
         await runtime.send(key, event)
 
     set_tool_activity_sink(deliver)
@@ -3431,6 +3450,7 @@ def create_app() -> FastAPI:
     async def get_agents():
         """Return list of registered agents and system hierarchy."""
         from CoScientist.assembly.schema import get_config
+        from CoScientist.web.agent_tree import agent_structure, call_graph_titles
         cfg = get_config()
         hierarchy = cfg.agent_hierarchy_map()
         internal_names = cfg.internal_agent_names()
@@ -3455,6 +3475,8 @@ def create_app() -> FastAPI:
             "delegatable_names": list(cfg.delegatable_names()),
             "pipeline_stages": cfg.linear_stages(),
             "internal_agents": sorted(internal_names),
+            "titles": call_graph_titles(),
+            **agent_structure(),
         })
 
     @app.post("/api/fedot-debug-run")
@@ -3503,6 +3525,42 @@ def create_app() -> FastAPI:
             except Exception:  # noqa: BLE001
                 events = []
         return JSONResponse({"events": events[-100:]})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/call-graph")
+    async def get_call_graph_skeleton(user_id: str, session_id: str):
+        """Where each agent can run in this session, for the side-nav graph."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.graph.memory import get_knowledge_graph
+        from CoScientist.web.agent_tree import call_graph_skeleton, session_agent_names, session_profile
+        events = runtime.agent_events.get(key) or []
+        if not events:
+            try:
+                from CoScientist.web.session_store import load_events
+                events = load_events(user_id, session_id)
+            except Exception:  # noqa: BLE001
+                events = []
+        # Each profile has agents of its own: draw the one this session ran.
+        execution = get_knowledge_graph(user_id=user_id, session_id=session_id).full()
+        profile = session_profile(session_agent_names(events, execution))
+        return JSONResponse(call_graph_skeleton(snapshot, profile), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agent-runs")
+    async def get_agent_runs(user_id: str, session_id: str):
+        """The session's agent runs from its execution graph, for the call
+        graph of a session whose transcript predates agent-run records."""
+        try:
+            runtime.registry.require_session(user_id, session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.graph.memory import get_knowledge_graph
+        from CoScientist.web.agent_tree import agent_run_events
+        execution = get_knowledge_graph(user_id=user_id, session_id=session_id).full()
+        return JSONResponse({"events": agent_run_events(execution)})
 
     # --- Usage and cost ---
     @app.get("/api/users/{user_id}/sessions/{session_id}/metrics")

@@ -456,6 +456,9 @@ class WebSettings(BaseModel):
     # Default of the per-browser "Show internal agents and tools" switch. A
     # browser that flipped the switch keeps its own choice.
     show_internal_enabled: bool = _os.getenv("SHOW_INTERNAL__ENABLED", "false").lower() in ("true", "1", "yes")
+    # Side-nav call graph: how long a group of parallel calls stays unfolded
+    # after a click before it folds back.
+    call_graph_collapse_seconds: int = int(_os.getenv("CALL_GRAPH__COLLAPSE_SECONDS", "10"))
     coscientist_username: _Optional[str] = _os.getenv("COSCIENTIST_USERNAME") or _os.getenv("DEFAULT_USERNAME")
     context_init_enabled: bool = _os.getenv("RESEARCH_FRAME", "true").lower() in ("true", "1", "yes")
     session_snapshots_dir: str = _os.getenv("SESSION_SNAPSHOTS_DIR", "session_snapshots")
@@ -590,6 +593,35 @@ class ExperimentsSettings(BaseModel):
     plan_review_timeout_s: float = Field(default=300.0, gt=0)
     result_review_timeout_s: float = Field(default=300.0, gt=0)
     complexity_warning_tasks: int = Field(default=6, ge=1, le=8)
+# CHECKPOINTS
+# =========================
+class CheckpointSettings(BaseModel):
+    """Run-state snapshots at module boundaries (checkpoints/ package).
+
+    OFF by default: enabling adds the CheckpointPlugin to every runner and a
+    /api/checkpoints router to the A2A/web apps. Override via
+    CHECKPOINTS__ENABLED / CHECKPOINTS__DIR. Management API additionally requires
+    CHECKPOINTS__API_TOKEN; capture itself remains available without a token.
+    """
+
+    enabled: bool = False
+    dir: str = "./checkpoints_data"
+    api_token: Optional[SecretStr] = Field(default=None, min_length=32)
+
+
+# =========================
+# SYNAPSE v1 ADAPTER
+# =========================
+class SynapseSettings(BaseModel):
+    """Synapse platform v1 contract bridge (checkpoints/synapse.py)."""
+
+    enabled: bool = False
+    callback_url: Optional[str] = None
+    bundle_base_url: Optional[str] = None
+    otlp_endpoint: Optional[str] = None
+
+
+# =========================
 # CHECKPOINTS
 # =========================
 class CheckpointSettings(BaseModel):

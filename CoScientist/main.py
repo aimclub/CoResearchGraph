@@ -276,13 +276,17 @@ class CoScientistManager:
                 # After it: a PDF already mirrored is re-filed as a paper
                 # here instead of being fetched again.
                 PaperCapturePlugin(),
-                # Keep truncation last so observers receive full results.
+                # Truncation answers None now, so it no longer decides
+                # whether anything after it runs; it cuts for the model at
+                # before_model and keeps only a safety net here.
                 ToolResultTruncationPlugin(),
             ]
+            # Synapse run-state snapshots (checkpoints/ package), opt-in and
+            # independent of the stage checkpoints above.
             if get_settings().checkpoints.enabled:
-                from CoScientist.checkpoints import CheckpointPlugin as SnapshotCheckpointPlugin
+                from CoScientist.checkpoints import CheckpointPlugin as SnapshotPlugin
 
-                plugins.insert(0, SnapshotCheckpointPlugin())
+                plugins.insert(0, SnapshotPlugin())
 
             app = App(
                 name=self.app_name,

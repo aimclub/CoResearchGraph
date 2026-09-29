@@ -359,7 +359,20 @@
         populateUserSelectors();
         const savedUserId = localStorage.getItem(USER_STORAGE_KEY);
         let savedUser = knownUsers.find(item => item.id === savedUserId);
-        if (data.defaultUsername) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlSessionId = urlParams.get('session_id');
+
+        const navEntry = (typeof performance !== 'undefined' && performance.getEntriesByType)
+          ? performance.getEntriesByType('navigation')[0]
+          : null;
+        const isReload = navEntry
+          ? navEntry.type === 'reload'
+          : (typeof performance !== 'undefined' && performance.navigation && performance.navigation.type === 1);
+
+        const preferredSessionId = urlSessionId || (isReload ? localStorage.getItem(SESSION_STORAGE_KEY) : null);
+        // A reload (or a session link) keeps the user it was on: imported and
+        // restored sessions belong to ITMO_DEV, not to the env default user.
+        if (data.defaultUsername && !(savedUser && preferredSessionId)) {
           const envNick = data.defaultUsername.trim().toLowerCase();
           const envUser = knownUsers.find(item => item.nickname && item.nickname.trim().toLowerCase() === envNick);
           if (envUser) {
@@ -378,17 +391,6 @@
           openIdentityModal();
           return;
         }
-        const urlParams = new URLSearchParams(window.location.search);
-        const urlSessionId = urlParams.get('session_id');
-
-        const navEntry = (typeof performance !== 'undefined' && performance.getEntriesByType)
-          ? performance.getEntriesByType('navigation')[0]
-          : null;
-        const isReload = navEntry
-          ? navEntry.type === 'reload'
-          : (typeof performance !== 'undefined' && performance.navigation && performance.navigation.type === 1);
-
-        const preferredSessionId = urlSessionId || (isReload ? localStorage.getItem(SESSION_STORAGE_KEY) : null);
         const startFresh = !preferredSessionId;
 
         await ensureUserSession(
@@ -517,6 +519,7 @@
           addUserMsg(message.message, message.timestamp);
         } else if (message.type === 'agent_event') {
           activityTouchAgent(message.author, message.timestamp);
+          CallGraph.feedAgentEvent(message);
           if (hasText(message.content) && !isChatNoise(message)) {
             addAgentMsg(message.author || 'system', message.content, message.timestamp, message);
             const foundUrl = extractSandboxUrlFromText(message.content);
@@ -559,6 +562,7 @@
       renderEventCount();
 
       applyRunStatus(snapshot.status, snapshot.run_status_version);
+      CallGraph.loadSession(activeUser && activeUser.id, activeSession && activeSession.id);
       if (typeof RunTimer !== 'undefined') {
         RunTimer.restoreFromSnapshot(snapshot);
       }

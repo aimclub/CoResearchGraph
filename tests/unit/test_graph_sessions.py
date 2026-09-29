@@ -157,6 +157,23 @@ def test_research_graphs_are_isolated_by_session(tmp_path, monkeypatch):
     )
 
 
+def test_public_a2a_context_suffix_cannot_select_another_graph(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        research_store, "_default_dir", lambda: str(tmp_path / "research")
+    )
+    context_id = f"public-{uuid4().hex}"
+    first = research_store.get_research_graph(
+        user_id=f"A2A_USER_{context_id}", session_id=context_id
+    )
+    assert first.init_research(source="OrchestratorAgent", question="private Q1")["ok"]
+
+    colliding_id = context_id + "."
+    second = research_store.get_research_graph(
+        user_id=f"A2A_USER_{colliding_id}", session_id=colliding_id
+    )
+    assert second.is_empty()
+
+
 
 
 

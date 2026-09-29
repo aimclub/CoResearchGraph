@@ -15,6 +15,11 @@ const i18n = {
   'nav.noUser': { en: 'No user selected', ru: 'Пользователь не выбран' },
   'nav.connected': { en: 'Connected', ru: 'Подключено' },
   'nav.disconnected': { en: 'Disconnected', ru: 'Отключено' },
+  'nav.callGraph': { en: 'Call graph', ru: 'Граф вызовов' },
+  'nav.callGraphHint': { en: 'Click a block to open it · drag to move · wheel to zoom · double-click to fit', ru: 'Щелчок по блоку — открыть · перетаскивание — перемещение · колесо — масштаб · двойной клик — вписать' },
+  'nav.callGraphFull': { en: 'Full screen', ru: 'На весь экран' },
+  'nav.callGraphExitFull': { en: 'Exit full screen (Esc)', ru: 'Свернуть (Esc)' },
+  'nav.callGraphEmpty': { en: 'Agents appear here as they are called', ru: 'Агенты появятся здесь по мере вызова' },
   'nav.orchestrator': { en: 'Orchestrator', ru: 'Оркестратор' },
   'rail.resize': {
     en: 'Drag to resize · double-click to reset',
@@ -570,6 +575,12 @@ const i18n = {
   },
   'settings.f.font.default': { en: 'default', ru: 'по умолчанию' },
   'settings.f.font.system': { en: 'System font', ru: 'Системный шрифт' },
+  'settings.f.callGraphCollapse.label': { en: 'Fold parallel calls back after, s', ru: 'Сворачивать параллельные вызовы через, с' },
+  'settings.f.callGraphCollapse.desc': {
+    en: 'In the call graph, identical agents run in parallel are drawn as one stack. A click unfolds it; after this many seconds it folds back.',
+    ru: 'На графе вызовов одинаковые агенты, работавшие параллельно, собраны в стопку. Щелчок раскрывает её, через столько секунд она сворачивается обратно.'
+  },
+  'settings.f.callGraphCollapse.envValues': { en: '1–600 (integer seconds).', ru: '1–600 (целое, секунды).' },
   'settings.f.showInternal.label': { en: 'Show internal agents and tools', ru: 'Показывать служебных агентов и инструменты' },
   'settings.f.showInternal.desc': {
     en: 'Pipeline stages, wrappers and system tools (marked internal in the system config) appear in the activity rail, the trace tree and Work Order cards. Useful for debugging.',

@@ -74,8 +74,12 @@ if _tracer is not None:
             _ag.before_tool_callback.insert(0, _ag.before_tool_callback.pop())
 
 
-def config_for_mode():
+def config_for_mode(base=None):
     """Return a fresh, mode-adjusted config without constructing any agents.
+
+    ``base`` is the config to adjust — by default the process's own profile;
+    the web call graph passes another profile's to draw a session recorded
+    under it.
 
     Reads ``settings.web.start_mode``:
       * ``"init"`` / ``"planner"`` — PlanningPipelineAgent is root (sequential: PlannerAgent →
@@ -90,7 +94,7 @@ def config_for_mode():
     """
     from CoScientist.config import get_settings
     start_mode = get_settings().web.start_mode
-    raw_config = load_config()
+    raw_config = load_config() if base is None else base
     patched = copy.deepcopy(raw_config)
 
     if start_mode in ("init", "planner"):

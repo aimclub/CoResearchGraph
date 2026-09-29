@@ -228,6 +228,109 @@ def _extract_structured_payload(
     return payload
 
 
+def _maybe_apply_tool_rerank(callback_context: CallbackContext, payload: Any) -> None:
+    """Fold ToolReranker score apply into sanitize (avoids a separate after_model cb).
+
+    ``collect_reranked_tools`` (after_agent) remains the fallback when scores only
+    land in ``output_key`` state. Lazy import avoids a cycle with tool_callbacks.
+    """
+    if not isinstance(payload, dict) or payload.get("tools") is None:
+        return
+    try:
+        from CoScientist.agents.callbacks.tool_callbacks import (
+            _TOOL_RERANK_APPLIED_KEY,
+            _score_items_from_reranked_state,
+            apply_tool_rerank_scores,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    state = callback_context.state
+    if state.get(_TOOL_RERANK_APPLIED_KEY):
+        return
+    items = _score_items_from_reranked_state(payload)
+    if not items:
+        return
+    apply_tool_rerank_scores(state, items)
+    logger.info(
+        "[%s] applied tool rerank during sanitize (%d scores)",
+        getattr(callback_context, "agent_name", "?"),
+        len(items),
+    )
+
+@dataclass(frozen=True)
+class StructuredAnswer:
+    """How one schema-constrained agent's answer is repaired.
+
+    schema      pydantic model the payload is validated against (and dumped
+                through) when an ADK callback context is present
+    fallback    ``state -> payload``: a conservative schema-valid answer for
+                when the model's text cannot be parsed or fails the schema
+    normalize   ``payload -> payload``: fix-ups applied before validation
+    contextless the answer for unparseable text when no callback context is
+                given (older direct callers)
+    """
+    schema: Optional[type] = None
+    fallback: Optional[Callable[[Mapping[str, Any]], Optional[dict]]] = None
+    normalize: Optional[Callable[[Any], Any]] = None
+    contextless: Optional[dict] = None
+
+
+# agent name -> StructuredAnswer. Profiles register their own agents (e.g.
+# CoScientist/microfluidics/json_answers.py); an agent with no entry gets the
+# generic extraction only.
+_STRUCTURED_ANSWERS: dict[str, StructuredAnswer] = {}
+
+
+def register_structured_answer(agent_name: str, **spec: Any) -> None:
+    """Register how ``agent_name``'s JSON answer is normalized / validated."""
+    _STRUCTURED_ANSWERS[agent_name] = StructuredAnswer(**spec)
+
+
+def _fallback_payload(agent_name: str, callback_context: Any) -> Optional[dict[str, Any]]:
+    """Build a conservative schema-valid result when the model fails."""
+    spec = _STRUCTURED_ANSWERS.get(agent_name)
+    if spec is None or spec.fallback is None:
+        return None
+    state = getattr(callback_context, "state", {}) or {}
+    return spec.fallback(state)
+
+
+def _extract_structured_payload(
+    text: str, agent_name: str = "", callback_context: Any = None,
+) -> Optional[Any]:
+    """Extract JSON, with a conservative YAML fallback for schema answers."""
+    payload = _extract_json(text)
+    if payload is None:
+        try:
+            payload = yaml.safe_load(text)
+        except yaml.YAMLError:
+            payload = None
+        if not isinstance(payload, (dict, list)):
+            payload = None
+    if payload is None and callback_context is not None and hasattr(callback_context, "state"):
+        fallback = _fallback_payload(agent_name, callback_context)
+        if fallback is not None:
+            logger.warning("[%s] non-JSON response; using safe fallback", agent_name)
+            return fallback
+    spec = _STRUCTURED_ANSWERS.get(agent_name)
+    if payload is None:
+        # Callers that give no ADK callback context get the agent's plain default.
+        return dict(spec.contextless) if spec and spec.contextless is not None else None
+    if spec is None:
+        return payload
+    if spec.normalize is not None:
+        payload = spec.normalize(payload)
+    if spec.schema is not None and callback_context is not None and hasattr(callback_context, "state"):
+        try:
+            payload = spec.schema.model_validate(payload).model_dump()
+        except Exception:  # noqa: BLE001
+            fallback = _fallback_payload(agent_name, callback_context)
+            if fallback is not None:
+                logger.warning("[%s] invalid JSON shape; using safe fallback", agent_name)
+                payload = fallback
+    return payload
+
+
 def sanitize_json_output(
     callback_context: CallbackContext, llm_response: LlmResponse
 ) -> Optional[LlmResponse]:

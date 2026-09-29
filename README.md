@@ -401,6 +401,18 @@ tool name is also keyed in several other tables (Work Order risk tiers,
 - `openchemie` - Chemical structure recognition
 - `boto3` - AWS S3 integration
 
+### A2A research graph scope
+
+`python -m CoScientist.a2a.run_all` keeps the orchestrator and its A2A
+sub-agents in one process. Internal delegations carry a signed graph scope so
+that hypotheses written by a remote sub-agent are visible to the orchestrator
+and the next delegate. Public A2A requests cannot set that scope. If A2A
+services are started as separate processes, configure the same private
+`COSCIENTIST_A2A_GRAPH_SCOPE_SECRET` on each service; the current JSON graph
+store remains single-process/single-writer, so use `run_all` for a shared
+research graph until a transactional shared store is available. Keep the
+internal A2A transport private: signed scope headers are bearer credentials.
+
 ## TODO
 
 - Add SQLite-backed persistence for registered web users and their sessions.

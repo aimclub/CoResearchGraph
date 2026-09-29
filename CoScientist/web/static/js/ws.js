@@ -71,6 +71,8 @@
             break;
           case 'agent_configuration':
             if (typeof loadSettings === 'function') loadSettings();
+            // The set of agents changed: so did the places they can run in.
+            if (activeUser && activeSession) CallGraph.loadSkeleton(activeUser.id, activeSession.id);
             addTelemetry('AGENTS :: configuration revision ' + data.desiredRevision);
             break;
           case 'status':
@@ -88,6 +90,7 @@
             break;
           case 'agent_event':
             activityTouchAgent(data.author, data.timestamp);
+            CallGraph.feedAgentEvent(data);
             if (isPostPlanAgent(data.author)) releasePlanGate();
             if (hasText(data.content) && isChatNoise(data)) {
               addTelemetry('NOTE :: ' + data.author + ' :: ' + stripThinking(data.content).slice(0, 200));

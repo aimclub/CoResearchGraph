@@ -253,6 +253,7 @@
             { id: 'accent', type: 'accent', scope: 'browser' },
             { id: 'font', type: 'font', scope: 'browser' },
             { id: 'showInternal', type: 'browserToggle', scope: 'browser', env: 'SHOW_INTERNAL__ENABLED' },
+            { id: 'callGraphCollapse', path: 'general.callGraphCollapseSeconds', type: 'number', min: 1, max: 600, scope: 'instant', env: 'CALL_GRAPH__COLLAPSE_SECONDS' },
           ],
         }],
       },

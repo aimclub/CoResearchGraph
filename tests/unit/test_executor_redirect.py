@@ -4,6 +4,7 @@ When the Executor's tool-prep pipeline finds no tool that actually matches the
 task, it must ABSTAIN and recommend CoderAgent — not run a nearest-but-wrong
 tool (the "train a GAN for a 'train a transformer' task" failure).
 """
+import asyncio
 from types import SimpleNamespace
 
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ from CoScientist.agents.callbacks import (  # noqa: E402
 from CoScientist.agents.callbacks.tool_callbacks import (  # noqa: E402
     NO_MATCHING_TOOL_TOKEN,
     TOOL_MATCH_STATE_KEY,
+    shortlist_reranker_tools,
 )
 
 
@@ -59,6 +61,38 @@ def test_real_match_proceeds_without_redirect():
     assert state[TOOL_MATCH_STATE_KEY]["matched"] is True
     assert state["filtered_tools"]
     assert redirect_when_no_tools(_ctx(state)) is None
+
+
+def test_explicit_target_survives_shortlist_and_low_reranker_score(monkeypatch):
+    from CoScientist.agents.callbacks import tool_callbacks
+
+    monkeypatch.setattr(tool_callbacks, "_RERANK_SHORTLIST_SIZE", 1)
+
+    async def ranked(self, task, documents, top_k):
+        return [(0, 0.9), (1, 0.01)]
+
+    monkeypatch.setattr("rag_tools.retrieval.APIReranker.rerank_with_scores", ranked)
+    state = {
+        "accumulated_tools": [
+            {"tool_index": 0, "tool": "dataset_overview_heracleum_tox"},
+            {"tool_index": 1, "tool": "predict_molecule_profile"},
+        ],
+        "reranked_tools": {"tools": [{"index": 0, "score": 0.9}, {"index": 1, "score": 0.01}]},
+    }
+    context = SimpleNamespace(
+        state=state,
+        user_content=types.Content(parts=[types.Part(text=(
+            "Target tool: predict_molecule_profile. name_or_smiles=xanthotoxin"
+        ))]),
+    )
+    asyncio.run(shortlist_reranker_tools(context))
+    assert [item["tool"] for item in state["reranker_candidates"]] == [
+        "dataset_overview_heracleum_tox", "predict_molecule_profile"
+    ]
+    after_tool_reranker_agent(context)
+    assert [item["tool"] for item in state["filtered_tools"]] == [
+        "dataset_overview_heracleum_tox", "predict_molecule_profile"
+    ]
 
 
 def test_marginal_scores_salvage_top2_and_proceed():

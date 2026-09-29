@@ -22,6 +22,7 @@ const NICK_STORAGE_KEY = 'coscientist.nickname';
 const BOOT_STORAGE_KEY = 'coscientist.server_boot_id';
 let serverBootId = null;
 const SIDE_NAV_KEY = 'coscientist.side_nav';
+const SIDE_NAV_WIDTH_KEY = 'coscientist.side_nav_width';
 const RIGHT_PANEL_KEY = 'coscientist.right_panel';
 const LANG_STORAGE_KEY = 'coscientist.lang';
 const SHOW_INTERNAL_KEY = 'coscientist.show_internal';
@@ -61,6 +62,7 @@ const appSettings = {
     opikEnabled: false,
     autoNamingEnabled: true,
     showInternal: false,               // default only: SHOW_INTERNAL__ENABLED; the browser's choice wins
+    callGraphCollapseSeconds: 10,      // side-nav call graph: unfolded parallel calls fold back after this
     contextInitEnabled: true,
     knowledgeGraphEnabled: true,
     autoClearGraphEnabled: false,      // read-only: GRAPH__AUTO_CLEAR in .env

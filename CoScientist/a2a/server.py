@@ -11,12 +11,12 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from fastapi import FastAPI
-from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.sessions import InMemorySessionService
 
 from CoScientist.assembly.schema import AgentConfig
+from CoScientist.a2a.graph_scope import GraphScopeA2aAgentExecutor
 from CoScientist.checkpoints.runner import CheckpointRunner as Runner
 
 
@@ -157,11 +157,13 @@ def make_a2a_app(
         artifact_service=InMemoryArtifactService(),
         # ArtifactGatePlugin first: refuse training on a fabricated dataset here
         # too, so an agent served over A2A is held to the same standard as the
-        # in-process runner. Truncation MUST stay last (ADK early-exits on the
-        # first non-None after_tool).
+        # in-process runner. Truncation used to have to stay last, because ADK
+        # early-exits on the first non-None after_tool and it answered with the
+        # cut result — which silently skipped every agent's own after_tool
+        # chain. It answers None now and cuts at before_model instead.
         plugins=plugins,
     )
-    executor = A2aAgentExecutor(runner=runner)
+    executor = GraphScopeA2aAgentExecutor(runner=runner)
     task_store = InMemoryTaskStore()
     handler = DefaultRequestHandler(
         agent_executor=executor,
