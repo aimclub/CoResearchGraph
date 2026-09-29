@@ -1,0 +1,10 @@
+MCP server: http://localhost:26963/mcp
+tools: 4
+  - calc_descriptors(smiles, ignore_3D) — valid JSON Schema
+  - calc_descriptors_pandas(smiles_list, ignore_3D) — valid JSON Schema
+  - run_mordred_cli(args) — valid JSON Schema
+  - run_mordred_tests(extra_args, timeout) — valid JSON Schema
+tool schemas valid: 4/4
+
+call calc_descriptors({"smiles": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"}):
+{"smiles":"CN1C=NC2=C1C(=O)N(C(=O)N2C)C","ignore_3D":true,"num_descriptors":1613,"descriptor_names":["ABC","ABCGG","nAcid","nBase","SpAbs_A","SpMax_A","SpDiam_A","SpAD_A","SpMAD_A","LogEE_A","VE1_A","VE2_A","VE3_A","VR1_A","VR2_A","VR3_A","nAromAtom","nAromBond","nAtom","nHeavyAtom","nSpiro","nBridgehead","nHetero","nH","nB","nC","nN","nO","nS","nP","nF","nCl","nBr","nI","nX","ATS0dv","ATS1dv","ATS2dv","ATS3dv","ATS4dv","ATS5dv","ATS6dv","ATS7dv","ATS8dv","ATS0d","ATS1d","ATS2d","ATS3d","ATS4d",

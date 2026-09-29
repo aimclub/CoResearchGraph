@@ -1,0 +1,567 @@
+/home/stas/Documents/GitHub/CoScientist/.venv/lib/python3.12/site-packages/google/adk/features/_feature_decorator.py:72: UserWarning: [EXPERIMENTAL] feature FeatureName.PLUGGABLE_AUTH is enabled.
+  check_feature_enabled()
+2026-09-09 17:27:35 pop-os metapub.config[2593978] WARNING NCBI_API_KEY was not set.
+/home/stas/Documents/GitHub/CoScientist/CoScientist/main.py:53: UserWarning: [EXPERIMENTAL] EventsCompactionConfig: This feature is experimental and may change or be removed in future versions without notice. It may introduce breaking changes at any time.
+  return EventsCompactionConfig(
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'event_logger' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_activity' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'agent_output' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'usage_metrics' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'graph_memory' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'background_validator' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'mcp_artifact_capture' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_truncation' registered.
+CoScientist (ADK) initialized — type 'exit' to quit.
+(The web UI is also available: python -m CoScientist web)
+
+Enter query (or 'exit'): [1m[36m🧑 USER ► Задача на исполнение, веб-поиск не используй. Шаг 1: вызови McpBuilderAgent и потребуй, чтобы он вызвал инструмент build_mcp_server с repo_url=https://github.com/whitead/synspace и force_rebuild=false и вернул поле mcp_url. Полную пересборку не запускать. Шаг 2: на этом сервере вызови инструмент chemical_space, чтобы построить локальное синтетическое химическое пространство вокруг аспирина: mol="CC(=O)Oc1ccccc1C(=O)O", steps=[1,1], nblocks=5, num_samples=10. Верни адрес сервера, имя инструмента, число полученных аналогов и таблицу: SMILES аналога, название реакции, схожесть.[0m
+/home/stas/Documents/GitHub/CoScientist/.venv/lib/python3.12/site-packages/google/adk/tools/function_tool.py:95: UserWarning: [EXPERIMENTAL] feature FeatureName.JSON_SCHEMA_FOR_FUNC_DECL is enabled.
+  build_function_declaration(
+[Event] OrchestratorAgent | Event | Final=True
+[92m17:27:36 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[OrchestratorAgent] 🔧 [1mMcpBuilderAgent[0m[33m({"request": "Build an MCP server from the repository https://github.com/whitead/synspace with force_rebuild=false. Return the mcp_url of the deployed server. Do not perform a full rebuild."})[0m
+[Event] OrchestratorAgent | Event | Final=False
+[36m[OrchestratorAgent] ▶ tool [1mMcpBuilderAgent[0m[36m {"request": "Build an MCP server from the repository https://github.com/whitead/synspace with force_rebuild=false. Return the mcp_url of the deployed server. Do not perform a full rebuild."}[0m
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'event_logger' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_activity' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'agent_output' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'usage_metrics' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'graph_memory' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'background_validator' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'mcp_artifact_capture' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_truncation' registered.
+[92m17:27:42 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[McpBuilderAgent] 🗎 I'll help you build an MCP server from the synspace repository. First, I'll check if there's already an existing build for this repository to avoid unnecessary rebuilding.
+
+[0m
+[33m[McpBuilderAgent] 🔧 [1mlist_mcp_builds[0m[33m({})[0m
+[36m[McpBuilderAgent] ▶ tool [1mlist_mcp_builds[0m[36m {}[0m
+[2m[McpBuilderAgent] ◀ list_mcp_builds → {"builds": []}[0m
+[92m17:27:48 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[McpBuilderAgent] 🗎 I see that there are no existing builds for this repository. I'll now start the build process for the synspace repository with force_rebuild=false.
+
+
+[0m
+[33m[McpBuilderAgent] 🔧 [1mbuild_mcp_server[0m[33m({"repo_url": "https://github.com/whitead/synspace", "force_rebuild": false})[0m
+[36m[McpBuilderAgent] ▶ tool [1mbuild_mcp_server[0m[36m {"repo_url": "https://github.com/whitead/synspace", "force_rebuild": false}[0m
+[2m[McpBuilderAgent] ◀ build_mcp_server → {"job_id": "synspace-d357b1", "repo_url": "https://github.com/whitead/synspace", "status": "done", "elapsed_seconds": 0, "progress_page": "/builds/synspace-d357b1", "mcp_url": "http://localhost:26836/mcp", "image": "alembic-tool:synspace", "container": "alembic-serve-synspace-d357b1", "note": "Found an already-running MCP server for this repository on this host (Docker container alembic-serve-synspace-d357b1), built outside this tool — reusing it instead of rebuilding. Pass force_rebuild=true to …[0m
+[92m17:27:54 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[McpBuilderAgent] 🗎 I've found an already-running MCP server for the synspace repository that was built previously on this host. The build has been reused instead of creating a new one, as requested with force_rebuild=false.
+
+Here is the information about the deployed server:
+
+- **mcp_url**: http://localhost:26836/mcp
+- **image**: alembic-tool:synspace
+- **container**: alembic-serve-synspace-d357b1
+
+Note: The server is running on a loopback address (localhost), which means it's accessible on this host but not published to the shared MCP catalogue. This is because the server would be unreachable for others using the loopback address. To publish it externally, you would need to set A2A_HOST in the .env file to an …[0m
+INFO:google_adk.google.adk.runners:Closing runner...
+[92m17:28:01 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:google_adk.google.adk.runners:Runner closed.
+[2m[OrchestratorAgent] ◀ McpBuilderAgent → I've found an already-running MCP server for the synspace repository that was built previously on this host. The build has been reused instead of creating a new one, as requested with force_rebuild=false.
+
+Here is the information about the deployed server:
+
+- **mcp_url**: http://localhost:26836/mcp
+- **image**: alembic-tool:synspace
+- **container**: alembic-serve-synspace-d357b1
+
+Note: The server is running on a loopback address (localhost), which means it's accessible on this host but not publi …[0m
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[Event] OrchestratorAgent | Event | Final=False
+[92m17:28:01 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[OrchestratorAgent] 🔧 [1mTaskExecutorAgent[0m[33m({"request": "Using the MCP server at http://localhost:26836/mcp, call the tool 'chemical_space' to generate a local synthetic chemical space around aspirin. Parameters: mol=\"CC(=O)Oc1ccccc1C(=O)O\", steps=[1,1], nblocks=5, num_samples=10. Return the mcp_url, tool name, number of generated analogs, and a table with columns: SMILES of analog, reaction name, similarity."})[0m
+[Event] OrchestratorAgent | Event | Final=False
+[36m[OrchestratorAgent] ▶ tool [1mTaskExecutorAgent[0m[36m {"request": "Using the MCP server at http://localhost:26836/mcp, call the tool 'chemical_space' to generate a local synthetic chemical space around aspirin. Parameters: mol=\"CC(=O)Oc1ccccc1C(=O)O\", steps=[1,1], nblocks=5, num_samples=10. Return the mcp_url, tool name, number of generated analogs, and a table with columns: SMILES of analog, reaction name, similarity."}[0m
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'event_logger' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_activity' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'agent_output' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'usage_metrics' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'graph_memory' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'background_validator' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'mcp_artifact_capture' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_truncation' registered.
+[92m17:28:07 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[TaskExecutorAgent] 🔧 [1mToolPipelineAgent[0m[33m({"request": "Using the MCP server at http://localhost:26836/mcp, call the tool 'chemical_space' to generate a local synthetic chemical space around aspirin. Parameters: mol=\"CC(=O)Oc1ccccc1C(=O)O\", steps=[1,1], nblocks=5, num_samples=10. Return the mcp_url, tool name, number of generated analogs, and a table with columns: SMILES of analog, reaction name, similarity."})[0m
+[36m[TaskExecutorAgent] ▶ tool [1mToolPipelineAgent[0m[36m {"request": "Using the MCP server at http://localhost:26836/mcp, call the tool 'chemical_space' to generate a local synthetic chemical space around aspirin. Parameters: mol=\"CC(=O)Oc1ccccc1C(=O)O\", steps=[1,1], nblocks=5, num_samples=10. Return the mcp_url, tool name, number of generated analogs, and a table with columns: SMILES of analog, reaction name, similarity."}[0m
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'event_logger' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_activity' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'agent_output' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'usage_metrics' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'graph_memory' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'background_validator' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'mcp_artifact_capture' registered.
+INFO:google_adk.google.adk.plugins.plugin_manager:Plugin 'tool_truncation' registered.
+[92m17:28:12 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[92m17:28:12 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[ToolWebSearcherAgent] 🗎 None of the available tools can interact with or invoke methods on a specific MCP server (e.g., `http://localhost:26836/mcp`). My role is limited to discovering publicly registered MCP servers via search, not executing tool calls or connecting to existing server instances. 
+
+If you need help discovering MCP servers related to chemical space generation or cheminformatics, I can assist with that.[0m
+[92m17:28:16 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mretrieve_tools[0m[33m({"query": "generate synthetic chemical space around a molecule"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mretrieve_tools[0m[36m {"query": "generate synthetic chemical space around a molecule"}[0m
+/home/stas/Documents/GitHub/CoScientist/.venv/lib/python3.12/site-packages/rag_tools/storage/qdrant_client.py:26: UserWarning: Api key is used with an insecure connection.
+  self._client = AsyncQdrantClient(
+[2m[ToolRetrieverAgent] ◀ retrieve_tools → {"status": "success", "result": [{"tool": "chemical_space_clustering", "server_id": "bfc62a287aaf7b5a", "description": "Cluster the metabolites in chemical space — open SynMap analogue (paper Fig. 1).", "input_schema": {"additionalProperties": false, "properties": {"n_clusters": {"default": 5, "description": "Number of clusters (paper: 5)", "type": "integer"}}, "type": "object"}, "score": 0.4518880240193106}, {"tool": "apply_medchem_filters", "server_id": "c0fc2594a288ebb0", "description": "Appl …[0m
+[92m17:28:19 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mretrieve_tools[0m[33m({"query": "generate local synthetic analogs around a given molecule like aspirin with reaction and similarity data"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mretrieve_tools[0m[36m {"query": "generate local synthetic analogs around a given molecule like aspirin with reaction and similarity data"}[0m
+[2m[ToolRetrieverAgent] ◀ retrieve_tools → {"status": "success", "result": [{"tool": "generate_mols", "server_id": "d36e3d994404e957", "description": "Generic, FAST GAN molecule generator. Default tool for \"give me N drug-like\nmolecules\" requests when no disease-specific tuning is required. Its generate good molecules fast, when training is timeconsuming or unavailable — for example, when the agent is exploring a new case and has not trained a GAN yet or has no train data.\n\nModel: GAN-LSTM (`gan_auto_generator` on the FastAPI side). …[0m
+[92m17:28:25 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mretrieve_tools[0m[33m({"query": "chemical space expansion with reaction pathways and similarity scoring"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mretrieve_tools[0m[36m {"query": "chemical space expansion with reaction pathways and similarity scoring"}[0m
+[2m[ToolRetrieverAgent] ◀ retrieve_tools → {"status": "success", "result": [{"tool": "search_similar", "server_id": "392f0aa31e346e20", "description": "Search a prepared dataset with exact Tanimoto similarity.", "input_schema": {"properties": {"smiles": {"description": "Query molecule as a SMILES string", "type": "string"}, "dataset_id": {"description": "Dataset identifier to search", "type": "string"}, "top_k": {"default": 20, "description": "Maximum hits to return", "maximum": 1000, "minimum": 1, "type": "integer"}, "min_similarity": { …[0m
+[92m17:28:31 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mget_server_info[0m[33m({"server_id": "d36e3d994404e957"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mget_server_info[0m[36m {"server_id": "d36e3d994404e957"}[0m
+[2m[ToolRetrieverAgent] ◀ get_server_info → {"status": "success", "result": {"server_id": "d36e3d994404e957", "name": "GenerativeMoleculeModels", "protocol": "http", "url": "http://10.32.2.2:8764/mcp", "command": "", "args": [], "env": {}, "description": "Generative molecular models MCP: de novo generation of SMILES / candidate molecules (e.g. for GSK-3beta and other targets).", "session_id": null, "headers": {}, "timeout": 30, "status": "active", "last_synced": "2026-07-16T16:54:07.959718", "created_at": "2026-06-10T09:28:40.773686", "up …[0m
+[92m17:28:35 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mget_server_info[0m[33m({"server_id": "392f0aa31e346e20"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mget_server_info[0m[36m {"server_id": "392f0aa31e346e20"}[0m
+[2m[ToolRetrieverAgent] ◀ get_server_info → {"status": "success", "result": {"server_id": "392f0aa31e346e20", "name": "test-server-8121", "protocol": "http", "url": "http://10.32.11.45:8121/mcp", "command": "", "args": [], "env": {}, "description": "Test MCP server at 8121", "session_id": null, "headers": {}, "timeout": 30, "status": "active", "last_synced": "2026-06-30T20:51:22.946979", "created_at": "2026-06-24T12:49:44.441659", "updated_at": "2026-06-30T20:51:22.976820"}}[0m
+[92m17:28:40 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mget_server_info[0m[33m({"server_id": "bfd3f80438ba403b"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mget_server_info[0m[36m {"server_id": "bfd3f80438ba403b"}[0m
+[2m[ToolRetrieverAgent] ◀ get_server_info → {"status": "success", "result": {"server_id": "bfd3f80438ba403b", "name": "chemical-tools", "protocol": "http", "url": "http://10.32.11.45:7332/mcp", "command": "", "args": [], "env": {}, "description": "Chemistry tools for scientific calculations", "session_id": null, "headers": {}, "timeout": 30, "status": "active", "last_synced": "2026-06-30T20:51:23.669606", "created_at": "2026-06-26T12:59:01.680084", "updated_at": "2026-06-30T20:51:23.723945"}}[0m
+[92m17:28:44 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mget_server_info[0m[33m({"server_id": "bfc62a287aaf7b5a"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mget_server_info[0m[36m {"server_id": "bfc62a287aaf7b5a"}[0m
+[2m[ToolRetrieverAgent] ◀ get_server_info → {"status": "success", "result": {"server_id": "bfc62a287aaf7b5a", "name": "heracleum-tox", "protocol": "http", "url": "http://10.32.11.45:7336/mcp", "command": "", "args": [], "env": {}, "description": "In-silico toxicology of Heracleum sosnowskyi (Sosnowsky's hogweed) plant metabolites. Reproduces Rassabina & Fedorov 2025 (Plants 14, 3253) using open-source analogues of the Syntelly platform: RDKit/PubChem for SMILES, ECFP4 + t-SNE + agglomerative clustering as a SynMap analogue, open CatBoost/ …[0m
+[92m17:28:48 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ToolRetrieverAgent] 🔧 [1mget_server_info[0m[33m({"server_id": "c0fc2594a288ebb0"})[0m
+[36m[ToolRetrieverAgent] ▶ tool [1mget_server_info[0m[36m {"server_id": "c0fc2594a288ebb0"}[0m
+[2m[ToolRetrieverAgent] ◀ get_server_info → {"status": "success", "result": {"server_id": "c0fc2594a288ebb0", "name": "tox-antitargets", "protocol": "http", "url": "http://10.32.11.45:7335/mcp", "command": "", "args": [], "env": {}, "description": "Explainable computational toxicology linking antitarget / off-target protein binding to rodent acute toxicity (LD50). Reproduces Nikitin et al. 2025 (Pharmaceutics 17, 1573) from a public dataset of 12,654 compounds with mouse intravenous pLD50 and AutoDock Vina docking scores against the 44-pr …[0m
+[92m17:28:56 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[ToolRetrieverAgent] 🗎 Accumulated tools include:
+
+- **Tool**: `generate_mols`  
+  **Server ID**: d36e3d994404e957  
+  **MCP URL**: http://10.32.2.2:8764/mcp  
+  **Description**: Generic FAST GAN-based molecule generator for producing drug-like molecules. Supports both generic and case-specific generation.  
+  **Score**: 0.448  
+  **Relevance**: High for generating analogs, but does not provide reaction pathways or similarity metrics directly.
+
+- **Tool**: `search_similar`  
+  **Server ID**: 392f0aa31e346e20  
+  **MCP URL**: http://10.32.11.45:8121/mcp  
+  **Description**: Searches a dataset for molecules similar to a query SMILES using Tanimoto similarity.  
+  **Score**: 0.397  
+  **Relevance**: Useful for simila …[0m
+[92m17:29:21 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[92m17:29:21 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[ToolReranker] 🗎 {
+  "tools": [
+    {"index": 1, "score": 0.2},
+    {"index": 2, "score": 0.2},
+    {"index": 3, "score": 0.2},
+    {"index": 4, "score": 0.6},
+    {"index": 5, "score": 0.7},
+    {"index": 6, "score": 0.8},
+    {"index": 7, "score": 0.1},
+    {"index": 8, "score": 0.3}
+  ]
+}[0m
+[92m17:29:28 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[92m17:29:28 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[FullSetToolReranker] 🗎 {
+  "mcp_scores": [],
+  "reasoning": "The task requires generating a local synthetic chemical space around aspirin with reaction pathways and similarity scores. While no single local tool fully matches the 'chemical_space' functionality, the combination of 'generate_mols' (for analog generation), 'retrosynthesis_tree_search' (for reaction pathways), and 'search_similar' (for similarity scoring) can collectively address the task. Since the required capabilities are already covered by existing local tools, deploying any web MCP server is unnecessary. Thus, no web server deployment is justified."
+}[0m
+[92m17:29:33 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+/home/stas/Documents/GitHub/CoScientist/.venv/lib/python3.12/site-packages/google/adk/tools/mcp_tool/mcp_toolset.py:304: UserWarning: [EXPERIMENTAL] feature FeatureName._MCP_GRACEFUL_ERROR_HANDLING is enabled.
+  session = await self._mcp_session_manager.create_session(
+INFO:mcp.client.streamable_http:Received session ID: 9c5740a735454ea0b5b1a1d64de8046d
+INFO:mcp.client.streamable_http:Negotiated protocol version: 2025-11-25
+INFO:mcp.client.streamable_http:Received session ID: ed21bf76226447358bdfb73b6ee0beda
+INFO:mcp.client.streamable_http:Negotiated protocol version: 2025-11-25
+INFO:mcp.client.streamable_http:Received session ID: 9e0969d3cdb04af5a1ebffffc071319a
+INFO:mcp.client.streamable_http:Negotiated protocol version: 2025-11-25
+INFO:mcp.client.streamable_http:Received session ID: 4d83910e8876491ab8949f5ddc60aea0
+INFO:mcp.client.streamable_http:Negotiated protocol version: 2025-11-25
+[92m17:29:33 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ExperimentAgent] 🔧 [1mchemical_space[0m[33m({"mol": "CC(=O)Oc1ccccc1C(=O)O", "steps": [1, 1], "nblocks": 5, "num_samples": 10})[0m
+[36m[ExperimentAgent] ▶ tool [1mchemical_space[0m[36m {"mol": "CC(=O)Oc1ccccc1C(=O)O", "steps": [1, 1], "nblocks": 5, "num_samples": 10}[0m
+[2m[ExperimentAgent] ◀ chemical_space → {"content": [{"type": "text", "text": "{\"smiles\":[\"CC(=O)Oc1ccccc1C(=O)O\",\"CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C\",\"CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2\",\"CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1\",\"CC(=O)Oc1ccccc1C(=O)NCCc1cc(C)ccn1\",\"CC(=O)Oc1ccccc1-c1n~c2c(F)cccc2o1\",\"CC(=O)Oc1ccccc1C(=O)NCC1CN(CCN(C)C)CCC1(C)C\",\"CC(=O)Oc1ccccc1-c1nc(-c2ccc3c(c2)N(C)CCN3C)no1\",\"CC(=O)Oc1ccccc1-c1n~c2c(C)nc(C)cc2o1\",\"CC(=O)Oc1ccccc1-c1n~c2cnccc2n1C\"],\"props\":[{\"rxn-name\":\"\",\"rxn\":\"\",\"match\" …[0m
+[92m17:29:45 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ExperimentAgent] 🔧 [1mresearch_commit[0m[33m({"nodes": [{"type": "Evidence", "attrs": {"subtype": "computational", "content": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and similarity scores."}}], "edges": [{"type": "produces", "from": "VM1", "to": "#e1"}, {"type": "relates_to", "from": "#e1", "to": "aspirin"}], "status_updates": [{"id": "VM1", "status": "done"}]})[0m
+[36m[ExperimentAgent] ▶ tool [1mresearch_commit[0m[36m {"nodes": [{"type": "Evidence", "attrs": {"subtype": "computational", "content": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and similarity scores."}}], "edges": [{"type": "produces", "from": "VM1", "to": "#e1"}, {"type": "relates_to", "from": "#e1", "to": "aspirin"}], "status_updates": [{"id": "VM1", "status": "done"}]}[0m
+[2m[ExperimentAgent] ◀ research_commit → {"ok": false, "message": "", "committed": {}, "errors": ["edges[0]: no node 'VM1'. The graph is empty. To reference a node created in THIS call, use '#<ref>'.", "edges[0]: no ref 'e1' among the nodes created in this call (refs: none).", "edges[1]: no ref 'e1' among the nodes created in this call (refs: none).", "edges[1]: no node 'aspirin'. The graph is empty. To reference a node created in THIS call, use '#<ref>'.", "status_updates[0]: no node 'VM1'. The graph is empty."], "warnings": [], "grap …[0m
+[92m17:29:55 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ExperimentAgent] 🔧 [1mresearch_commit[0m[33m({"nodes": [{"type": "Evidence", "attrs": {"subtype": "computational", "content": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and similarity scores."}, "ref": "e1"}], "edges": [{"type": "produces", "from": "#e1", "to": "#e1"}], "status_updates": []})[0m
+[36m[ExperimentAgent] ▶ tool [1mresearch_commit[0m[36m {"nodes": [{"type": "Evidence", "attrs": {"subtype": "computational", "content": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and similarity scores."}, "ref": "e1"}], "edges": [{"type": "produces", "from": "#e1", "to": "#e1"}], "status_updates": []}[0m
+[2m[ExperimentAgent] ◀ research_commit → {"ok": false, "message": "", "committed": {}, "errors": ["edges[0]: 'produces' must connect VerificationMethod → Evidence; Conclusion → ResearchQuestion; got Evidence → Evidence."], "warnings": [], "graph_stats": {}, "hint": "Fix the listed items and call research_commit again. NOTHING from this call was saved."}[0m
+[92m17:30:02 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ExperimentAgent] 🔧 [1mresearch_commit[0m[33m({"nodes": [{"type": "Evidence", "attrs": {"subtype": "computational", "content": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and similarity scores."}, "ref": "e1"}], "edges": [], "status_updates": []})[0m
+[36m[ExperimentAgent] ▶ tool [1mresearch_commit[0m[36m {"nodes": [{"type": "Evidence", "attrs": {"subtype": "computational", "content": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and similarity scores."}, "ref": "e1"}], "edges": [], "status_updates": []}[0m
+[2m[ExperimentAgent] ◀ research_commit → {"ok": true, "message": "committed 1 node(s), 0 edge(s), 0 status change(s)", "committed": {"nodes": [{"id": "E1", "type": "Evidence", "status": "obtained", "ref": "e1"}], "edges": [], "status_updates": []}, "errors": [], "warnings": [], "graph_stats": {"nodes": 1, "edges": 0}, "hint": ""}[0m
+[92m17:30:08 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[ExperimentAgent] 🗎 mcp_url: Not applicable (tool is directly available)  
+tool name: chemical_space  
+number of generated analogs: 10  
+
+| SMILES of analog | reaction name | similarity |
+|------------------|---------------|------------|
+| CC(=O)Oc1ccccc1C(=O)O |  | 1.0 |
+| CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C | Schotten-Baumann amide | 0.33 |
+| CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)NCCc1cc(C)ccn1 | Schotten-Baumann amide | 0.3 |
+| CC(=O)Oc1ccccc1-c1n~c2c(F)cccc2o1 | benzoxazole carboxylic-acid | 0.3 |
+| CC(=O)Oc1ccccc1C(=O)NCC1CN(CCN(C)C)CCC1(C)C | Schotten-Baumann amide | 0.29 |
+| CC(=O)Oc1 …[0m
+INFO:google_adk.google.adk.runners:Closing runner...
+INFO:google_adk.google.adk.runners:Closing toolset: DynamicMCPToolset
+[92m17:30:36 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:google_adk.google.adk.runners:Successfully closed toolset: DynamicMCPToolset
+INFO:google_adk.google.adk.runners:Closing toolset: TaskTrackerToolset
+INFO:google_adk.google.adk.runners:Successfully closed toolset: TaskTrackerToolset
+INFO:google_adk.google.adk.runners:Closing toolset: GraphReaderToolset
+INFO:google_adk.google.adk.runners:Successfully closed toolset: GraphReaderToolset
+INFO:google_adk.google.adk.runners:Closing toolset: ResearchGraphToolset
+INFO:google_adk.google.adk.runners:Successfully closed toolset: ResearchGraphToolset
+INFO:google_adk.google.adk.runners:Runner closed.
+[2m[TaskExecutorAgent] ◀ ToolPipelineAgent → mcp_url: Not applicable (tool is directly available)  
+tool name: chemical_space  
+number of generated analogs: 10  
+
+| SMILES of analog | reaction name | similarity |
+|------------------|---------------|------------|
+| CC(=O)Oc1ccccc1C(=O)O |  | 1.0 |
+| CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C | Schotten-Baumann amide | 0.33 |
+| CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)NCCc1cc(C)ccn …[0m
+[92m17:30:36 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[TaskExecutorAgent] 🗎 mcp_url: Not applicable (tool is directly available)  
+tool name: chemical_space  
+number of generated analogs: 10  
+
+| SMILES of analog | reaction name | similarity |
+|------------------|---------------|------------|
+| CC(=O)Oc1ccccc1C(=O)O |  | 1.0 |
+| CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C | Schotten-Baumann amide | 0.33 |
+| CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)NCCc1cc(C)ccn1 | Schotten-Baumann amide | 0.3 |
+| CC(=O)Oc1ccccc1-c1n~c2c(F)cccc2o1 | benzoxazole carboxylic-acid | 0.3 |
+| CC(=O)Oc1ccccc1C(=O)NCC1CN(CCN(C)C)CCC1(C)C | Schotten-Baumann amide | 0.29 |
+| CC(=O)Oc1 …[0m
+INFO:google_adk.google.adk.runners:Closing runner...
+[92m17:30:59 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:google_adk.google.adk.runners:Runner closed.
+[2m[OrchestratorAgent] ◀ TaskExecutorAgent → mcp_url: Not applicable (tool is directly available)  
+tool name: chemical_space  
+number of generated analogs: 10  
+
+| SMILES of analog | reaction name | similarity |
+|------------------|---------------|------------|
+| CC(=O)Oc1ccccc1C(=O)O |  | 1.0 |
+| CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C | Schotten-Baumann amide | 0.33 |
+| CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)NCCc1cc(C)ccn …[0m
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[Event] OrchestratorAgent | Event | Final=False
+[92m17:30:59 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[OrchestratorAgent] 🗎 Выполнено построение локального синтетического химического пространства вокруг аспирина с использованием инструмента `chemical_space`.
+
+**Результаты:**
+
+- **Адрес сервера (mcp_url):** http://localhost:26836/mcp
+- **Имя инструмента:** `chemical_space`
+- **Число полученных аналогов:** 10
+
+**Таблица сгенерированных аналогов:**
+
+| SMILES аналога | Название реакции | Схожесть |
+|----------------|------------------|---------|
+| CC(=O)Oc1ccccc1C(=O)O | | 1.0 |
+| CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C | Schotten-Baumann amide | 0.33 |
+| CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)NCCc1cc( …[0m
+[Event] OrchestratorAgent | Event | Final=True
+[Event] ResultAggregatorAgent | Event | Final=True
+[92m17:31:27 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[92m17:31:27 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ResultAggregatorAgent] 🔧 [1mresearch_overview[0m[33m({})[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[36m[ResultAggregatorAgent] ▶ tool [1mresearch_overview[0m[36m {}[0m
+[2m[ResultAggregatorAgent] ◀ research_overview → {"root": null, "counts": {"Evidence": {"obtained": 1}}, "nodes": [{"id": "E1", "type": "Evidence", "status": "obtained", "label": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and sim…", "source": "ExperimentAgent"}], "rendered": "- E1 [Evidence|obtained] Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and sim…"}[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[92m17:31:30 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ResultAggregatorAgent] 🔧 [1mresearch_context_slice[0m[33m({"node_id": "E1"})[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[36m[ResultAggregatorAgent] ▶ tool [1mresearch_context_slice[0m[36m {"node_id": "E1"}[0m
+[2m[ResultAggregatorAgent] ◀ research_context_slice → {"focus": "E1", "depth": 1, "nodes": [{"id": "E1", "type": "Evidence", "status": "obtained", "source": "ExperimentAgent", "attrs": {"subtype": "computational", "content": "Generated 10 synthetic analogs of aspirin using chemical_space tool. Includes reaction names and similarity scores."}}], "edges": [], "rendered": "CONTEXT SLICE for E1 (Evidence, status=obtained)\nNodes:\n- E1 [Evidence|obtained] {\"subtype\": \"computational\", \"content\": \"Generated 10 synthetic analogs of aspirin using ch …[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[92m17:31:34 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ResultAggregatorAgent] 🔧 [1mresearch_provenance[0m[33m({"node_id": "E1"})[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[36m[ResultAggregatorAgent] ▶ tool [1mresearch_provenance[0m[36m {"node_id": "E1"}[0m
+[2m[ResultAggregatorAgent] ◀ research_provenance → {"error": "the graph has no ResearchQuestion root yet."}[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[92m17:31:39 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[33m[ResultAggregatorAgent] 🔧 [1mformat_results[0m[33m({})[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[36m[ResultAggregatorAgent] ▶ tool [1mformat_results[0m[36m {}[0m
+[2m[ResultAggregatorAgent] ◀ format_results → {"status": "success", "report_dir": "logs/reports/session_49e3f40246844626b6d69a0621c1514a", "figures_count": 0, "tables_count": 0, "formatted_markdown": ""}[0m
+[Event] ResultAggregatorAgent | Event | Final=False
+[92m17:31:42 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+[32m[ResultAggregatorAgent] 🗎 # Исследование локального синтетического химического пространства вокруг аспирина
+
+## Цель исследования
+
+Целью данного исследования было построение локального синтетического химического пространства вокруг молекулы аспирина (ацетилсалициловой кислоты) с целью генерации новых, синтетически доступных аналогов. Основной фокус — на структурно близких производных, которые могут быть получены с использованием известных и надежных химических трансформаций, что позволяет оценить потенциальные направления модификации молекулы для дальнейшего изучения, например, в контексте улучшения фармакологических свойств или снижения токсичности.
+
+## Методология
+
+Исследование было проведено с использованием вычис …[0m
+[Event] ResultAggregatorAgent | Event | Final=True
+[1m[32m✅ FINAL RESPONSE ► # Исследование локального синтетического химического пространства вокруг аспирина
+
+## Цель исследования
+
+Целью данного исследования было построение локального синтетического химического пространства вокруг молекулы аспирина (ацетилсалициловой кислоты) с целью генерации новых, синтетически доступных аналогов. Основной фокус — на структурно близких производных, которые могут быть получены с использованием известных и надежных химических трансформаций, что позволяет оценить потенциальные направления модификации молекулы для дальнейшего изучения, например, в контексте улучшения фармакологических свойств или снижения токсичности.
+
+## Методология
+
+Исследование было проведено с использованием вычислительного инструмента `chemical_space`, который автоматически генерирует библиотеку аналогов исходной молекулы на основе правил, моделирующих реальные синтетические реакции. Инструмент был запущен с аспирином в качестве исходного соединения. Процесс включал:
+
+1.  **Анализ структуры аспирина** для выявления реакционноспособных групп (в частности, карбоксильной группы).
+2.  **Применение библиотеки реакционных шаблонов** (например, амидирования по Шоттену-Бауману, циклизации) для генерации новых соединений.
+3.  **Оценку структурного сходства** между сгенерированными аналогами и исходным аспирином с использованием метрики Tanimoto (на основе молекулярных дескрипторов, таких как ECFP4).
+
+В результате было получено 10 соединений, включая сам аспирин, что позволяет проанализировать непосредственное "химическое окружение" молекулы.
+
+## Результаты
+
+Инструмент `chemical_space` успешно сгенерировал 10 синтетически доступных аналогов аспирина. Как и ожидалось, первый аналог в списке соответствует исходной молекуле аспирина, что подтверждает корректность работы инструмента (схожесть 1.0). Остальные 9 соединений представляют собой производные, полученные в результате различных химических модификаций.
+
+Ключевые результаты представлены в таблице ниже.
+
+| SMILES аналога | Название реакции | Схожесть (Tanimoto) |
+|----------------|------------------|---------------------|
+| CC(=O)Oc1ccccc1C(=O)O | | 1.00 |
+| CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C | Schotten-Baumann amide | 0.33 |
+| CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)NCCc1cc(C)ccn1 | Schotten-Baumann amide | 0.30 |
+| CC(=O)Oc1ccccc1-c1n~c2c(F)cccc2o1 | benzoxazole carboxylic-acid | 0.30 |
+| CC(=O)Oc1ccccc1C(=O)NCC1CN(CCN(C)C)CCC1(C)C | Schotten-Baumann amide | 0.29 |
+| CC(=O)Oc1ccccc1-c1nc(-c2ccc3c(c2)N(C)CCN3C)no1 | oxadiazole | 0.29 |
+| CC(=O)Oc1ccccc1-c1n~c2c(C)nc(C)cc2o1 | benzoxazole carboxylic-acid | 0.29 |
+| CC(=O)Oc1ccccc1-c1n~c2cnccc2n1C | benzimidazole derivatives carboxylic-acid/ester | 0.28 |
+
+**Основные наблюдения:**
+*   **Доминирующая реакция:** Наиболее частой трансформацией стала реакция амидирования по Шоттену-Бауману, которая превратила карбоксильную группу аспирина в различные амиды. Это логично, учитывая высокую реакционную способность этой группы.
+*   **Разнообразие структур:** Помимо амидов, инструмент предложил и более сложные структуры, такие как бензоксазолы, оксадиазолы и бензимидазолы, что демонстрирует способность к генерации разнообразных химических каркасов.
+*   **Уровень сходства:** Все сгенерированные аналоги (кроме самого аспирина) имеют сходство в диапазоне от 0.28 до 0.33. Это указывает на то, что модификации являются значительными, но все еще сохраняют некоторую общую химическую схожесть с исходным соединением. Такой уровень сходства характерен для соединений, которые могут обладать схожей, но модифицированной биологической активностью.
+
+## Обсуждение
+
+Полученные результаты демонстрируют эффективность инструмента `chemical_space` для быстрой генерации библиотеки синтетически доступных аналогов. Все предложенные соединения сопровождаются указанием на конкретную химическую реакцию, что является ключевым преимуществом для практического применения, так как позволяет химикам-синтетикам сразу приступить к планированию синтеза.
+
+Сгенерированные аналоги, особенно амиды, представляют интерес для дальнейшего изучения. Амидирование — это стандартный способ модификации карбоксильных групп, который может кардинально изменить растворимость, липофильность и, как следствие, фармакокинетические свойства молекулы. Производные с гетероциклическими системами (бензоксазолы, бензимидазолы) могут обладать новыми типами биологической активности.
+
+**Ограничения:**
+*   В рамках данного исследования не проводилась оценка физико-химических свойств (например, LogP, pKa) или прогнозирование биологической активности или токсичности сгенерированных аналогов.
+*   Не была проведена валидация синтетических маршрутов за пределами реакционных шаблонов инструмента (например, оценка выходов реакций, сложности синтеза).
+*   Граф исследований не содержит явно сформулированного исследовательского вопроса или гипотез, что затрудняет полную интерпретацию в рамках строгого научного метода. Анализ основан исключительно на полученных экспериментальных данных (E1).
+
+## Выводы и дальнейшие шаги
+
+Было успешно построено локальное синтетическое химическое пространство вокруг аспирина, в результате чего получена библиотека из 9 новых синтетически доступных аналогов. Эти соединения предлагают конкретные направления для дальнейшего исследования.
+
+**Рекомендуемые следующие шаги:**
+1.  **Прогнозирование свойств:** Провести *in silico* скрининг сгенерированных аналогов на предмет их физико-химических свойств, фармакокинетики (ADME) и потенциальной токсичности.
+2.  **Оценка биологической активности:** Выполнить виртуальный скрининг на мишени, связанные с действием аспирина (например, циклооксигеназы COX-1/COX-2), чтобы выявить аналоги с потенциально улучшенным профилем активности.
+3.  **Приоритизация и синтез:** На основе результатов *in silico* анализа выбрать 2-3 наиболее перспективных аналога для фактического химического синтеза и последующего *in vitro* тестирования.
+4.  **Расширение химического пространства:** Повторить процедуру с другими исходными молекулами или использовать полученные аналоги в качестве новых "семян" для генерации более крупного химического пространства.[0m
+[92m17:33:12 - LiteLLM:INFO[0m: utils.py:4090 - 
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+INFO:LiteLLM:
+LiteLLM completion() model= qwen/qwen3-235b-a22b-2507; provider = openrouter
+
+=== Final Response ===
+# Исследование локального синтетического химического пространства вокруг аспирина
+
+## Цель исследования
+
+Целью данного исследования было построение локального синтетического химического пространства вокруг молекулы аспирина (ацетилсалициловой кислоты) с целью генерации новых, синтетически доступных аналогов. Основной фокус — на структурно близких производных, которые могут быть получены с использованием известных и надежных химических трансформаций, что позволяет оценить потенциальные направления модификации молекулы для дальнейшего изучения, например, в контексте улучшения фармакологических свойств или снижения токсичности.
+
+## Методология
+
+Исследование было проведено с использованием вычислительного инструмента `chemical_space`, который автоматически генерирует библиотеку аналогов исходной молекулы на основе правил, моделирующих реальные синтетические реакции. Инструмент был запущен с аспирином в качестве исходного соединения. Процесс включал:
+
+1.  **Анализ структуры аспирина** для выявления реакционноспособных групп (в частности, карбоксильной группы).
+2.  **Применение библиотеки реакционных шаблонов** (например, амидирования по Шоттену-Бауману, циклизации) для генерации новых соединений.
+3.  **Оценку структурного сходства** между сгенерированными аналогами и исходным аспирином с использованием метрики Tanimoto (на основе молекулярных дескрипторов, таких как ECFP4).
+
+В результате было получено 10 соединений, включая сам аспирин, что позволяет проанализировать непосредственное "химическое окружение" молекулы.
+
+## Результаты
+
+Инструмент `chemical_space` успешно сгенерировал 10 синтетически доступных аналогов аспирина. Как и ожидалось, первый аналог в списке соответствует исходной молекуле аспирина, что подтверждает корректность работы инструмента (схожесть 1.0). Остальные 9 соединений представляют собой производные, полученные в результате различных химических модификаций.
+
+Ключевые результаты представлены в таблице ниже.
+
+| SMILES аналога | Название реакции | Схожесть (Tanimoto) |
+|----------------|------------------|---------------------|
+| CC(=O)Oc1ccccc1C(=O)O | | 1.00 |
+| CC(=O)Oc1ccccc1C(=O)N1CCC(CO)C1C | Schotten-Baumann amide | 0.33 |
+| CC(=O)Oc1ccccc1C(=O)N1C2CCC1C(O)C2 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)N(C)C1CCCC(O)C1 | Schotten-Baumann amide | 0.32 |
+| CC(=O)Oc1ccccc1C(=O)NCCc1cc(C)ccn1 | Schotten-Baumann amide | 0.30 |
+| CC(=O)Oc1ccccc1-c1n~c2c(F)cccc2o1 | benzoxazole carboxylic-acid | 0.30 |
+| CC(=O)Oc1ccccc1C(=O)NCC1CN(CCN(C)C)CCC1(C)C | Schotten-Baumann amide | 0.29 |
+| CC(=O)Oc1ccccc1-c1nc(-c2ccc3c(c2)N(C)CCN3C)no1 | oxadiazole | 0.29 |
+| CC(=O)Oc1ccccc1-c1n~c2c(C)nc(C)cc2o1 | benzoxazole carboxylic-acid | 0.29 |
+| CC(=O)Oc1ccccc1-c1n~c2cnccc2n1C | benzimidazole derivatives carboxylic-acid/ester | 0.28 |
+
+**Основные наблюдения:**
+*   **Доминирующая реакция:** Наиболее частой трансформацией стала реакция амидирования по Шоттену-Бауману, которая превратила карбоксильную группу аспирина в различные амиды. Это логично, учитывая высокую реакционную способность этой группы.
+*   **Разнообразие структур:** Помимо амидов, инструмент предложил и более сложные структуры, такие как бензоксазолы, оксадиазолы и бензимидазолы, что демонстрирует способность к генерации разнообразных химических каркасов.
+*   **Уровень сходства:** Все сгенерированные аналоги (кроме самого аспирина) имеют сходство в диапазоне от 0.28 до 0.33. Это указывает на то, что модификации являются значительными, но все еще сохраняют некоторую общую химическую схожесть с исходным соединением. Такой уровень сходства характерен для соединений, которые могут обладать схожей, но модифицированной биологической активностью.
+
+## Обсуждение
+
+Полученные результаты демонстрируют эффективность инструмента `chemical_space` для быстрой генерации библиотеки синтетически доступных аналогов. Все предложенные соединения сопровождаются указанием на конкретную химическую реакцию, что является ключевым преимуществом для практического применения, так как позволяет химикам-синтетикам сразу приступить к планированию синтеза.
+
+Сгенерированные аналоги, особенно амиды, представляют интерес для дальнейшего изучения. Амидирование — это стандартный способ модификации карбоксильных групп, который может кардинально изменить растворимость, липофильность и, как следствие, фармакокинетические свойства молекулы. Производные с гетероциклическими системами (бензоксазолы, бензимидазолы) могут обладать новыми типами биологической активности.
+
+**Ограничения:**
+*   В рамках данного исследования не проводилась оценка физико-химических свойств (например, LogP, pKa) или прогнозирование биологической активности или токсичности сгенерированных аналогов.
+*   Не была проведена валидация синтетических маршрутов за пределами реакционных шаблонов инструмента (например, оценка выходов реакций, сложности синтеза).
+*   Граф исследований не содержит явно сформулированного исследовательского вопроса или гипотез, что затрудняет полную интерпретацию в рамках строгого научного метода. Анализ основан исключительно на полученных экспериментальных данных (E1).
+
+## Выводы и дальнейшие шаги
+
+Было успешно построено локальное синтетическое химическое пространство вокруг аспирина, в результате чего получена библиотека из 9 новых синтетически доступных аналогов. Эти соединения предлагают конкретные направления для дальнейшего исследования.
+
+**Рекомендуемые следующие шаги:**
+1.  **Прогнозирование свойств:** Провести *in silico* скрининг сгенерированных аналогов на предмет их физико-химических свойств, фармакокинетики (ADME) и потенциальной токсичности.
+2.  **Оценка биологической активности:** Выполнить виртуальный скрининг на мишени, связанные с действием аспирина (например, циклооксигеназы COX-1/COX-2), чтобы выявить аналоги с потенциально улучшенным профилем активности.
+3.  **Приоритизация и синтез:** На основе результатов *in silico* анализа выбрать 2-3 наиболее перспективных аналога для фактического химического синтеза и последующего *in vitro* тестирования.
+4.  **Расширение химического пространства:** Повторить процедуру с другими исходными молекулами или использовать полученные аналоги в качестве новых "семян" для генерации более крупного химического пространства.
+
+Enter query (or 'exit'): INFO:google_adk.google.adk.runners:Closing runner...
+INFO:google_adk.google.adk.runners:Closing toolset: ResearchGraphToolset
+INFO:google_adk.google.adk.runners:Successfully closed toolset: ResearchGraphToolset
+INFO:google_adk.google.adk.runners:Closing toolset: GraphReaderToolset
+INFO:google_adk.google.adk.runners:Successfully closed toolset: GraphReaderToolset
+INFO:google_adk.google.adk.runners:Closing toolset: ResearchGraphToolset
+INFO:google_adk.google.adk.runners:Successfully closed toolset: ResearchGraphToolset
+WARNING:google_adk.google.adk.plugins.plugin_manager:Timeout/Cancelled while closing plugin: graph_memory

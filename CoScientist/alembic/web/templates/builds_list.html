@@ -56,6 +56,9 @@
       </div>
     </a>
     <div class="flex-1"></div>
+    <a id="hub-link" href="#" class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
+      <span class="material-symbols-outlined text-[19px]">hub</span> MCP hub
+    </a>
     <a id="back-chat-btn" href="/" class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
       <span class="material-symbols-outlined text-[19px]">chat</span> CoScientist chat
     </a>
@@ -64,7 +67,7 @@
     </a>
   </header>
 
-  <main class="p-6 max-w-7xl mx-auto">
+  <main class="p-6 max-w-[1800px] mx-auto">
     <div class="mb-4 flex items-center gap-3">
       <span class="material-symbols-outlined text-outline text-[20px]">history</span>
       <h1 class="font-head text-xl font-semibold text-on-surface">Pipeline runs</h1>
@@ -91,7 +94,7 @@
             <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Build</th>
             <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Repository</th>
             <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">MCP</th>
-            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Server</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3 w-px">Server</th>
             <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Stage</th>
             <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Started</th>
             <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Duration</th>
@@ -104,6 +107,30 @@
     </div>
   </main>
 
+  <div id="delete-modal" class="hidden fixed inset-0 z-50 bg-black/60 items-center justify-center p-6">
+    <div class="w-full max-w-xl bg-surface border border-outline-variant/30 rounded-card p-5 shadow-xl">
+      <h3 id="delete-title" class="font-head text-base font-semibold text-on-surface"></h3>
+      <div class="mt-4 flex items-start gap-3">
+        <button id="delete-container"
+          class="shrink-0 w-44 flex items-center justify-center gap-1.5 font-head font-semibold text-sm px-3 h-9 rounded-control border border-outline-variant/30 text-on-surface-dim hover:border-primary/60 hover:text-primary transition disabled:opacity-40 disabled:pointer-events-none">
+          <span class="material-symbols-outlined text-[18px]">stop_circle</span> Container only
+        </button>
+        <p id="delete-container-note" class="text-[12px] font-mono text-on-surface-dim leading-relaxed"></p>
+      </div>
+      <div class="mt-3 flex items-start gap-3">
+        <button id="delete-image"
+          class="shrink-0 w-44 flex items-center justify-center gap-1.5 font-head font-semibold text-sm px-3 h-9 rounded-control border border-error/40 text-error hover:bg-error/10 transition">
+          <span class="material-symbols-outlined text-[18px]">delete</span> Image
+        </button>
+        <p id="delete-image-note" class="text-[12px] font-mono text-on-surface-dim leading-relaxed"></p>
+      </div>
+      <div class="flex justify-end mt-5">
+        <button id="delete-cancel"
+          class="font-head font-semibold text-sm px-4 h-9 rounded-control border border-outline-variant/30 text-on-surface-dim hover:text-on-surface transition">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Same base-URL detection as the dashboard: mounted at "/alembic" from the
     // common web app, or at root by the standalone alembic app.
@@ -111,6 +138,7 @@
     const BASE = (_p === "/alembic/builds" || _p.startsWith("/alembic/")) ? "/alembic" : "";
     document.getElementById("home-link").href = `${BASE}/`;
     document.getElementById("new-build-btn").href = `${BASE}/`;
+    document.getElementById("hub-link").href = `${BASE}/hub`;
 
     const STATUS = {
       running: { color: "#00daf3", icon: "progress_activity", label: "running" },
@@ -184,7 +212,7 @@
     }
 
     // ─── server controls ───────────────────────────────────────────
-    const BUSY_LABEL = { start: "starting", restart: "restarting", stop: "stopping", "delete-image": "deleting" };
+    const BUSY_LABEL = { start: "starting", restart: "restarting", stop: "stopping", "remove-container": "removing", "delete-image": "deleting", "hub-upload": "uploading" };
     const runningAction = b => (b.action && b.action.running) ? b.action.name : pending[b.job_id];
     const spinner = size => `<span class="material-symbols-outlined text-[${size}px] spin">progress_activity</span>`;
 
@@ -192,7 +220,7 @@
       const tone = danger
         ? "text-error border-error/30 hover:bg-error/10"
         : "text-on-surface-dim border-outline-variant/30 hover:border-primary/60 hover:text-primary";
-      return `<button data-action="${action}" title="${attr(title)}" class="inline-flex items-center gap-0.5 text-[11px] font-mono px-1.5 h-6 rounded-control border ${tone} transition"><span class="material-symbols-outlined text-[14px]">${icon}</span>${label}</button>`;
+      return `<button data-action="${action}" title="${attr(title)}" class="inline-flex items-center gap-0.5 whitespace-nowrap leading-none text-[11px] font-mono px-1.5 h-6 rounded-control border ${tone} transition"><span class="material-symbols-outlined text-[14px] leading-none">${icon}</span>${label}</button>`;
     }
     function serverCell(b) {
       if (b.status !== "done") return `<span class="text-outline">—</span>`;
@@ -203,7 +231,7 @@
       const shared = (b.image_shared_with || []).length
         ? ` <span class="text-[#ffcf6b] cursor-help" title="${attr("the same image is also the image of " + b.image_shared_with.join(", "))}">shared</span>`
         : "";
-      const size = b.image_size ? `<div class="text-[10px] font-mono text-outline mt-1">image ${esc(b.image_size)}${shared}</div>` : "";
+      const size = (b.image_size ? `<div class="text-[10px] font-mono text-outline mt-1">image ${esc(b.image_size)}${shared}</div>` : "") + hubNote(b);
       const running = runningAction(b);
       if (running)
         return `<span class="inline-flex items-center gap-1 text-[11px] font-mono text-primary">${spinner(15)}${esc(BUSY_LABEL[running] || running)}…</span>`;
@@ -218,17 +246,31 @@
       if (b.container_active || b.registered)
         buttons.push(actionButton("stop", "stop", "Stop", "Stop the container and take the server out of the shared catalogue"));
       if (b.runnable)
-        buttons.push(actionButton("delete-image", "delete", "", "Delete this build's image with its containers and tags", true));
-      return `<div class="flex items-center gap-1 flex-wrap">${buttons.join("")}</div>${size}${note}`;
+        buttons.push(actionButton("delete", "delete", "", "Remove this build's container, or delete its image", true));
+      return `<div class="flex items-center gap-1">${buttons.join("")}</div>${size}${note}`;
+    }
+    // A build that is on the MCP hub links to its Docker Hub repository.
+    function hubNote(b) {
+      const hub = b.hub || {};
+      if (hub.status === "skipped")
+        return `<div class="text-[10px] font-mono mt-1 text-outline cursor-help" title="${attr(hub.error || "")}">not auto-uploaded</div>`;
+      if (hub.status !== "uploaded" || !hub.image) return "";
+      return `<div class="text-[10px] font-mono mt-1"><a href="https://hub.docker.com/r/${attr(hub.image)}" target="_blank" rel="noopener" class="text-primary hover:underline" title="${attr((hub.tags || []).join(", ") + (hub.warning ? "\n" + hub.warning : ""))}">on hub</a></div>`;
     }
     function describe(action, r) {
       if (!r.ok) return { ok: false, text: "failed: " + String(r.error || "error").split("\n")[0].slice(0, 80), detail: r.error || "" };
+      if (action === "hub-upload")
+        return { ok: !r.warning, text: r.warning ? "uploaded, description not written" : "uploaded to the hub",
+                 detail: `${r.image || ""}: ${(r.tags || []).join(", ")}` + (r.warning ? "\n" + r.warning : "") };
       if (action === "delete-image") {
         const also = (r.also_deleted_for || []).length;
         return { ok: true, text: also ? `image deleted, also for ${also} other build(s)` : "image deleted",
                  detail: "removed tags: " + (r.removed_tags || []).join(", ") +
                          (also ? "; builds that lost it too: " + r.also_deleted_for.join(", ") : "") };
       }
+      if (action === "remove-container")
+        return { ok: !r.warning, text: r.warning ? "container removed, catalogue entry kept" : "container removed",
+                 detail: r.warning || r.removed_container || "" };
       if (action === "stop") return { ok: !r.warning, text: r.warning ? "stopped, catalogue entry kept" : "stopped", detail: r.warning || r.registration_error || "" };
       const reg = r.registered ? "registered" : "not in catalogue";
       return { ok: true, text: `${action === "start" ? "started" : "restarted"}, ${reg}`, detail: r.registration_error || r.mcp_url || "" };
@@ -239,17 +281,10 @@
       let query = "";
       if (action === "stop" && b.registered &&
           !confirm(`Stop ${jid} and remove it from the shared tool catalogue?`)) return;
-      if (action === "delete-image") {
-        const shared = b.image_shared_with || [];
-        const sharedText = shared.length
-          ? `\n\nThe same image is also the image of ${shared.join(", ")}. Those builds lose it too.`
-          : "";
-        if (!confirm(
-            `Delete the image of ${jid}?\n\n` +
-            `Every container made from it is removed, and so is every tag on it, including ` +
-            `alembic-tool:<repo> when that tag points to this image. The build stays in the history.` +
-            sharedText)) return;
-        if (shared.length) query = "?include_shared=1";
+      if (action === "delete") {
+        action = await askDelete(b);
+        if (!action) return;
+        if (action === "delete-image" && (b.image_shared_with || []).length) query = "?include_shared=1";
       }
       pending[jid] = action;
       delete notes[jid];
@@ -268,6 +303,40 @@
       }
       schedule(0);
     }
+
+    // Delete asks what goes: this build's container only, or the image with
+    // every container made from it, including other builds' on the same image.
+    let deleteResolve = null;
+    function askDelete(b) {
+      const shared = b.image_shared_with || [];
+      document.getElementById("delete-title").textContent = `Delete ${b.job_id}`;
+      document.getElementById("delete-container-note").textContent = b.container_exists
+        ? `Stops ${b.container || "the container"} and removes it. The image stays, and Start makes a new container.`
+        : "This build has no container on this host.";
+      document.getElementById("delete-container").disabled = !b.container_exists;
+      document.getElementById("delete-image-note").textContent =
+        "Removes the image, every container made from it and every tag on it, including alembic-tool:<repo> " +
+        "when that tag points to this image." +
+        (shared.length ? ` The same image serves ${shared.join(", ")}; those builds lose it too.` : "") +
+        " Builds stay in the history.";
+      const modal = document.getElementById("delete-modal");
+      modal.classList.remove("hidden"); modal.classList.add("flex");
+      return new Promise(resolve => { deleteResolve = resolve; });
+    }
+    function closeDelete(action) {
+      const modal = document.getElementById("delete-modal");
+      modal.classList.add("hidden"); modal.classList.remove("flex");
+      const resolve = deleteResolve;
+      deleteResolve = null;
+      if (resolve) resolve(action);
+    }
+    document.getElementById("delete-container").onclick = () => closeDelete("remove-container");
+    document.getElementById("delete-image").onclick = () => closeDelete("delete-image");
+    document.getElementById("delete-cancel").onclick = () => closeDelete(null);
+    document.getElementById("delete-modal").addEventListener("click", e => {
+      if (e.target.id === "delete-modal") closeDelete(null);
+    });
+    document.addEventListener("keydown", e => { if (deleteResolve && e.key === "Escape") closeDelete(null); });
 
     // ─── clear non-runnable ────────────────────────────────────────
     const clearable = () => builds.filter(b => b.status !== "running" && !b.runnable);
@@ -320,20 +389,30 @@
     });
 
     // ─── table ─────────────────────────────────────────────────────
+    // Where a server without a build of its own came from: label and tooltip.
+    const ORIGIN = {
+      image: ["From image", "Built outside the builds tool. Its reports and generated tools were copied out of the tool image; there is no build log."],
+      unknown: ["External", "A server started outside the builds tool whose image carries no alembic artifacts."],
+      hub: ["From hub", "Pulled from the MCP hub (Docker Hub) and served on this host."],
+    };
     // Stage, and how many generated tools passed validation.
     function stageCell(b) {
       const c = b.tool_counts;
       let chip = "";
       if (c && c.tools_total) {
         const passed = c.tools_passed || 0;
-        const tone = passed === c.tools_total ? "text-secondary border-secondary/40"
-          : passed ? "text-[#ffcf6b] border-[#ffcf6b]/40" : "text-error border-error/40";
+        const tone = passed === c.tools_total ? "text-secondary"
+          : passed ? "text-[#ffcf6b]" : "text-error";
         const tip = `tools passed validation: ${passed} of ${c.tools_total}` +
           (c.tools_perfect != null ? `, perfect ${c.tools_perfect}` : "") +
           (c.tests_total ? `; tests ${c.tests_passed || 0}/${c.tests_total}` : "");
-        chip = `<div class="mt-1"><span class="inline-block font-mono text-[10px] px-1.5 py-0.5 rounded-full border ${tone} cursor-help" title="${attr(tip)}">${passed}/${c.tools_total} tools</span></div>`;
+        chip = `<div class="mt-1"><span class="font-mono text-[11px] ${tone} cursor-help" title="${attr(tip)}">${passed}/${c.tools_total} tools</span></div>`;
       }
-      return `<span class="font-mono text-[11px] text-outline">${esc(b.stage || "")}</span>${chip}`;
+      const origin = ORIGIN[b.origin];
+      const originChip = origin
+        ? `<div class="mt-1"><span class="font-mono text-[11px] text-[#ffcf6b] cursor-help" title="${attr(origin[1])}">${esc(origin[0])}</span></div>`
+        : "";
+      return `<span class="font-mono text-[11px] text-outline">${esc(b.stage || "")}</span>${originChip}${chip}`;
     }
     function rowHtml(b) {
       const s = STATUS[b.status] || { color: "#8c90a1", icon: "help", label: b.status || "?" };
@@ -343,10 +422,13 @@
             <span class="material-symbols-outlined text-[16px] ${b.status === 'running' ? 'spin' : ''}">${s.icon}</span>${s.label}
           </span>
         </td>
-        <td class="px-4 py-3 font-mono text-[12px] text-on-surface">${esc(b.job_id)}</td>
+        <td class="px-4 py-3">
+          <div class="font-mono text-[12px] text-on-surface">${esc(b.job_id)}</div>
+          ${b.summary ? `<div class="max-w-[24rem] text-[11px] text-outline mt-0.5 leading-snug" title="${attr(b.summary)}">${esc(b.summary)}</div>` : ""}
+        </td>
         <td class="px-4 py-3">${repoCell(b.repo_url)}</td>
         <td class="px-4 py-3">${mcpCell(b)}</td>
-        <td class="px-4 py-3">${serverCell(b)}</td>
+        <td class="px-4 py-3 whitespace-nowrap">${serverCell(b)}</td>
         <td class="px-4 py-3">${stageCell(b)}</td>
         <td class="px-4 py-3 font-mono text-[11px] text-on-surface-dim" title="${attr(fmtStartedTitle(b.started_at))}">${fmtStarted(b.started_at)}</td>
         <td class="px-4 py-3 font-mono text-[11px] text-on-surface-dim">${fmtDuration(b.elapsed_seconds)}</td>

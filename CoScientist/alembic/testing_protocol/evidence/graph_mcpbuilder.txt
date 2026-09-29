@@ -1,0 +1,43 @@
+Граф исполнения сессии session_fc8fff66058746479c140b661c4e116c
+
+system      CoScientist multi-agent system                                                               status=success
+agent       OrchestratorAgent                                                                            status=success
+agent       PlanningPipelineAgent                                                                        status=success
+agent       PlannerAgent                                                                                 status=success
+agent       ContextInitAgent                                                                             status=success
+agent       ResultAggregatorAgent                                                                        status=success
+agent       HypothesesAgent                                                                              status=success
+agent       ResearchAgent                                                                                status=success
+agent       TaskExecutorAgent                                                                            status=success
+agent       ToolPipelineAgent                                                                            status=success
+agent       CoderAgent                                                                                   status=success
+agent       DatasetCollectorAgent                                                                        status=success
+agent       MedicalAgent                                                                                 status=success
+agent       McpBuilderAgent                                                                              status=success
+agent       ToolPreparerAgent                                                                            status=success
+agent       ParallelToolSearcherAgent                                                                    status=success
+agent       LocalToolsExtractorAgent                                                                     status=success
+agent       ToolRetrieverAgent                                                                           status=success
+agent       ToolReranker                                                                                 status=success
+agent       ToolWebSearcherAgent                                                                         status=success
+agent       FullSetToolReranker                                                                          status=success
+agent       WebToolsDeployerAgent                                                                        status=success
+agent       ExperimentAgent                                                                              status=success
+agent       FedotAgent                                                                                   status=success
+goal        Задача: в исследовании нужен инструмент для counterfactual-объяснения предсказаний моделей   status=success
+agent_call  ResearchPipeline                                                                             status=success
+result      🧭 Рамка исследования зафиксирована в графе (14 узлов, 9 рёбер).
+
+## Рамка исследования
+
+✓    status=success
+agent_call  PlanningPipelineAgent                                                                        status=running
+agent_call  OrchestratorAgent                                                                            status=running
+tool_call   retrieve_tools                                                                               status=failed
+tool_call   retrieve_tools                                                                               status=failed
+agent_call  McpBuilderAgent                                                                              status=success
+goal        Создай валидированный MCP-сервер из репозитория https://github.com/ur-whitelab/cf-mol, сод   status=success
+agent_call  McpBuilderAgent                                                                              status=success
+tool_call   list_mcp_builds                                                                              status=success
+tool_call   build_mcp_server                                                                             status=success
+result      Запущено создание MCP-сервера из репозитория https://github.com/ur-whitelab/cf-mol. Процес   status=success

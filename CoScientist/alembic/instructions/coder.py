@@ -49,6 +49,11 @@ Rules:
 - Thorough docstring: purpose, every arg described, Returns shape, one usage
   example with a real value.
 - Return a JSON-serializable dict. Convert numpy/tensor values.
+- Every parameter is JSON too: a path, a name, a number, a string, a list or a
+  dict of those. The server is called over MCP, which carries nothing else. When
+  the repo function wants a live object (a Cube, a model, a DataFrame), the tool
+  builds it inside from JSON input (a file path, a stock/sample name); the
+  object itself is never a parameter.
 - Literal defaults only; any `device` param defaults to `"cpu"`.
 - Resolve path-shaped args against the repo root (see template). NO defensive
   existence guards — let a real error surface.

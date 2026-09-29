@@ -591,11 +591,13 @@ async def _validate(repo_url, name, session_service, metrics):
 
     frozen: set[str] = set()          # tools whose failure didn't change → give up
     last_sig: dict[str, str] = {}
+    asked_for_args: set[str] = set()  # green tools without sample args, asked once
+    replaced: set[str] = set()        # sample args the debugger saved last round
     for rnd in range(config.DEBUGGING_ROUNDS + 1):
         failures: list[str] = []
         for t in plan.tools:
             rep = reports[t.name]
-            if (rnd and rep.passed) or t.name in frozen:
+            if (rnd and rep.passed and t.name not in replaced) or t.name in frozen:
                 continue                      # skip green + given-up tools
             fails = await _check_tool(t, rep)
             n_actions += 1 + bool(t.sample_args)
@@ -614,13 +616,22 @@ async def _validate(repo_url, name, session_service, metrics):
                 failures_by_class[classify_error(f)] = failures_by_class.get(classify_error(f), 0) + 1
             failures += fails
             write_validation(repo_url, name, v)   # incremental (R2)
-            # The args the tool was actually invoked with: plan keys the
-            # generated signature does not accept are dropped, as in _check_tool.
-            shown = _clean_sample_args(t) if t.sample_args is not None else {}
+            # The args the tool was actually invoked with (see _check_tool).
+            shown = rep.invocations[-1]["args"] if t.sample_args is not None and rep.invocations else {}
             await emit({"type": "validation", "tool": t.name,
                         "passed": rep.passed, "status": rep.status,
                         "exec_ok": rep.exec_ok, "input": shown,
                         "error": (rep.error or None) if not rep.passed else None})
+        # A tool whose tests call it fine but with no sample args was never run
+        # directly, and the page has nothing to call it with.
+        no_args = [t.name for t in plan.tools if t.sample_args is None
+                   and reports[t.name].passed and t.name not in asked_for_args]
+        asked_for_args.update(no_args)
+        failures += [f"'{n}' has no sample args, so it was never invoked directly and cannot be "
+                     f"called from the build page. Its tests call it successfully: save a cheap "
+                     f"real invocation taken from them with set_sample_args('{n}', {{...}}). If "
+                     f"every real call needs data this build does not have, say so and leave it."
+                     for n in no_args]
         if not failures:
             break
         if rnd >= config.DEBUGGING_ROUNDS:
@@ -635,8 +646,14 @@ async def _validate(repo_url, name, session_service, metrics):
             f"run_tool_tests / invoke_tool_function:\n\n" + "\n\n".join(failures[:12]),
             memory=v.debugger_actions)
         v.debugger_actions.append(summary[:300])
+        replaced = _take_saved_sample_args(plan)
 
     write_validation(repo_url, name, v)
+    # The plan travels in the image and fills the Call form, so it keeps the args the final code accepts.
+    for spec in plan.tools:
+        if spec.sample_args is not None:
+            spec.sample_args = _clean_sample_args(spec)
+    save_plan(plan)
     c = v.counts()
     update_stage_status("validator", status="passed", counts=c,
                         debugger_rounds=v.debugger_rounds)
@@ -651,6 +668,20 @@ async def _validate(repo_url, name, session_service, metrics):
     metrics["total_actions"] += n_actions
     for label, cnt in failures_by_class.items():
         metrics["failures_by_class"][label] = metrics["failures_by_class"].get(label, 0) + cnt
+
+
+def _take_saved_sample_args(plan) -> set[str]:
+    """Sample args the debugger saved with set_sample_args, for the next round;
+    the names of the tools whose args changed."""
+    saved = {t.name: t.sample_args for t in (load_plan() or plan).tools}
+    changed = set()
+    for spec in plan.tools:
+        if spec.name in saved and saved[spec.name] != spec.sample_args:
+            logger.info(f"[validator] {spec.name}: the debugger replaced the sample args "
+                        f"{spec.sample_args} with {saved[spec.name]}")
+            spec.sample_args = saved[spec.name]
+            changed.add(spec.name)
+    return changed
 
 
 def _clean_sample_args(t: ToolSpec) -> dict:
@@ -682,12 +713,14 @@ async def _check_tool(t: ToolSpec, rep: ToolReport) -> list[str]:
     if t.sample_args is not None:
         args = _clean_sample_args(t)
         r = await invoke_tool_function(t.name, args)
+        err = (r.get("error") or "")[:300]
+        rep.invocations.append({"args": args, "ok": bool(r.get("ok")), "error": err or None})
         if r.get("ok"):
             rep.exec_ok = True
             rep.exec_note = r.get("reason", "")        # runtime-success detail (R6)
         else:
             rep.exec_ok = False
-            rep.error = (r.get("error") or "")[:300]
+            rep.error = err
             fails.append(f"invoke_tool_function('{t.name}', {json.dumps(args)}) crashed:\n"
                          f"{r.get('error','')}\n{(r.get('traceback') or r.get('stderr') or '')[-1200:]}")
     else:

@@ -458,6 +458,9 @@ local_tools:
   "result_formatter:format_results":
     display_name: {ru: "Собрать результаты"}
     description: {ru: "Собирает рисунки и таблицы сессии в папку отчёта и готовит Markdown."}
+  "read_result:read_result":
+    display_name: {ru: "Прочитать сохранённый результат"}
+    description: {ru: "Достаёт нужные значения из полного результата инструмента, сохранённого в хранилище, не читая его целиком."}
   "nir_report:nir_report_outline":
     display_name: {ru: "Показать структуру НИР"}
     description: {ru: "Показывает разделы отчёта по ГОСТ, доказательства и пробелы."}

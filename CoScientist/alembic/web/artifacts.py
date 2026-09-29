@@ -120,6 +120,22 @@ def _load_plan(workdir: Path, repo_url: str) -> Optional[dict]:
     return _read_json(reports_dir(workdir, repo_url) / "plan.json")
 
 
+# The @mcp.tool functions of server.py, for builds and old images without a plan.
+def _tools_from_server(workdir: Path, repo_url: str) -> list:
+    try:
+        tree = ast.parse((output_dir(workdir, repo_url) / "server.py").read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return []
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any("mcp.tool" in ast.unparse(d) for d in node.decorator_list):
+            doc = (ast.get_docstring(node) or "").strip().splitlines()
+            out.append({"name": node.name, "purpose": doc[0] if doc else "", "node": node})
+    return out
+
+
 def _tool_def(workdir: Path, repo_url: str, name: str):
     """The generated function ``name`` from ``tools/<name>.py``, if it parses."""
     try:
@@ -161,17 +177,21 @@ def build_tools(workdir: Path, repo_url: str) -> dict:
     from the generated code (the coder may deviate from the plan), verdicts
     from validation.json."""
     plan = _load_plan(workdir, repo_url)
-    if not plan:
+    from_server = [] if plan else _tools_from_server(workdir, repo_url)
+    if not plan and not from_server:
         return {"tools": [], "title": ""}
     validation = _read_json(reports_dir(workdir, repo_url) / "validation.json") or {}
-    by_name = {t.get("name"): t for t in validation.get("tools", [])}
+    from CoScientist.tools.alembic_hub import tool_verdicts
+
+    by_name = ({t.get("name"): t for t in validation.get("tools", [])}
+               or tool_verdicts(reports_dir(workdir, repo_url)))
     tools = []
-    for t in plan.get("tools", []):
+    for t in plan["tools"] if plan else from_server:
         v = by_name.get(t.get("name"), {})
         status = v.get("status")            # perfect | passed | failed | untested
         badge = {"perfect": "pass", "passed": "pass",
                  "failed": "fail"}.get(status)   # None -> pending in the UI
-        fn = _tool_def(workdir, repo_url, t.get("name") or "")
+        fn = _tool_def(workdir, repo_url, t.get("name") or "") or t.get("node")
         tools.append({
             "name": t.get("name"),
             "sig": ast.unparse(fn.args) if fn else ", ".join(t.get("params") or []),
@@ -185,10 +205,11 @@ def build_tools(workdir: Path, repo_url: str) -> dict:
             "invoc_total": v.get("invoc_total"),
             "perfect": bool(v.get("perfect")),
             "error": v.get("error") or None,
+            "runs": [{"input": i.get("args") or {}, "passed": bool(i.get("ok")),
+                      "error": i.get("error")} for i in (v.get("invocations") or [])],
         })
-    plan_repo = plan.get("repo_url") or repo_url
-    return {"tools": tools,
-            "title": f"{plan_repo.rstrip('/').split('/')[-1]} · MCP server"}
+    plan_repo = (plan or {}).get("repo_url") or repo_url
+    return {"tools": tools, "title": f"{_repo_name(plan_repo)} · MCP server"}
 
 
 def build_examples(workdir: Path, repo_url: str) -> dict:
@@ -200,7 +221,8 @@ def build_examples(workdir: Path, repo_url: str) -> dict:
         sa = t.get("sample_args")
         if sa is None:
             continue
-        out.append({"name": t.get("name"), "args": sa,
+        out.append({"name": t.get("name"),
+                    "args": call_args_for(workdir, repo_url, t.get("name") or "", sa),
                     "evidence": t.get("evidence") or ""})
     return {"examples": out}
 

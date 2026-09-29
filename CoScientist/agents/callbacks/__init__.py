@@ -48,6 +48,7 @@ from CoScientist.agents.callbacks.tool_callbacks import (
     inject_original_query,
     print_research_agent_tool_call,
     redirect_when_no_tools,
+    announce_attached_tools,
 )
 
 __all__ = [
@@ -72,6 +73,7 @@ __all__ = [
     "mirror_plan_after_create",
     "mirror_plan_before_agent",
     "redirect_when_no_tools",
+    "announce_attached_tools",
     "make_unknown_tool_guard",
     "resolve_hallucinated_tool",
     "make_plan_registration_guard",
