@@ -12,6 +12,7 @@ import builtins
 import json
 import os
 import re
+from loguru import logger
 import signal
 import subprocess
 from pathlib import Path
@@ -443,6 +444,58 @@ def _invoke_tool_function_sync(tool_name: str, args: dict | str | None = None) -
     if parsed.get("ok") and "result" in parsed:
         parsed["result"] = _truncate_large_result(parsed["result"])
     return parsed
+
+
+_EXPRESSION_HINT = re.compile(r"(?:np\.|numpy\.|\brange\(|\blist\(|math\.)")
+
+
+def materialise_expression_args(tool_name: str, args: dict) -> tuple[dict, bool]:
+    """Turn a sample arg that is a Python expression in a string into data.
+
+    The planner sometimes writes ``"list(np.concatenate([np.zeros(200), np.ones(100)*0.1]))"``
+    where a list belongs; the tool then json-loads the string and every
+    invocation fails, and the debugger cannot save replacement args when its
+    own call is malformed (KM-ARL build, 2026-09-26: cusum_detect was the one
+    tool of five that stayed failed). The expression is evaluated once in a
+    namespace of numpy and a few builtins, arrays become lists, and the caller
+    keeps the data in the plan so the served tool's Call form gets real input.
+    Returns the args and whether anything changed."""
+    import math
+    out = dict(args or {})
+    changed = False
+    try:
+        import numpy as _np
+    except Exception:  # noqa: BLE001 — no numpy here, plain expressions still work
+        _np = None
+    for key, value in list(out.items()):
+        if not isinstance(value, str) or not _EXPRESSION_HINT.search(value):
+            continue
+        try:
+            json.loads(value)
+            continue
+        except Exception:  # noqa: BLE001 — not JSON, so try it as an expression
+            pass
+        namespace: dict = {"list": list, "range": range, "float": float, "int": int,
+                           "inf": float("inf"), "nan": float("nan"), "math": math}
+        if _np is not None:
+            namespace.update({"np": _np, "numpy": _np})
+        try:
+            result = eval(value, {"__builtins__": {}}, namespace)  # noqa: S307 — plan-authored, runs in the build container
+        except Exception as exc:  # noqa: BLE001
+            logger.info(f"[validator] {tool_name}: sample arg {key!r} is not JSON and not an evaluable expression: {exc}")
+            continue
+        if _np is not None and isinstance(result, (_np.ndarray, _np.generic)):
+            result = result.tolist()
+        elif isinstance(result, (list, tuple)):
+            result = [x.tolist() if _np is not None and isinstance(x, (_np.ndarray, _np.generic)) else x for x in result]
+        try:
+            json.dumps(result)
+        except Exception:  # noqa: BLE001
+            continue
+        logger.info(f"[validator] {tool_name}: sample arg {key!r} evaluated from an expression into data")
+        out[key] = result
+        changed = True
+    return out, changed
 
 
 async def set_sample_args(tool_name: str, args: dict) -> dict:

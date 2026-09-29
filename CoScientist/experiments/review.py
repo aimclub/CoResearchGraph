@@ -1574,6 +1574,14 @@ class ExperimentReviewSessionAgent(SessionAgent):
         cached = dict(raw_cached) if isinstance(raw_cached, dict) else {}
         current = plan
         preflight: dict[str, Any] | None = None
+        build_default = get_settings().experiments.alembic_route_default == "alembic_build"
+        # One build per repository: the first reuse task of a repository is
+        # the one that leaves a tool behind, the later ones (a simulation, a
+        # sweep, a fit) need code around the tool and default to Coder. With
+        # every reuse task sent to the build, KM-ARL run 8 (2026-09-27) built
+        # once, ran its smoke test through the tools, and then owed a
+        # simulation the tool route cannot write.
+        repos_with_build: set[str] = set()
 
         for original in plan.tasks:
             if (
@@ -1624,16 +1632,26 @@ class ExperimentReviewSessionAgent(SessionAgent):
                 )
                 continue
 
+            repo_key = str(original.repo_url or "").strip().rstrip("/").removesuffix(".git").lower()
+            prefer_build = build_default and repo_key not in repos_with_build
+            if build_default and not prefer_build:
+                default_note = (
+                    f"Coder is the default here: an earlier task already builds {original.repo_url}, "
+                    "and this task needs code around the built tool."
+                )
+            elif prefer_build:
+                default_note = "Alembic is the default for this run (EXPERIMENTS__ALEMBIC_ROUTE_DEFAULT)."
+            else:
+                default_note = "Coder is the default because it avoids the container/build step."
             request = HITLRequest(
                 agent_name=self.name,
                 action_type=HITLAction.SELECT,
                 message=(
                     f"Task {original.id} can reuse {original.repo_url} unchanged. "
-                    "Choose direct execution or build a reusable MCP tool. "
-                    "Coder is the default because it avoids the container/build step."
+                    "Choose direct execution or build a reusable MCP tool. " + default_note
                 ),
                 options=[_ROUTE_CODER_OPTION, _ROUTE_ALEMBIC_OPTION],
-                default_option=_ROUTE_CODER_OPTION,
+                default_option=_ROUTE_ALEMBIC_OPTION if prefer_build else _ROUTE_CODER_OPTION,
                 context={
                     "experiment_review_kind": "repository_route",
                     "experiment_plan_id": plan.plan_id,
@@ -1647,13 +1665,24 @@ class ExperimentReviewSessionAgent(SessionAgent):
                 invoked_via="internal_loop",
                 timeout_seconds=timeout_seconds,
             )
-            response = await self.hitl_handler.handle_request(request)
+            if _auto_approve("route"):
+                # The mode answers here, as it does for the plan and result
+                # cards. The handler is not the place for it: a per-session
+                # agent tree built without HITL__ENABLED carries the
+                # fail-closed handler no web runtime ever wires, and the fork
+                # then "timed out" inside two minutes with nobody asked
+                # (KM-ARL run 3, 2026-09-26).
+                response = resolve_auto(request)
+            else:
+                response = await self.hitl_handler.handle_request(request)
             selected = response.selected_option
             if response.approved and selected in {_ROUTE_CODER_OPTION, _ROUTE_ALEMBIC_OPTION}:
                 route = (
                     ExecutionRoute.ALEMBIC_BUILD.value
                     if selected == _ROUTE_ALEMBIC_OPTION else ExecutionRoute.CODER.value
                 )
+                if route == ExecutionRoute.ALEMBIC_BUILD.value:
+                    repos_with_build.add(repo_key)
                 source = getattr(response.decision_source, "value", response.decision_source)
                 cached[key] = {
                     "task_id": original.id,
@@ -1677,7 +1706,10 @@ class ExperimentReviewSessionAgent(SessionAgent):
                 "task_id": original.id,
             }
             state[ROUTE_SELECTIONS_STATE_KEY] = cached
-            _audit(f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason} task={original.id}")
+            _audit(
+                f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason} task={original.id} "
+                f"system_reason={response.system_reason or '-'}"
+            )
             return current, response.model_copy(update={"stop_review_loop": True})
 
         state[ROUTE_SELECTIONS_STATE_KEY] = cached

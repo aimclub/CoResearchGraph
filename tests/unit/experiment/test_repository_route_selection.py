@@ -190,3 +190,74 @@ def test_unchanged_plan_reuses_the_recorded_route_choice(monkeypatch):
     assert calls == 1
     assert selected.tasks[0].route.value == "alembic_build"
     assert selected_again.tasks[0].route.value == "alembic_build"
+
+
+def test_the_automatic_answer_follows_the_configured_default_side(monkeypatch):
+    """HITL mode `auto` answers the Coder/Alembic fork with the default option.
+    Coder stays the default; a study that exists to leave a tool behind sets
+    EXPERIMENTS__ALEMBIC_ROUTE_DEFAULT=alembic_build and gets the build
+    without a human at the review."""
+    monkeypatch.setattr(review_mod, "_alembic_preflight", lambda: {"available": True, "reason": "ok"})
+
+    async def _auto(request):
+        return resolve_auto(request)
+
+    for default, expected in (("coder", "coder"), ("alembic_build", "alembic_build")):
+        monkeypatch.setattr(get_settings().experiments, "alembic_route_default", default)
+        plan = _reuse_plan()
+        state = _state(plan)
+        agent = _agent(monkeypatch, _auto)
+        ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id=f"inv-{default}")
+        selected, response = asyncio.run(agent._select_repository_routes(
+            plan=plan, ctx=ctx, route_alembic=True, user_id="user", session_id="session",
+            timeout_seconds=600.0,
+        ))
+        assert response is None
+        assert selected.tasks[0].route.value == expected, default
+
+
+def test_in_auto_mode_the_fork_is_answered_without_the_handler(monkeypatch):
+    """A per-session agent tree built without HITL__ENABLED carries the
+    fail-closed handler; in mode `auto` the fork must not go through it
+    (KM-ARL run 3, 2026-09-26: "repository_route_timeout" within two minutes,
+    nobody asked)."""
+    monkeypatch.setattr(review_mod, "_auto_approve", lambda kind: True)
+    monkeypatch.setattr(get_settings().experiments, "alembic_route_default", "alembic_build")
+
+    async def _fail_closed(request):
+        return resolve_timeout(reason="no_interactive_reviewer")
+
+    plan = _reuse_plan()
+    state = _state(plan)
+    agent = _agent(monkeypatch, _fail_closed)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-auto-fork")
+    selected, response = asyncio.run(agent._select_repository_routes(
+        plan=plan, ctx=ctx, route_alembic=True, user_id="user", session_id="session",
+        timeout_seconds=0.0,
+    ))
+    assert response is None
+    assert selected.tasks[0].route.value == "alembic_build"
+    assert not state.get("experiment_plan_review_paused")
+
+
+def test_the_build_default_applies_once_per_repository(monkeypatch):
+    """Two reuse tasks of one repository: the first takes the build, the
+    second defaults to Coder (it needs code around the built tool)."""
+    monkeypatch.setattr(review_mod, "_auto_approve", lambda kind: True)
+    monkeypatch.setattr(get_settings().experiments, "alembic_route_default", "alembic_build")
+
+    async def _never(request):  # the mode answers, the handler is not consulted
+        raise AssertionError("handler must not be called in mode auto")
+
+    first = _reuse_plan()
+    second_task = first.tasks[0].model_copy(update={"id": "EXP-2", "depends_on": ["EXP-1"]})
+    plan = first.model_copy(update={"tasks": [first.tasks[0], second_task]})
+    state = _state(plan)
+    agent = _agent(monkeypatch, _never)
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-once-per-repo")
+    selected, response = asyncio.run(agent._select_repository_routes(
+        plan=plan, ctx=ctx, route_alembic=True, user_id="user", session_id="session",
+        timeout_seconds=0.0,
+    ))
+    assert response is None
+    assert [t.route.value for t in selected.tasks] == ["alembic_build", "coder"]

@@ -27,6 +27,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -705,13 +706,16 @@ def _clean_sample_args(t: ToolSpec) -> dict:
     return args
 
 
+
 async def _check_tool(t: ToolSpec, rep: ToolReport) -> list[str]:
     """Run one tool's exec check + pytest file; update its report; return
     failure descriptions for the batched debugger."""
     fails: list[str] = []
 
     if t.sample_args is not None:
-        args = _clean_sample_args(t)
+        args, changed = materialise_expression_args(t.name, _clean_sample_args(t))
+        if changed:
+            t.sample_args = args
         r = await invoke_tool_function(t.name, args)
         err = (r.get("error") or "")[:300]
         rep.invocations.append({"args": args, "ok": bool(r.get("ok")), "error": err or None})

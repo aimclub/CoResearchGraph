@@ -88,3 +88,22 @@ def test_args_that_are_not_a_json_object_are_an_error_not_a_crash():
     assert "JSON object" in invoke._invoke_tool_function_sync("load_cube", "[1, 2]")["error"]
 
 
+def test_a_tool_the_plan_does_not_have_is_refused(plan, monkeypatch):
+    calls = _answers(monkeypatch, {"ok": True, "result": 1})
+
+    out = invoke._set_sample_args_sync("load_cube", _NC)
+
+    assert out["saved"] is False and calls == []
+
+
+def test_a_sample_arg_written_as_a_numpy_expression_becomes_a_list():
+    """cusum_detect's planned input was the string
+    "list(np.concatenate([np.zeros(200), np.ones(100)*0.1]))"; the tool json-loads
+    its input and every invocation failed."""
+    args, changed = invoke.materialise_expression_args("cusum_detect", {
+        "data": "list(np.concatenate([np.zeros(3), np.ones(2) * 0.1]))", "h": 7.5,
+    })
+    assert changed is True
+    assert args["data"] == [0.0, 0.0, 0.0, 0.1, 0.1] and args["h"] == 7.5
+
+

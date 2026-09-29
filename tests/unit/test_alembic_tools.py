@@ -76,6 +76,13 @@ def _host(monkeypatch, containers=None, tags=None, ports=None):
 @pytest.fixture(autouse=True)
 def _enable_alembic_for_tool_mechanics(monkeypatch, tmp_path):
     monkeypatch.setattr(get_settings().experiments, "route_alembic", True)
+    # The durable registry is the host's: a test must neither read the builds
+    # of this machine nor leave its own fake jobs there for the next process.
+    monkeypatch.setattr(alembic_tools, "JOB_METADATA_DIR", tmp_path / "jobs")
+    alembic_tools._JOBS.clear()
+    # The daemon probe is the host's business; the mechanics under test are not.
+    monkeypatch.setattr(alembic_tools, "alembic_preflight",
+                        lambda **kw: {"available": True, "reason": "stub"})
 
 
 def _noop_runner(rec):
@@ -765,4 +772,39 @@ def test_only_unrecorded_servers_that_name_their_repository_are_added(monkeypatc
     assert (gget["repo_url"], gget["origin"]) == ("https://github.com/pachterlab/gget", "unknown")
     assert not (alembic_tools.LOG_DIR / "mystery-external-000001").exists()
 
+
+def test_a_known_build_serving_from_a_new_container_gets_no_second_record(monkeypatch):
+    """Start replaced a container whose S3 settings changed. Until the build's
+    record named the new container, the builds list took it for a server nobody
+    recorded and added mordred-external-<hex> next to mordred-babc36."""
+    fresh = "alembic-serve-mordred-1a28bf"
+    mordred = "https://github.com/mordred-descriptor/mordred"
+    _host(monkeypatch, containers={fresh: {"image_id": "sha256:babc", "running": True}},
+          ports={fresh: "27969"}, tags={"alembic-tool:mordred-babc36": "sha256:babc"})
+    alembic_tools._JOBS["mordred-babc36"] = _make_rec(
+        "mordred-babc36", mordred, mcp_url="http://localhost:27969/mcp",
+        container="alembic-serve-mordred-e1bae8", image_id="sha256:babc")
+    _unrecorded(monkeypatch, [f"{fresh}|"], {
+        "/work/.alembic/mordred/reports/plan.json": json.dumps({"repo_url": mordred})})
+
+    assert alembic_tools.adopt_unclaimed_servers() == []
+    assert list(alembic_tools._JOBS) == ["mordred-babc36"]
+
+
+def test_an_unreachable_docker_daemon_stops_the_build_before_a_job_exists(monkeypatch, tmp_path):
+    """A DOCKER_HOST that does not resolve (b.dgx:2376 on a machine without the
+    VPN) used to fail minutes into the job; the agent hears it at once and is
+    pointed at the coder route instead of retrying the build."""
+    monkeypatch.setattr(alembic_tools, "alembic_preflight", lambda **kw: {
+        "available": False,
+        "reason": "Docker preflight failed: dial tcp: lookup b.dgx: no such host"})
+    monkeypatch.setenv("DOCKER_HOST", "tcp://b.dgx:2376")
+    started = []
+    monkeypatch.setattr(alembic_tools, "_runner", lambda rec: started.append(rec))
+
+    result = asyncio.run(alembic_tools.build_mcp_server("https://github.com/aimclub/GOLEM"))
+
+    assert result["status"] == "error" and result["error_code"] == "docker_unavailable"
+    assert "b.dgx" in result["error"] and "CoderAgent" in result["note"]
+    assert started == [] and alembic_tools._JOBS == {}
 
