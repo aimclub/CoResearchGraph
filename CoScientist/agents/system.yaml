@@ -120,10 +120,9 @@ agents:
     callbacks:
       before_model: [save_uploaded_artifacts, seed_coder_workspace, redact_link_urls]
       before_agent: [before_get_task, mirror_plan_before_agent, inject_graph_root, inject_research_context, user_links]
-      # Catch hallucinated tool calls (e.g. the orchestrator inventing a
-      # sub-agent's `execute_bash`) and correct them, instead of ADK raising
-      # ValueError('Tool not found') and crashing the whole run.
-      after_model: [expand_link_refs, guard_unknown_tools]
+      # The missing-tool patch handles older ADK; ADK 2.9 handles unknown
+      # calls natively. The after_model guard would end the turn on prose.
+      after_model: [expand_link_refs]
       before_tool: [resolve_link_refs]
       after_tool: [register_tool_result_links, mirror_plan_after_create]
       # after_model: [pre_action_critique]
@@ -485,11 +484,11 @@ agents:
     output_key: executor_results
     report_output: true
     callbacks:
-      after_model: [expand_link_refs, guard_unknown_tools]
-      before_agent: [user_links]
+      after_model: [attest_executor_science, expand_link_refs, guard_unknown_tools]
+      before_agent: [reset_executor_science_receipt, user_links]
       before_model: [redact_link_urls]
       before_tool: [resolve_link_refs]
-      after_tool: [register_tool_result_links]
+      after_tool: [register_tool_result_links, capture_scientific_pipeline_receipt]
     a2a:
       key: task_execution
       port: 8004
@@ -783,15 +782,15 @@ agents:
     callbacks:
       # Abstain → recommend CoderAgent when the tool-prep pipeline found no tool
       # that actually matches the task (instead of running a nearest-but-wrong one).
-      before_agent: [redirect_when_no_tools, before_get_task, inject_research_context, user_links]
-      before_model: [redact_link_urls]
+      before_agent: [redirect_when_no_tools, reset_scientific_execution, before_get_task, inject_research_context, user_links]
+      before_model: [redact_link_urls, require_first_scientific_tool_call]
       before_tool: [resolve_link_refs]
-      after_model: [expand_link_refs]
+      after_model: [require_scientific_execution, expand_link_refs]
       # register_tool_result_links catches a URL an MCP tool returns for the
       # link registry; capture_mcp_artifacts separately stashes figure/table
       # artifact URLs (e.g. presigned MinIO PNGs) into state['mcp_artifacts']
       # so the report collector downloads them. Two different jobs, same hook.
-      after_tool: [register_tool_result_links, capture_mcp_artifacts]
+      after_tool: [register_tool_result_links, capture_mcp_artifacts, record_scientific_mcp_result]
 
   # Picks ONE of its children per task. ExperimentAgent normally; FedotAgent only
   # when the tool reranker never actually judged the retrieved candidates (an

@@ -31,7 +31,8 @@ modes are assembled from the same declaration: **`CoScientist/agents/system.yaml
   the same YAML (name, description, skill) and published at
   `/.well-known/agent-card.json` (and the deprecated `/.well-known/agent.json`).
 - The orchestrator is built with `build_system(remote_subagents=True)`: every
-  subordinate becomes a `RemoteA2aAgent` pointing at the sub-agent's card URL.
+  subordinate becomes a `RemoteA2aAgent` with a card built from the same YAML;
+  requests to that agent still use A2A over HTTP.
   From the orchestrator LLM's point of view they are still just tools — same
   roster, prompt and critic wiring as in-process, by construction.
 - Every server attaches an **Opik tracer** so all events/callbacks land in the

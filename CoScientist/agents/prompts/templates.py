@@ -3201,3 +3201,44 @@ def context_init(ctx: PromptContext) -> str:
   ]
 }
 ''', BLOCKS_DESC=blocks_desc)
+
+
+@_register("pilot_task_router")
+def pilot_task_router(ctx: PromptContext) -> str:
+    """Apply the Heracleum routing rule only to the scientific pilot."""
+    return (
+        "## Scientific pilot routing\n"
+        "A named ready MCP tool or server takes priority when it produces the "
+        "requested result. A prepared MCP server or dataset label is not a repository; "
+        "never invent a GitHub URL from its name. Send a scientific computation "
+        "to ToolPipelineAgent with the exact tool name and server id. Use "
+        "CoderAgent for a separate, explicitly requested Git repository task.\n\n"
+        + task_router(ctx)
+    )
+
+
+@_register("pilot_orchestrator")
+def pilot_orchestrator(ctx: PromptContext) -> str:
+    """Put the pilot's science handoff contract before the shared prompt."""
+    from CoScientist.agents.callbacks.pilot_delegation import _PILOT_SCIENCE_TOOLS
+
+    required = ", ".join(_PILOT_SCIENCE_TOOLS)
+    return (
+        "## Scientific pilot handoff\n"
+        f"The final scientific report requires observed results from: {required}. "
+        "Find these tools with retrieve_tools before delegation. If one is "
+        "absent from the discovery results, call retrieve_tools using that exact name. "
+        "Run each required computation; if a tool is unavailable, report its "
+        "actual discovery or execution failure.\n"
+        "dataset_overview_heracleum_tox returns aggregate counts, not a table "
+        "of molecules or SMILES. Once it succeeds, do not repeat it to seek "
+        "row-level data; state that the overview lacks those records.\n"
+        "Run matching ready MCP tools before speculative data collection or "
+        "writing code. Collect an input only if the tool's input_schema actually "
+        "requires it. A prepared MCP server or dataset name is not a GitHub "
+        "repository. Put every retrieved pilot science tool name and server id "
+        "in each scientific TaskExecutorAgent request; identify the target tool "
+        "for that computation. The remote executor receives your request text, "
+        "not the retrieve_tools response.\n\n"
+        + orchestrator(ctx)
+    )

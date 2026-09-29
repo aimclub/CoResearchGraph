@@ -395,12 +395,18 @@ def _subordinate_instance(
 ) -> BaseAgent:
     if remote_subagents and sub.a2a:
         from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
-        from CoScientist.a2a.config import AGENT_CARD_URLS
+        from CoScientist.a2a.server import make_agent_card
+
+        from CoScientist.a2a.graph_scope import make_graph_scope_config
+        from CoScientist.config import get_settings
 
         return RemoteA2aAgent(
             name=sub.name,
-            agent_card=AGENT_CARD_URLS[sub.a2a.key],
+            agent_card=make_agent_card(sub),
             description=sub.description,
+            config=make_graph_scope_config(
+                sub.a2a.key, trace=get_settings().synapse.enabled
+            ),
         )
     return built[sub.name]
 
