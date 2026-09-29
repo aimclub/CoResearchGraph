@@ -33,6 +33,7 @@ const i18n = {
   'agent.TZSpecAgent.desc': { en: 'Technical Spec', ru: 'Техническое задание' },
   'agent.ToolsViewer.desc': { en: 'Tools Viewer', ru: 'Вызовы инструментов' },
   'agent.ToolCatalogue.desc': { en: 'MCP Tool Catalogue', ru: 'Каталог MCP-инструментов' },
+  'agent.AgentTopology.desc': { en: 'MAS Configuration', ru: 'Конфигурация МАС' },
   'agent.KnowledgeGraph.desc': { en: 'Research Graph', ru: 'Граф исследований' },
   'agent.SessionTrace.desc': { en: 'Session Trace', ru: 'Трассировка сессии' },
   'agent.MCPBuilder.desc': { en: 'MCP Builder', ru: 'Сборщик MCP' },
@@ -147,7 +148,6 @@ const i18n = {
   'rail.agentFew': { en: 'agents', ru: 'агента' },
   'rail.agentMany': { en: 'agents', ru: 'агентов' },
   'rail.nowWorking': { en: 'Working now:', ru: 'Сейчас работает' },
-  'rail.toolFailed': { en: '{tool} returned an error', ru: '{tool} вернул ошибку' },
   'rail.noTools': { en: 'No tool calls yet', ru: 'Инструменты ещё не вызывались' },
   'rail.toggle': { en: 'Show/hide agent activity', ru: 'Показать/скрыть активность агентов' },
 
@@ -957,6 +957,23 @@ const i18n = {
   'plan.expandAll': { en: 'Expand all', ru: 'Раскрыть все' },
   'plan.collapseAll': { en: 'Collapse all', ru: 'Свернуть все' },
   'plan.accept': { en: 'Approve', ru: 'Утвердить' },
+  'plan.acceptWithIssues': { en: 'Approve with issues', ru: 'Согласовать с замечаниями' },
+  'plan.exhausted.title': {
+    en: 'Automatic revisions are exhausted',
+    ru: 'Лимит автоматических доработок исчерпан'
+  },
+  'plan.exhausted.body': {
+    en: 'No more model rewrites will run. Review this exact plan and its unresolved issues before deciding.',
+    ru: 'Новых автоматических переписываний не будет. Проверьте именно эту версию плана и оставшиеся замечания перед решением.'
+  },
+  'plan.exhausted.previousBody': {
+    en: 'The latest model answer was structurally invalid, so this is the last schema-valid plan. No more model rewrites will run; approve this exact version or reject it.',
+    ru: 'Последний ответ модели был структурно неверным, поэтому показана последняя версия, прошедшая проверку схемы. Новых автоматических доработок не будет: согласуйте именно эту версию или отклоните её.'
+  },
+  'plan.approvalNotePlaceholder': {
+    en: 'Optional note recorded with your approval',
+    ru: 'Необязательный комментарий к согласованию'
+  },
   'plan.revise': { en: 'Revise', ru: 'Доработать' },
   'plan.reject': { en: 'Reject', ru: 'Отклонить' },
   'plan.feedbackPlaceholder': {

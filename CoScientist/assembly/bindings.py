@@ -1466,6 +1466,7 @@ _EM_CALLBACKS: tuple[tuple[str, str, str], ...] = (
     ("prepare_experiment_user_turn", "before_agent", f"{_EM}.runtime:prepare_experiment_user_turn"),
     # Bounded planner context plus hard AgentTool route guard.
     ("build_experiment_context", "before_agent", f"{_EM}.context:build_experiment_context"),
+    ("check_experiment_plan_capacity", "before_agent", f"{_EM}.plan_policy:check_experiment_plan_capacity"),
     ("commit_experiment_hypotheses", "after_agent", f"{_EM}.hypotheses:commit_experiment_hypotheses"),
     ("persist_experiment_em_request", "before_agent", f"{_EM}.hypotheses:persist_experiment_em_request"),
     ("bootstrap_research_question_if_empty", "before_agent", f"{_EM}.hypotheses:bootstrap_research_question_if_empty"),
@@ -1480,6 +1481,7 @@ _EM_CALLBACKS: tuple[tuple[str, str, str], ...] = (
     # Same snapshot, after ToolRetriever finishes (reranker clears accumulated_tools).
     ("persist_experiment_retrieved_capabilities", "after_agent", f"{_EM}.context:stash_experiment_retrieved_capabilities"),
     ("skip_executor_without_runtime", "before_agent", f"{_EM}.context:skip_executor_without_runtime"),
+    ("skip_literature_only_experiment", "before_agent", f"{_EM}.scope:skip_literature_only_experiment"),
     # After ToolPreparer: lit/knowledge asks with no compute signal → NO_MATCHING_TOOL
     # before Hypotheses/Plan/Coder burn budget on unrelated inventory.
     ("assess_experiment_inventory_feasibility", "after_agent", f"{_EM}.runtime:assess_experiment_inventory_feasibility"),

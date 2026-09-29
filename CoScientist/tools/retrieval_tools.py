@@ -9,6 +9,7 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.adk.agents.readonly_context import ReadonlyContext
 
 from CoScientist.storage import RetrievalToolResult
+from CoScientist.experiments.capabilities.contracts import contract_metadata
 
 from rag_tools import create_manager, MCPServer
 from rag_tools.storage import PostgresClient
@@ -24,9 +25,8 @@ _logger = logging.getLogger(__name__)
 # The full description + input_schema are returned INLINE to the calling agent
 # (planner/orchestrator) in each retrieve_tools response. The session-state
 # `accumulated_tools` is re-injected into the downstream rerankers' prompts on
-# every turn, so there we keep a capped description and drop the schema to avoid
-# unbounded context bloat (and the schema-validation pressure it puts on the
-# structured-output rerankers).
+# every turn, so descriptions are capped. Structured contracts remain in state;
+# each downstream prompt owns its compact projection of those contracts.
 _ACCUM_DESC_CAP = 600
 # Parallel retrieve_tools calls race on read-modify-write of accumulated_tools
 # when ADK clones state per parallel tool invocation. Serialize merges via a
@@ -83,6 +83,7 @@ def _merge_accumulated_tools(
                 "url": getattr(tool_result, "url", None),
                 "tool_index": last_idx,
                 "retrieval_query": query,
+                **contract_metadata(tool_result.model_dump()),
             }
             by_key[key] = row
             last_idx += 1
@@ -91,12 +92,13 @@ def _merge_accumulated_tools(
                 existing["input_schema"] = tool_result.input_schema
             if not existing.get("url") and getattr(tool_result, "url", None):
                 existing["url"] = tool_result.url
+            existing.update(contract_metadata(tool_result.model_dump()))
     # Stable order by tool_index for reranker index alignment.
     return sorted(by_key.values(), key=lambda t: int(t.get("tool_index") or 0))
 
 
 async def _fetch_full_tool_meta(server_ids) -> Dict[tuple, Dict[str, Any]]:
-    """Map ``(server_id, tool_name) -> {description, input_schema, url}`` from the registry."""
+    """Map exact registry identities to descriptions and input/output contracts."""
     meta: Dict[tuple, Dict[str, Any]] = {}
     if not server_ids:
         return meta
@@ -130,10 +132,19 @@ async def _fetch_full_tool_meta(server_ids) -> Dict[tuple, Dict[str, Any]]:
                 if schema is not None and not isinstance(schema, dict):
                     dump = getattr(schema, "model_dump", None)
                     schema = dump() if callable(dump) else getattr(schema, "__dict__", None)
+                output_schema = getattr(t, "output_schema", None)
+                if output_schema is not None and not isinstance(output_schema, dict):
+                    dump = getattr(output_schema, "model_dump", None)
+                    output_schema = dump() if callable(dump) else getattr(output_schema, "__dict__", None)
                 meta[(sid, name)] = {
                     "description": getattr(t, "description", None),
                     "input_schema": schema,
                     "url": server_urls.get(sid),
+                    **contract_metadata({
+                        "input_schema": schema,
+                        "output_schema": output_schema,
+                        "data_contract": getattr(t, "data_contract", None),
+                    }),
                 }
     finally:
         await postgres.close()
@@ -201,6 +212,8 @@ class RetrievalToolSet(BaseToolset):
                     server_id=r.server_id,
                     description=full_meta.get((r.server_id, r.name), {}).get("description") or r.description,
                     input_schema=full_meta.get((r.server_id, r.name), {}).get("input_schema"),
+                    output_schema=full_meta.get((r.server_id, r.name), {}).get("output_schema"),
+                    data_contract=full_meta.get((r.server_id, r.name), {}).get("data_contract"),
                     score=r.rerank_score,
                     url=full_meta.get((r.server_id, r.name), {}).get("url"),
                 )

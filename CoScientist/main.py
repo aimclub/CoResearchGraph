@@ -12,6 +12,7 @@ load_dotenv()
 
 import asyncio
 import os
+from contextlib import nullcontext
 from typing import Optional, Sequence
 import logging
 from uuid import uuid4
@@ -21,7 +22,8 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.agents.run_config import RunConfig
 from google.genai import types
 
-from CoScientist.config import get_settings, ReportConfig
+from CoScientist.config import get_settings, settings_scope, ReportConfig
+from CoScientist.config.settings import Settings
 from CoScientist.checkpoints.runner import CheckpointRunner as Runner
 from CoScientist.agents import orchestrator_agent, root_agent, run_root, build_for_mode
 from CoScientist.reporting import finalize_report, RunResult
@@ -142,6 +144,7 @@ class CoScientistManager:
         session_service: Optional[BaseSessionService] = None,
         initial_state: Optional[dict] = None,
         plugins: Optional[Sequence[object]] = None,
+        settings_override: Optional[Settings] = None,
     ):
         self.app_name = app_name
         self.user_id = user_id or f"user_{uuid4().hex}"
@@ -154,6 +157,9 @@ class CoScientistManager:
         # Integrations may add observer-only ADK plugins (for example the
         # Codesynapse trace exporter) without replacing the core runtime stack.
         self._additional_plugins = list(plugins or ())
+        # The web binds one immutable settings snapshot to each run. CLI users
+        # leave this unset and continue to read the process configuration.
+        self.settings_override = settings_override
 
         # Web mode injects one shared service so managers can reopen existing
         # sessions. CLI mode falls back to a private in-memory service.
@@ -167,7 +173,19 @@ class CoScientistManager:
         self._hitl_handler = hitl_handler
 
 
+    def settings_context(self):
+        """Bind this manager's settings for assembly and the complete run."""
+        return (
+            settings_scope(self.settings_override)
+            if self.settings_override is not None
+            else nullcontext(get_settings())
+        )
+
     async def initialize(self):
+        with self.settings_context():
+            await self._initialize()
+
+    async def _initialize(self):
         """Initialize session + runner."""
         if self._initialized:
             return
@@ -214,6 +232,7 @@ class CoScientistManager:
             from CoScientist.agents.loop_guard_plugin import RepeatCallGuardPlugin
             from CoScientist.tools.session_scope_plugin import SessionScopePlugin
             from CoScientist.agents.checkpoint_plugin import CheckpointPlugin
+            from CoScientist.agents.run_control_plugin import RunControlPlugin
 
             # Build the agent system (reads start_mode + tunable params from settings).
             system = build_for_mode()
@@ -222,6 +241,7 @@ class CoScientistManager:
                 # Stage boundary snapshots and deterministic fast-forward
                 # must run before observers and agent-local callbacks.
                 CheckpointPlugin(),
+                RunControlPlugin(),
                 # First: deterministically refuse training on a fabricated
                 # dataset (before_tool gate) — fabrication buys nothing.
                 ArtifactGatePlugin(),
@@ -370,6 +390,19 @@ class CoScientistManager:
         verbose: bool = True,
         report_config: Optional[ReportConfig] = None,
     ) -> RunResult:
+        with self.settings_context():
+            from CoScientist.execution_control import current_run
+            if current_run() is not None:
+                return await self._run(query, verbose=verbose, report_config=report_config)
+            from CoScientist.execution_cli import run_with_control
+            return await run_with_control(self, query, verbose=verbose, report_config=report_config)
+
+    async def _run(
+        self,
+        query: str,
+        verbose: bool = True,
+        report_config: Optional[ReportConfig] = None,
+    ) -> RunResult:
         """Run the full pipeline and package the report.
 
         The whole lifecycle (orchestrator → Result Aggregator) is ONE ADK
@@ -415,10 +448,10 @@ class CoScientistManager:
                     user_id=self.user_id,
                     session_id=self.session_id,
                     new_message=msg,
-                    # Lift ADK's 500-LLM-call default so a long autonomous run driven
-                    # by a single prompt isn't cut off mid-work (finite cost backstop).
+                    # One durable provider-attempt quota covers nested runners;
+                    # ADK's independent per-invocation counter cannot do that.
                     run_config=RunConfig(
-                        max_llm_calls=get_settings().orchestrator.max_llm_calls
+                        max_llm_calls=0
                     ),
                 ):
                     if verbose:
@@ -516,6 +549,8 @@ class CoScientistManager:
             pass
 
         # Package the deliverable: report.md + LaTeX (per config) + MANIFEST.json.
+        from CoScientist.execution_control import before_tool_action
+        await before_tool_action("finalize_report")
         return await asyncio.to_thread(
             finalize_report, self.session_id, report_markdown, report_config, state,
         )

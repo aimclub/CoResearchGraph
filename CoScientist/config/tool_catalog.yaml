@@ -301,6 +301,320 @@ tool_defaults:
     display_name: {ru: "Обновить описание артефакта"}
     description: {ru: "Записывает краткое человекочитаемое описание для выбранного файла в хранилище."}
 
+local_tools:
+  "websearch:tavily_search":
+    display_name: {ru: "Поиск в интернете"}
+    description: {ru: "Ищет актуальные сведения и источники в интернете по заданному запросу."}
+  "websearch:tavily_extract":
+    display_name: {ru: "Извлечь содержимое страниц"}
+    description: {ru: "Читает содержимое указанных веб-страниц и URL."}
+  "websearch:tavily_crawl":
+    display_name: {ru: "Обойти сайт"}
+    description: {ru: "Обходит сайт от указанной страницы, когда одной страницы недостаточно."}
+  "paper_analysis:explore_scientific_database":
+    display_name: {ru: "Исследовать научную базу"}
+    description: {ru: "Ищет ответ с фрагментами подтверждения во внутренней базе научной литературы."}
+  "paper_analysis:find_papers_in_db":
+    display_name: {ru: "Найти статьи в базе"}
+    description: {ru: "Находит релевантные статьи во внутренней базе научной литературы."}
+  "paper_analysis:get_papers_database_statistics":
+    display_name: {ru: "Статистика базы статей"}
+    description: {ru: "Показывает число статей и их распределение по областям и направлениям."}
+  "paper_analysis:explore_my_papers":
+    display_name: {ru: "Исследовать мои статьи"}
+    description: {ru: "Отвечает на вопросы по загруженным или ранее скачанным статьям."}
+  "vault:get_upload_link":
+    display_name: {ru: "Получить ссылку для загрузки"}
+    description: {ru: "Создаёт временную ссылку для загрузки файла в хранилище сессии."}
+  "vault:get_download_link":
+    display_name: {ru: "Получить ссылку для скачивания"}
+    description: {ru: "Создаёт временную ссылку для скачивания файла из хранилища."}
+  "papers_search:search_papers":
+    display_name: {ru: "Искать научные статьи"}
+    description: {ru: "Ищет научные статьи в OpenAlex по ключевым словам."}
+  "papers_search:download_papers_from_search":
+    display_name: {ru: "Скачать найденные статьи"}
+    description: {ru: "Ищет и скачивает статьи для последующего анализа."}
+  "retrieval:retrieve_tools":
+    display_name: {ru: "Найти инструменты по возможностям"}
+    description: {ru: "Ищет в реестре MCP-инструменты, подходящие под описание задачи."}
+  "retrieval:get_server_info":
+    display_name: {ru: "Сведения о сервере"}
+    description: {ru: "Возвращает метаданные выбранного MCP-сервера."}
+  "planner_retrieval:retrieve_tools":
+    display_name: {ru: "Найти инструменты по возможностям"}
+    description: {ru: "Ищет в реестре MCP-инструменты, подходящие под описание задачи."}
+  "planner_retrieval:get_server_info":
+    display_name: {ru: "Сведения о сервере"}
+    description: {ru: "Возвращает метаданные выбранного MCP-сервера."}
+  "task_tracker:get_active_tasks":
+    display_name: {ru: "Показать активные задачи"}
+    description: {ru: "Возвращает задачи текущей сессии ADK."}
+  "task_tracker:update_task_status":
+    display_name: {ru: "Обновить статус задачи"}
+    description: {ru: "Устанавливает статус задачи: выполнена, не выполнена или выполняется."}
+  "graph:read_research_graph":
+    display_name: {ru: "Прочитать граф исследования"}
+    description: {ru: "Читает общий граф знаний с участниками и всеми шагами исследования."}
+  "graph:get_graph_history":
+    display_name: {ru: "История графа исследования"}
+    description: {ru: "Показывает хронологию шагов текущей сессии."}
+  "graph:get_agents_info":
+    display_name: {ru: "Сведения об агентах"}
+    description: {ru: "Возвращает структурированные сведения обо всех агентах системы."}
+  "planner_graph:read_research_graph":
+    display_name: {ru: "Прочитать граф исследования"}
+    description: {ru: "Читает общий граф знаний с участниками и всеми шагами исследования."}
+  "planner_graph:get_graph_history":
+    display_name: {ru: "История графа исследования"}
+    description: {ru: "Показывает хронологию шагов текущей сессии."}
+  "planner_graph:get_agents_info":
+    display_name: {ru: "Сведения об агентах"}
+    description: {ru: "Возвращает структурированные сведения обо всех агентах системы."}
+  "experiment_control:get_experiment_plan":
+    display_name: {ru: "Получить план эксперимента"}
+    description: {ru: "Читает утверждённый план эксперимента и состояние попыток."}
+  "experiment_control:start_task":
+    display_name: {ru: "Начать задачу эксперимента"}
+    description: {ru: "Создаёт новую попытку задачи и область её маршрута."}
+  "experiment_control:record_result":
+    display_name: {ru: "Записать результат задачи"}
+    description: {ru: "Проверяет и сохраняет итоговый результат попытки."}
+  "experiment_control:retry_task":
+    display_name: {ru: "Повторить задачу"}
+    description: {ru: "Разрешает повтор задачи после ошибки, допускающей повтор."}
+  "experiment_control:fallback_task":
+    display_name: {ru: "Перейти к запасному маршруту"}
+    description: {ru: "Переводит задачу на следующий маршрут цепочки обхода ошибок."}
+  "experiment_control:skip_task":
+    display_name: {ru: "Пропустить задачу"}
+    description: {ru: "Пропускает необязательную задачу и сохраняет это решение."}
+  "experiment_control:amend_task":
+    display_name: {ru: "Изменить задачу"}
+    description: {ru: "Изменяет ещё не начатую задачу с указанием причины."}
+  "research_graph:research_commit":
+    display_name: {ru: "Записать результаты исследования"}
+    description: {ru: "Атомарно добавляет результаты, связи и статусы в общий граф."}
+  "research_graph:research_context_slice":
+    display_name: {ru: "Получить фрагмент контекста"}
+    description: {ru: "Возвращает узел и его соседей на один или два перехода."}
+  "research_graph:research_overview":
+    display_name: {ru: "Обзор графа исследования"}
+    description: {ru: "Показывает компактный индекс узлов, типов и статусов графа."}
+  "research_graph:research_provenance":
+    display_name: {ru: "Происхождение узла"}
+    description: {ru: "Прослеживает узел до исходного вопроса и его источников."}
+  "research_graph_orchestrator:research_commit":
+    display_name: {ru: "Записать результаты исследования"}
+    description: {ru: "Атомарно добавляет результаты, связи и статусы в общий граф."}
+  "research_graph_orchestrator:research_context_slice":
+    display_name: {ru: "Получить фрагмент контекста"}
+    description: {ru: "Возвращает узел и его соседей на один или два перехода."}
+  "research_graph_orchestrator:research_overview":
+    display_name: {ru: "Обзор графа исследования"}
+    description: {ru: "Показывает компактный индекс узлов, типов и статусов графа."}
+  "research_graph_orchestrator:research_provenance":
+    display_name: {ru: "Происхождение узла"}
+    description: {ru: "Прослеживает узел до исходного вопроса и его источников."}
+  "research_graph_orchestrator:research_init":
+    display_name: {ru: "Инициализировать исследование"}
+    description: {ru: "Создаёт корневой вопрос и контекст нового исследования."}
+  "research_graph_orchestrator:research_prior":
+    display_name: {ru: "Найти результаты прошлых исследований"}
+    description: {ru: "Ищет связанные прошлые исследования, гипотезы, методы и выводы."}
+  "research_graph_orchestrator:research_triggers":
+    display_name: {ru: "Проверить триггеры исследования"}
+    description: {ru: "Оценивает готовность, блокировки, вопросы и прогресс исследования."}
+  "research_graph_orchestrator:research_set_focus":
+    display_name: {ru: "Задать фокус исследования"}
+    description: {ru: "Задаёт узел, на котором сосредоточится следующий исполнитель."}
+  "research_graph_readonly:research_context_slice":
+    display_name: {ru: "Получить фрагмент контекста"}
+    description: {ru: "Возвращает узел и его соседей на один или два перехода."}
+  "research_graph_readonly:research_overview":
+    display_name: {ru: "Обзор графа исследования"}
+    description: {ru: "Показывает компактный индекс узлов, типов и статусов графа."}
+  "research_graph_readonly:research_provenance":
+    display_name: {ru: "Происхождение узла"}
+    description: {ru: "Прослеживает узел до исходного вопроса и его источников."}
+  "verify:validate_dataset":
+    display_name: {ru: "Проверить набор данных"}
+    description: {ru: "Проверяет, что набор содержит реальные разнообразные молекулы и целевой столбец."}
+  "verify:validate_training":
+    display_name: {ru: "Проверить обучение"}
+    description: {ru: "Проверяет сохранённую модель и снижение ошибки обучения."}
+  "create_plan_tool:create_plan":
+    display_name: {ru: "Создать план"}
+    description: {ru: "Заменяет список задач новым планом с порядком и исполнителями."}
+  "sleep:sleep_tool":
+    display_name: {ru: "Подождать"}
+    description: {ru: "Делает паузу перед следующей проверкой длительной задачи."}
+  "mcp_server_search:search_mcp_servers":
+    display_name: {ru: "Найти MCP-серверы"}
+    description: {ru: "Ищет публичные MCP-реестры по описанию возможностей сервера."}
+  "fedot:fedot_tool":
+    display_name: {ru: "Запустить FEDOT.MAS"}
+    description: {ru: "Строит и запускает мультиагентный конвейер FEDOT.MAS для решения задачи."}
+  "result_formatter:format_results":
+    display_name: {ru: "Собрать результаты"}
+    description: {ru: "Собирает рисунки и таблицы сессии в папку отчёта и готовит Markdown."}
+  "read_result:read_result":
+    display_name: {ru: "Прочитать сохранённый результат"}
+    description: {ru: "Достаёт нужные значения из полного результата инструмента, сохранённого в хранилище, не читая его целиком."}
+  "nir_report:nir_report_outline":
+    display_name: {ru: "Показать структуру НИР"}
+    description: {ru: "Показывает разделы отчёта по ГОСТ, доказательства и пробелы."}
+  "nir_report:nir_report_draft":
+    display_name: {ru: "Подготовить черновик НИР"}
+    description: {ru: "Собирает текст исследования в документ по ГОСТ и проверяет его локально."}
+  "nir_report:nir_report_submit":
+    display_name: {ru: "Отправить НИР на проверку"}
+    description: {ru: "Проверяет отчёт на сервере нормоконтроля и формирует DOCX."}
+  "medical:search_pubmed":
+    display_name: {ru: "Искать в PubMed"}
+    description: {ru: "Ищет рецензируемые медицинские публикации по заданной теме."}
+  "medical:get_pico":
+    display_name: {ru: "Извлечь PICO"}
+    description: {ru: "Извлекает из аннотации структуру Population, Intervention, Comparison, Outcome."}
+  "medical:get_study_taxonomy":
+    display_name: {ru: "Классифицировать дизайн исследования"}
+    description: {ru: "Определяет тип и подтип дизайна медицинского исследования."}
+  "medical:analyze_medical_image":
+    display_name: {ru: "Анализировать медицинское изображение"}
+    description: {ru: "Интерпретирует загруженное изображение или DICOM-файл."}
+  "coder:execute_bash":
+    display_name: {ru: "Выполнить команду"}
+    description: {ru: "Запускает команду в рабочей песочнице и возвращает результат."}
+  "coder:check_job":
+    display_name: {ru: "Проверить фоновую задачу"}
+    description: {ru: "Проверяет длительную задачу, запущенную командой execute_bash."}
+  "coder:read_file":
+    display_name: {ru: "Прочитать файл"}
+    description: {ru: "Читает код, конфигурацию или данные из файла."}
+  "coder:write_file":
+    display_name: {ru: "Записать файл"}
+    description: {ru: "Создаёт или изменяет файл в рабочем каталоге."}
+  "coder:list_directory":
+    display_name: {ru: "Показать каталог"}
+    description: {ru: "Показывает содержимое каталога."}
+  "coder:install_package":
+    display_name: {ru: "Установить пакет"}
+    description: {ru: "Устанавливает Python-зависимость в рабочую среду."}
+  "alembic:build_mcp_server":
+    display_name: {ru: "Собрать MCP-сервер"}
+    description: {ru: "Запускает сборку MCP-сервера из научного GitHub-репозитория."}
+  "alembic:check_mcp_build":
+    display_name: {ru: "Проверить сборку MCP"}
+    description: {ru: "Показывает статус и журнал сборки MCP-сервера."}
+  "alembic:list_mcp_builds":
+    display_name: {ru: "Показать сборки MCP"}
+    description: {ru: "Показывает известные процессу текущие и завершённые сборки."}
+  "sandbox:run_sandbox_task":
+    display_name: {ru: "Запустить задачу в песочнице"}
+    description: {ru: "Передаёт тяжёлую или длительную работу автономному агенту песочницы."}
+  "sandbox:check_sandbox_task":
+    display_name: {ru: "Проверить задачу песочницы"}
+    description: {ru: "Получает результат задачи песочницы, которая ещё выполнялась."}
+  "sandbox:list_sandbox_files":
+    display_name: {ru: "Показать файлы песочницы"}
+    description: {ru: "Показывает файлы в рабочем каталоге песочницы."}
+  "sandbox:fetch_sandbox_artifact":
+    display_name: {ru: "Забрать артефакт песочницы"}
+    description: {ru: "Переносит файл из песочницы в постоянное хранилище."}
+  "fill_tz_section:fill_tz_section":
+    display_name: {ru: "Заполнить раздел ТЗ"}
+    description: {ru: "Сохраняет один следующий раздел технического задания."}
+  "fill_agent_fields:fill_agent_fields":
+    display_name: {ru: "Заполнить поля ТЗ"}
+    description: {ru: "Заполняет поля технического задания, оставленные оператором."}
+  "edit_tz_section:edit_tz_section":
+    display_name: {ru: "Изменить раздел ТЗ"}
+    description: {ru: "Заменяет поля одного уже собранного раздела технического задания."}
+  "molecular_design:molecular_design":
+    display_name: {ru: "Спроектировать молекулы"}
+    description: {ru: "Отбирает литературные аналоги с учётом дескрипторов и ограничений ТЗ."}
+  "retrosynthesis:retrosynthesis_routes":
+    display_name: {ru: "Построить ретросинтетические маршруты"}
+    description: {ru: "Ищет маршруты синтеза целевой молекулы в дереве ретросинтеза."}
+  "retrosynthesis:predict_reaction_products":
+    display_name: {ru: "Предсказать продукты реакции"}
+    description: {ru: "Предсказывает продукты для заданного набора реагентов."}
+  "retrosynthesis:classify_reactions":
+    display_name: {ru: "Классифицировать реакции"}
+    description: {ru: "Определяет классы реакций по реакционным SMILES."}
+  "economics_mcp_stub:economics_mcp_stub":
+    display_name: {ru: "Оценить стоимость маршрута (заглушка)"}
+    description: {ru: "Оценивает стоимость синтеза и доступность реагентов в режиме заглушки."}
+  "economics_mcp:resolve_chemicals":
+    display_name: {ru: "Разрешить химические названия"}
+    description: {ru: "Преобразует названия или SMILES в структуры и идентификаторы веществ."}
+  "economics_mcp:rank_routes_by_cost":
+    display_name: {ru: "Ранжировать маршруты по стоимости"}
+    description: {ru: "Сравнивает синтетические маршруты по оценённой стоимости и рискам поставок."}
+  "economics_mcp:estimate_synthesis_cost":
+    display_name: {ru: "Оценить стоимость синтеза"}
+    description: {ru: "Рассчитывает ориентировочную стоимость синтеза по маршруту и реагентам."}
+  "economics_mcp:get_price":
+    display_name: {ru: "Получить цену реагента"}
+    description: {ru: "Находит предложение и цену выбранного реагента."}
+  "economics_mcp:search_by_structure":
+    display_name: {ru: "Искать реагенты по структуре"}
+    description: {ru: "Ищет вещества по структуре, подструктуре или связности."}
+  "economics_mcp:search_reagents_by_name":
+    display_name: {ru: "Искать реагенты по названию"}
+    description: {ru: "Выполняет нечёткий поиск реагента по названию и предложениям поставщиков."}
+  "cfd_mcp:cfd_list_reactors":
+    display_name: {ru: "Показать CFD-реакторы"}
+    description: {ru: "Возвращает доступные геометрии реакторов и их возможности."}
+  "cfd_mcp:cfd_run_reactor_experiment":
+    display_name: {ru: "Запустить CFD-эксперимент"}
+    description: {ru: "Запускает расчёт течения, смешения и реакции в выбранном реакторе."}
+  "cfd_mcp:cfd_get_experiment_result":
+    display_name: {ru: "Получить результат CFD"}
+    description: {ru: "Возвращает состояние и результат расчёта по идентификатору запуска."}
+  "cfd_mcp:cfd_list_artifacts":
+    display_name: {ru: "Показать CFD-артефакты"}
+    description: {ru: "Показывает файлы, созданные CFD-расчётом."}
+  "cfd_mcp:cfd_cancel_run":
+    display_name: {ru: "Отменить CFD-запуск"}
+    description: {ru: "Останавливает выполняющийся CFD-расчёт."}
+  "cfd_mcp_stub:cfd_mcp_stub":
+    display_name: {ru: "Смоделировать поток (заглушка)"}
+    description: {ru: "Оценивает перепад давления, смешение и время пребывания в режиме заглушки."}
+  "rig_mcp_stub:rig_mcp_stub":
+    display_name: {ru: "Управить микрофлюидным стендом (заглушка)"}
+    description: {ru: "Передаёт команду микрофлюидному стенду и читает его состояние."}
+  "optimization_a2a:optimization_start":
+    display_name: {ru: "Запустить оптимизацию"}
+    description: {ru: "Передаёт проверенный план во внешний процесс оптимизации."}
+  "optimization_a2a:optimization_get_status":
+    display_name: {ru: "Проверить оптимизацию"}
+    description: {ru: "Получает статус задачи оптимизации и сохраняет ответы и артефакты."}
+  "optimization_a2a:optimization_provide_input":
+    display_name: {ru: "Передать данные оптимизации"}
+    description: {ru: "Отвечает на запрос уточнения внешней задачи оптимизации."}
+  "optimization_a2a:optimization_approve":
+    display_name: {ru: "Одобрить оптимизацию"}
+    description: {ru: "Подтверждает внешний план в рамках разрешённого задания."}
+  "campaign_a2a:campaign_start":
+    display_name: {ru: "Запустить кампанию"}
+    description: {ru: "Запускает кампанию оптимизации условий потока и синтеза."}
+  "campaign_a2a:campaign_get_status":
+    display_name: {ru: "Проверить кампанию"}
+    description: {ru: "Получает статус кампании и нормализует её результат."}
+  "campaign_a2a:campaign_provide_input":
+    display_name: {ru: "Передать данные кампании"}
+    description: {ru: "Отвечает на запрос уточнения внешней кампании."}
+  "campaign_a2a:campaign_approve":
+    display_name: {ru: "Одобрить кампанию"}
+    description: {ru: "Подтверждает план кампании после согласования оператором."}
+  "operator_screening_override:operator_authorize_screening_override":
+    display_name: {ru: "Одобрить исключение отбора"}
+    description: {ru: "Запрашивает у оператора разрешение на проверку отклонённых маршрутов."}
+  "finish_optimization:finish_optimization":
+    display_name: {ru: "Завершить оптимизацию"}
+    description: {ru: "Завершает цикл уточнения эксперимента и переводит работу к отчёту."}
+
 tools:
   "d6dac6fb09066080:train_ml":
     priority: 0

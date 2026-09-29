@@ -158,7 +158,7 @@ class ExecutionRoute(str, Enum):
     FEDOT_MAS = "fedot_mas"
     CODER = "coder"
     ALEMBIC_BUILD = "alembic_build"
-    RESEARCH = "research"
+    RESEARCH = "research"  # Legacy snapshots only; review/runtime refuse new execution.
     MEDICAL = "medical"
 
 
@@ -174,6 +174,8 @@ class MCPToolRef(StrictModel):
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
     input_schema: OptionalJsonObjectDict = None
+    output_schema: OptionalJsonObjectDict = None
+    data_contract: OptionalJsonObjectDict = None
     required_for_task: bool = True
 
     @model_validator(mode="before")
@@ -283,6 +285,7 @@ class DataRef(StrictModel):
     media_type: str | None = None
     required: bool = True
     prepare_instruction: str | None = None
+    dataset_scope: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -424,6 +427,10 @@ class SuccessCriterion(StrictModel):
     criterion_id: str = Field(min_length=1)
     description: str = Field(min_length=1)
     kind: Literal["threshold", "artifact_exists", "schema", "execution", "expert"]
+    # Execution criteria answer "did the requested operation deliver its core
+    # output?".  Assessment criteria answer "was that output scientifically
+    # good enough?".  The latter must never silently become a technical retry.
+    purpose: Literal["execution", "assessment"] = "execution"
     metric: str | None = None
     operator: Literal["<", "<=", "==", ">=", ">", "in"] | None = None
     target: Any | None = None
@@ -437,6 +444,10 @@ class SuccessCriterion(StrictModel):
             return value
         raw = dict(value)
         kind = str(raw.get("kind") or "").strip().lower()
+        if not str(raw.get("purpose") or "").strip():
+            raw["purpose"] = (
+                "assessment" if kind in {"threshold", "expert"} else "execution"
+            )
         if kind and kind != "threshold":
             # LLMs often copy metric/operator/target onto artifact_exists/etc.
             raw["metric"] = None
@@ -707,6 +718,7 @@ def _coerce_optional_metrics(value: Any) -> list[Any]:
 
 class DesignDataset(StrictModel):
     name: str = ""
+    dataset_scope: str | None = None
     ref: Annotated[
         DataRef | None,
         BeforeValidator(_coerce_design_dataset_ref),

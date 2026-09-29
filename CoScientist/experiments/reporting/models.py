@@ -81,6 +81,10 @@ class ArtifactRef(StrictModel):
 
 class CriterionCheck(StrictModel):
     criterion_id: str = Field(min_length=1)
+    # Defaults to the historical behaviour for callers constructing a check
+    # outside record_result.  The runtime replaces it with the plan's canonical
+    # purpose before validation.
+    purpose: Literal["execution", "assessment"] = "execution"
     passed: bool | None = None
     observed: Any | None = None
     evidence_artifact_ids: list[str] = Field(default_factory=list)
@@ -112,6 +116,10 @@ class TaskResult(StrictModel):
     attempt_id: str = Field(min_length=1)
     attempt_no: int = Field(ge=1)
     status: Literal["success", "partial", "failure", "skipped"]
+    execution_status: Literal["completed", "completed_with_limits", "failed", "skipped"] = "failed"
+    assessment_status: Literal["met", "not_met", "inconclusive", "not_evaluated"] = "not_evaluated"
+    result_version: int = Field(default=1, ge=1)
+    supersedes_result_id: str | None = None
     planned_route: ExecutionRoute
     route_used: ExecutionRoute
     started_at: datetime
@@ -126,6 +134,39 @@ class TaskResult(StrictModel):
     retryable: bool = False
     warnings: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def derive_separate_statuses(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        raw = dict(value)
+        status = str(raw.get("status") or "")
+        raw.setdefault("execution_status", {
+            "success": "completed",
+            "partial": "completed_with_limits",
+            "failure": "failed",
+            "skipped": "skipped",
+        }.get(status, "failed"))
+        if "assessment_status" not in raw:
+            assessment = [
+                item for item in (raw.get("criteria_checks") or [])
+                if (
+                    (isinstance(item, dict) and item.get("purpose") == "assessment")
+                    or getattr(item, "purpose", None) == "assessment"
+                )
+            ]
+            def _passed(item: Any) -> Any:
+                return item.get("passed") if isinstance(item, dict) else getattr(item, "passed", None)
+            if not assessment:
+                raw["assessment_status"] = "not_evaluated"
+            elif any(_passed(item) is False for item in assessment):
+                raw["assessment_status"] = "not_met"
+            elif all(_passed(item) is True for item in assessment):
+                raw["assessment_status"] = "met"
+            else:
+                raw["assessment_status"] = "inconclusive"
+        return raw
+
     @field_validator("started_at", "finished_at")
     @classmethod
     def validate_timestamps(cls, value: datetime) -> datetime:
@@ -137,8 +178,13 @@ class TaskResult(StrictModel):
             raise ValueError("finished_at must be >= started_at")
         if self.status == "failure" and not (self.error_code and self.error_message):
             raise ValueError("failure requires error_code and error_message")
-        if self.status == "success" and any(c.passed is not True for c in self.criteria_checks):
-            raise ValueError("success requires all supplied criteria checks to pass")
+        if self.status == "success" and any(
+            c.purpose == "execution" and c.passed is not True
+            for c in self.criteria_checks
+        ):
+            raise ValueError("success requires all execution criteria checks to pass")
+        if self.status != "failure" and self.retryable:
+            raise ValueError("only technical failures may be retryable")
         for a in self.artifacts:
             if (a.plan_id, a.task_id, a.attempt_id) != (self.plan_id, self.task_id, self.attempt_id):
                 raise ValueError("artifact identity must match the TaskResult attempt")

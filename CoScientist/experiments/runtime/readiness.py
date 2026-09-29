@@ -89,7 +89,20 @@ def refresh_readiness(runtime: dict[str, Any]) -> None:
             for dep_id, status in zip(dep_ids, deps)
         )
         if hard_fail:
-            task["status"], task["last_message"] = "blocked", "A required dependency failed."
+            failed = [
+                f"{dep_id}:{status}"
+                for dep_id, status in zip(dep_ids, deps)
+                if status in {"failed", "blocked"}
+                and not dep_is_soft_evidence(runtime, dep_id, task["task"])
+            ]
+            task["status"] = "blocked"
+            task["blocked_reason"] = {
+                "code": "required_dependency_failed",
+                "dependencies": failed,
+            }
+            task["last_message"] = (
+                "Required dependency failed: " + ", ".join(failed)
+            )
         elif all(
             status in SUCCESS_DEPENDENCY_STATES
             or (
@@ -102,8 +115,20 @@ def refresh_readiness(runtime: dict[str, Any]) -> None:
             if missing := missing_task_artifacts(runtime, dumped):
                 if artifact_producers_terminal(runtime, task_id, dumped):
                     task["status"] = "blocked"
+                    task["blocked_reason"] = {
+                        "code": "required_upstream_artifact_missing",
+                        "artifacts": [
+                            {
+                                "source_task_id": str(ref.source_task_id or ""),
+                                "source_artifact_id": str(ref.source_artifact_id or ""),
+                            }
+                            for ref in ExperimentTask.model_validate(dumped).input_data
+                            if ref.required and ref.kind == "task_artifact"
+                        ],
+                    }
                     task["last_message"] = (
-                        "Required upstream artifact is missing: " + ", ".join(missing)
+                        "Required upstream artifact is missing after its producer "
+                        "became terminal: " + ", ".join(missing)
                     )
             else:
                 task["status"] = "ready"

@@ -284,6 +284,7 @@
   function newState() {
     return {
       phase: 'idle',
+      controlPaused: false, // authoritative durable pause, not a finished run
       category: null,
       agent: null,
       detail: null,
@@ -983,6 +984,19 @@
     const now = Date.now();
 
     switch (msg.type) {
+      case 'run_control': {
+        st.controlPaused = (msg.pause_causes || []).length > 0
+          || ['paused', 'pause_requested'].includes(msg.state);
+        if (st.controlPaused) {
+          st.hideAt = 0;
+          setPhase('waiting', {}, true);
+        } else if (msg.state === 'running') {
+          if (st.phase === 'idle') startRun(now);
+          else if (['waiting', 'waiting_frame'].includes(st.phase)) setPhase('thinking', {}, true);
+        } else if (msg.state === 'completed') endRun('done', DONE_LINGER_MS);
+        else if (msg.state === 'stopped') endRun('stopped', STOPPED_LINGER_MS);
+        break;
+      }
       case 'user_message':
         startRun(stamp(msg.timestamp));
         break;
@@ -994,9 +1008,12 @@
         break;
 
       case 'status':
-        if (msg.status === 'processing') {
+        if (msg.status === 'paused') {
+          st.controlPaused = true;
+          setPhase('waiting', {}, true);
+        } else if (msg.status === 'processing') {
           if (st.phase === 'idle') startRun(now);
-        } else if (st.phase !== 'idle' && st.hideAt === 0 && st.phase !== 'stopped') {
+        } else if (!st.controlPaused && st.phase !== 'idle' && st.hideAt === 0 && st.phase !== 'stopped') {
           endRun('done', DONE_LINGER_MS);
         }
         break;
@@ -1090,6 +1107,10 @@
         break;
 
       case 'hitl_timeout':
+        if (msg.paused) {
+          setPhase('waiting', {}, true);
+          break;
+        }
       case 'hitl_cancelled':
       case 'hitl_response':
         if (st.phase === 'waiting' || st.phase === 'waiting_frame') {
@@ -1101,6 +1122,7 @@
         break;
 
       case 'final_response':
+        if (st.controlPaused) break;
         if (msg.content === 'Stopped' || st.phase === 'stopped') {
           endRun('stopped', STOPPED_LINGER_MS);
         } else {
@@ -1112,7 +1134,7 @@
         // Deliberately not showing `msg.message`: it is a Python traceback
         // summary, and it is already posted into the chat as a system message.
         st.note = null;
-        endRun('error', ERROR_LINGER_MS);
+        if (!st.controlPaused) endRun('error', ERROR_LINGER_MS);
         break;
 
       default:
@@ -1232,7 +1254,7 @@
   function view() {
     // What the user should be told right now, derived fresh on every paint so
     // silence and elapsed time can change the phrase with no new events.
-    let phase = st.phase;
+    let phase = st.controlPaused ? 'waiting' : st.phase;
     if (phase !== 'idle' && !connected) phase = 'offline';
     // Silence only means "I have nothing to report" when nothing is running.
     // A sandbox task runs for forty minutes without emitting a single event,

@@ -25,6 +25,12 @@ from CoScientist.assembly.schema import (
 )
 from CoScientist.config import get_settings
 from CoScientist.config.settings import AgentOverride
+from CoScientist.web.agent_configuration_policy import (
+    ENABLED_SETTING_FIELDS,
+    agent_control_policy,
+    public_control_fields,
+    validate_agent_enabled_change,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -87,16 +93,6 @@ def _model_names() -> Dict[str, Optional[str]]:
 # so an override would switch the agent and leave the route behind.
 # `nir_buildable` is the deployment (a normcontrol server) rather than a
 # switch; the operator's switch for NirReportAgent is whether it is offered.
-ENABLED_SETTING_FIELDS: Dict[str, str] = {
-    "context_init.enabled": "general.contextInitEnabled",
-    "web.medical_agent_enabled": "medicalAgent.enabled",
-    "web.fedot_fallback_enabled": "taskExecutorAgent.fedotFallback",
-    "experiments.route_fedot": "experimentModule.routeFedot",
-    "experiments.route_alembic": "experimentModule.routeAlembic",
-    "nir_buildable": "nirReport.enabled",
-}
-
-
 def _enabled_ref(cfg: AgentConfig) -> Optional[str]:
     return str(cfg.enabled).strip()[2:-1].strip() if _is_setting_ref(cfg.enabled) else None
 
@@ -170,9 +166,14 @@ def agents_catalog() -> Dict[str, Any]:
     ``declared_*`` accessors, so a toggle shows what the YAML says and the
     override is shown next to it, never folded into it.
     """
+    from CoScientist.web.agent_tree import agent_presentation
+    from CoScientist.agents import config_for_mode
+
     system = load_config()
+    effective_system = config_for_mode()
+    controls = agent_control_policy(effective_system)
     parents: Dict[str, List[str]] = {}
-    for cfg in system.agents.values():
+    for cfg in effective_system.agents.values():
         for dep in cfg.subordinates + cfg.children:
             parents.setdefault(dep, []).append(cfg.name)
 
@@ -184,23 +185,46 @@ def agents_catalog() -> Dict[str, Any]:
             declared_enabled = cfg.declared_enabled()
         except Exception:  # noqa: BLE001 — a reference to a missing setting
             declared_enabled = False
-        stage = ("pre" if name in system.pipeline.pre
-                 else "post" if name in system.pipeline.post else None)
+        effective_cfg = effective_system.agents[name]
+        stage = ("pre" if name in effective_system.pipeline.pre
+                 else "post" if name in effective_system.pipeline.post else None)
+        control = controls.get(name, {
+            "availableInProfile": False,
+            "effectiveEnabled": False,
+            "canEnable": False,
+            "canDisable": False,
+            "controlReason": "Агент недоступен в текущем профиле.",
+            "controlCode": "unavailable",
+            "requiredForPipeline": False,
+        })
+        old_lock = _lock_reason(cfg, declared_enabled)
+        # Keep the historical field for existing clients while the explicit
+        # canEnable/canDisable pair describes the asymmetric restore case.
+        lock = old_lock
+        if not control["availableInProfile"]:
+            lock = "unavailable"
+        elif control["controlCode"] == "parentDisabled":
+            lock = "parentDisabled"
+        elif control["requiredForPipeline"] and not control["canEnable"]:
+            lock = old_lock or "required"
         agents.append({
             "name": name,
+            **agent_presentation(name, cfg.title, cfg.description),
             "class": cfg.cls,
             "description": cfg.description or "",
-            "root": bool(cfg.root),
+            "root": name == effective_system.root.name,
             "internal": bool(cfg.internal),
             "stage": stage,
             "parents": parents.get(name, []),
-            "subordinates": list(cfg.subordinates) + list(cfg.children),
+            "subordinates": list(effective_cfg.subordinates) + list(effective_cfg.children),
             "enabled": _mode_controlled_enabled(cfg, system, declared_enabled),
+            "effectiveEnabled": control["effectiveEnabled"],
+            **public_control_fields(control),
             # The setting that decides `enabled` in the YAML, if any, and the
             # appSettings field the switch then edits instead of an override.
             "enabledRef": _enabled_ref(cfg),
             "enabledSetting": ENABLED_SETTING_FIELDS.get(_enabled_ref(cfg) or ""),
-            "lock": _lock_reason(cfg, declared_enabled),
+            "lock": lock,
             "hasModel": has_model,
             "model": (cfg.model or system.defaults.model) if has_model else None,
             "reasoning": _reasoning_label(cfg.declared_reasoning()) if has_model else None,
@@ -217,6 +241,28 @@ def agents_catalog() -> Dict[str, Any]:
         "models": _model_names(),
         "reasoningChoices": REASONING_CHOICES,
     }
+
+
+def agent_enabled_patch(name: str, enabled: bool) -> Dict[str, Any]:
+    """One switch, merged with the current session; never edit global settings."""
+    system = load_config()
+    if name not in system.agents:
+        raise KeyError(name)
+    validate_agent_enabled_change(name, enabled)
+    cfg = system.agents[name]
+    overrides = current_agent_settings()["overrides"]
+    override = overrides.setdefault(name, {})
+    setting = ENABLED_SETTING_FIELDS.get(_enabled_ref(cfg) or "")
+    payload: Dict[str, Any] = {"agents": {"overrides": overrides}}
+    if setting:
+        section, field = setting.split(".", 1)
+        payload[section] = {field: enabled}
+        override.pop("enabled", None)
+    else:
+        override["enabled"] = enabled
+    if not override:
+        overrides.pop(name)
+    return payload
 
 
 def _reasoning_label(value: Any) -> Optional[str]:

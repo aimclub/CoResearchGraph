@@ -86,6 +86,49 @@ def test_coalesce_merges_parallel_experiment_module_calls():
     assert state.get("experiment_module_dispatched") is True
 
 
+def test_targeted_redo_forces_one_module_hop_only_during_execution():
+    from google.adk.models import LlmResponse
+    from google.genai import types
+
+    from CoScientist.experiments.runtime.coalesce import (
+        coalesce_experiment_module_calls,
+        suppress_experiment_module_after_completed,
+    )
+
+    state = {
+        "experiment_runtime": {"phase": "execution"},
+        "experiment_targeted_redo_pending": {
+            "selected_task_ids": ["EXP-2"],
+            "affected_task_ids": ["EXP-2", "EXP-3"],
+        },
+        # An explicit result-review redo is separate from the automatic
+        # planning budget and must still be dispatchable when that is spent.
+        "experiment_module_runs": 999,
+    }
+    ctx = SimpleNamespace(
+        state=state,
+        user_content=types.Content(role="user", parts=[types.Part(text="continue")]),
+        agent_name="OrchestratorAgent",
+    )
+    prose = LlmResponse(content=types.Content(
+        role="model", parts=[types.Part(text="The experiment is finished.")],
+    ))
+
+    forced = coalesce_experiment_module_calls(ctx, prose)
+    assert forced is not None
+    call = forced.content.parts[0].function_call
+    assert call.name == "ExperimentModuleAgent"
+    assert "EXP-2" in call.args["request"]
+    assert "cumulative attempt ledger" in call.args["request"]
+    assert suppress_experiment_module_after_completed(ctx, forced) is None
+    assert forced.content.parts[0].function_call.name == "ExperimentModuleAgent"
+    assert state["experiment_module_runs"] == 999
+
+    # A stale marker never causes a blind module replay outside execution.
+    state["experiment_runtime"]["phase"] = "reporting"
+    assert coalesce_experiment_module_calls(ctx, prose) is None
+
+
 def test_suppress_experiment_module_after_completed_and_success():
     from google.adk.models import LlmResponse
     from google.genai import types
@@ -162,6 +205,41 @@ def test_suppress_experiment_module_allows_retry_when_tasks_failed():
         if getattr(p, "function_call", None)
     ]
     assert "ExperimentModuleAgent" in fcs
+
+
+def test_suppress_completed_runtime_does_not_call_unaccepted_result_approved():
+    from google.adk.models import LlmResponse
+    from google.genai import types
+
+    from CoScientist.experiments.runtime.coalesce import (
+        suppress_experiment_module_after_completed,
+    )
+
+    state = {
+        "experiment_runtime": {
+            "phase": "completed", "tasks_ok": True,
+            "tasks": [{"id": "EXP-1", "status": "success", "result_ok": True}],
+        },
+        "experiment_module_outcome": {
+            "status": "blocked", "stage": "result_review",
+            "reason": "result_review_timeout", "accepted": False,
+        },
+    }
+    response = LlmResponse(content=types.Content(
+        role="model", parts=[types.Part.from_function_call(
+            name="ExperimentModuleAgent", args={"request": "retry everything"},
+        )],
+    ))
+
+    suppress_experiment_module_after_completed(
+        SimpleNamespace(state=state, agent_name="OrchestratorAgent"), response,
+    )
+
+    assert not any(getattr(part, "function_call", None) for part in response.content.parts)
+    text = " ".join(part.text or "" for part in response.content.parts)
+    assert "still unaccepted" in text
+    assert "already terminal" not in text
+    assert state["experiment_module_outcome"]["reason"] == "result_review_timeout"
 
 
 def test_orchestrator_subordinates_clean_lanes():

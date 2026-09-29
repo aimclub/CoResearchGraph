@@ -318,6 +318,7 @@ def _build_llm_agent(
 ) -> LlmAgent:
     tool_entries = _resolve_tools(cfg)
     hitl_attached = bool(cfg.hitl and _hitl_enabled())
+    generic_hitl_attached = bool(hitl_attached and cfg.hitl_tools)
     work_order_attached = bool(cfg.work_order and hitl_attached)
 
     tools: list = []
@@ -332,7 +333,7 @@ def _build_llm_agent(
             step_review=cfg.work_order_step_review,
         ))
 
-    if hitl_attached:
+    if generic_hitl_attached:
         from CoScientist.hitl.tool import get_hitl_tools
         # Only the A2A ROOT can use the native pause: a pause inside a sub-agent
         # is swallowed by the parent's AgentTool (see get_hitl_tools).
@@ -349,7 +350,7 @@ def _build_llm_agent(
         config=cfg,
         system=system,
         tool_entries=tool_entries,
-        hitl_attached=hitl_attached,
+        hitl_attached=generic_hitl_attached,
         work_order_attached=work_order_attached,
     )
 
@@ -428,8 +429,9 @@ def _build_custom_agent(
     if issubclass(cls, LlmAgent):
         tool_entries = _resolve_tools(cfg)
         hitl_attached = bool(cfg.hitl and _hitl_enabled())
+        generic_hitl_attached = bool(hitl_attached and cfg.hitl_tools)
         tools = [t for e in tool_entries for t in _flatten(e.factory())]
-        if hitl_attached:
+        if generic_hitl_attached:
             from CoScientist.hitl.tool import get_hitl_tools
             tools.extend(get_hitl_tools(a2a_root=bool(cfg.root)))
             tool_entries = tool_entries + [
@@ -439,7 +441,7 @@ def _build_custom_agent(
             config=cfg,
             system=system,
             tool_entries=tool_entries,
-            hitl_attached=hitl_attached,
+            hitl_attached=generic_hitl_attached,
         )
         kwargs["model"] = _resolve_model(cfg, system)
         if tools:

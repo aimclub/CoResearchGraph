@@ -1,7 +1,9 @@
 """Fail-closed plan/result review agents."""
 from __future__ import annotations
 
+import copy
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -14,10 +16,21 @@ from google.adk.events.event_actions import EventActions
 from google.genai import types
 
 from CoScientist.config import get_settings
-from CoScientist.experiments.critique import PlanValidationError, validate_and_critique_plan
+from CoScientist.experiments.critique import (
+    PlanValidationError,
+    json_validation_errors,
+    validate_and_critique_plan,
+)
 from CoScientist.agents.callbacks.report_language import session_report_language
 from CoScientist.experiments.plan_view import plan_to_view
-from CoScientist.experiments.runtime import approve_plan, initialize_runtime, mark_result_review
+from CoScientist.experiments.plan_policy import effective_plan_settings
+from CoScientist.experiments.runtime import (
+    approve_plan,
+    approve_plan_with_human_override,
+    initialize_runtime,
+    mark_result_review,
+    result_redo_context,
+)
 from CoScientist.experiments.runtime.execution_bridge import (
     close_plan_record,
     record_plan_proposed,
@@ -29,10 +42,20 @@ from CoScientist.experiments.runtime.state_machine import (
     medical_route_available,
     session_route_agents,
 )
-from CoScientist.experiments.schemas import CodeRequirement, ExecutionRoute, ExperimentPlan
+from CoScientist.experiments.schemas import (
+    CodeRequirement,
+    ExecutionRoute,
+    ExperimentPlan,
+    PlanCritique,
+)
 from CoScientist.graph.session_scope import session_key
 from CoScientist.hitl.handler import AbstractHITLHandler, DelegatingHITLHandler
-from CoScientist.hitl.models import HITLAction, HITLRequest, HITLResponse
+from CoScientist.hitl.models import (
+    HITLAction,
+    HITLDecisionSource,
+    HITLRequest,
+    HITLResponse,
+)
 from CoScientist.hitl.resolver import resolve_auto, resolve_timeout
 from CoScientist.hitl.session_agent import SessionAgent
 
@@ -228,6 +251,173 @@ def _first_object_with_key(text: str, key: str) -> dict[str, Any] | None:
             return obj
         start += max(end, 1)
     return None
+
+
+def _plan_digest(plan: ExperimentPlan | dict[str, Any]) -> str:
+    payload = plan.model_dump(mode="json") if isinstance(plan, ExperimentPlan) else plan
+    return hashlib.sha256(
+        json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def plan_review_identity(
+    plan: ExperimentPlan | dict[str, Any],
+) -> tuple[str, str]:
+    """Stable review id for the exact persisted plan candidate."""
+    payload = plan.model_dump(mode="json") if isinstance(plan, ExperimentPlan) else plan
+    digest = _plan_digest(payload)
+    return (
+        f"experiment-plan:{payload.get('experiment_run_id')}:"
+        f"{payload.get('plan_id')}:r{payload.get('revision')}:{digest}",
+        digest,
+    )
+
+
+def _execution_blockers(critique: Any) -> list[dict[str, Any]]:
+    """Issues an operator cannot turn into an executable route by consent."""
+    issues = getattr(critique, "issues", None) or []
+    blocked: list[dict[str, Any]] = []
+    for issue in issues:
+        if not getattr(issue, "is_blocking", False):
+            continue
+        # Every blocker is hard. Major completeness/consistency/relevance and
+        # complexity findings describe scientific scope and may be accepted as
+        # an explicitly partial plan; feasibility/security/schema findings do
+        # not create a missing tool, route or permission when accepted.
+        if issue.severity == "blocker" or issue.category in {
+            "feasibility", "security", "schema"
+        }:
+            blocked.append(issue.model_dump(mode="json"))
+    return blocked
+
+
+_LAST_SCHEMA_VALID_CANDIDATE_KEY = "experiment_plan_last_schema_valid_candidate"
+_LAST_EXECUTABLE_CANDIDATE_KEY = "experiment_plan_last_executable_candidate"
+_PLAN_RECOVERY_REQUESTED_KEY = "experiment_plan_recovery_requested"
+_UNCOVERED_OPERATIONS_PREFIX = "Frame operations uncovered by non-optional tasks:"
+_RECOVERABLE_PLAN_REASONS = frozenset({
+    "max_plan_revisions",
+    "inventory_blocker_repeated",
+    "fallback_review_timeout",
+    "fallback_rejected_by_operator",
+})
+
+
+def _is_plan_recovery_request(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and value.get("source") == "run_control"
+        and value.get("reason") in _RECOVERABLE_PLAN_REASONS
+    )
+
+
+def _uncovered_operations(critique: Any) -> list[str]:
+    """Return deterministic coverage gaps without reinterpreting literature scope."""
+    uncovered: list[str] = []
+    for issue in getattr(critique, "issues", None) or []:
+        message = str(getattr(issue, "message", "") or "")
+        if not message.startswith(_UNCOVERED_OPERATIONS_PREFIX):
+            continue
+        listed = message[len(_UNCOVERED_OPERATIONS_PREFIX):].split(".", 1)[0]
+        for value in listed.split(","):
+            operation_id = value.strip().upper()
+            if operation_id and operation_id not in uncovered:
+                uncovered.append(operation_id)
+    return uncovered
+
+
+def _candidate_record(
+    plan: ExperimentPlan,
+    critique: PlanCritique,
+    *,
+    reason: str,
+    revision_count: int,
+    previous: ExperimentPlan | None = None,
+) -> dict[str, Any]:
+    blockers = _execution_blockers(critique)
+    uncovered = _uncovered_operations(critique)
+    return {
+        "status": "blocked" if blockers else "needs_revision",
+        "reason": reason,
+        "experiment_run_id": plan.experiment_run_id,
+        "revision_count": revision_count,
+        "digest": _plan_digest(plan),
+        "plan": plan.model_dump(mode="json"),
+        "critique": critique.model_dump(mode="json"),
+        "uncovered_operations": uncovered,
+        "partial": bool(uncovered),
+        "readiness": {
+            "executable": not blockers,
+            "execution_blockers": blockers,
+        },
+        **(
+            {"validation_previous_plan": previous.model_dump(mode="json")}
+            if previous is not None else {}
+        ),
+    }
+
+
+def _load_candidate(
+    value: Any,
+    *,
+    expected_run_id: str,
+    require_executable: bool,
+) -> tuple[ExperimentPlan, PlanCritique, dict[str, Any]] | None:
+    """Validate persisted candidate data; never trust cached readiness flags."""
+    if not expected_run_id or not isinstance(value, dict):
+        return None
+    try:
+        plan = ExperimentPlan.model_validate(value.get("plan"))
+        critique = PlanCritique.model_validate(value.get("critique"))
+    except (ValueError, TypeError):
+        return None
+    if expected_run_id and plan.experiment_run_id != expected_run_id:
+        return None
+    if critique.plan_id != plan.plan_id or critique.plan_revision != plan.revision:
+        return None
+    digest = _plan_digest(plan)
+    saved_digest = value.get("digest")
+    if saved_digest is not None and saved_digest != digest:
+        return None
+    blockers = _execution_blockers(critique)
+    if require_executable and blockers:
+        return None
+    normalized = copy.deepcopy(value)
+    normalized.update({
+        "experiment_run_id": plan.experiment_run_id,
+        "digest": digest,
+        "plan": plan.model_dump(mode="json"),
+        "critique": critique.model_dump(mode="json"),
+        "uncovered_operations": _uncovered_operations(critique),
+        "partial": bool(_uncovered_operations(critique)),
+        "readiness": {
+            "executable": not blockers,
+            "execution_blockers": blockers,
+        },
+    })
+    return plan, critique, normalized
+
+
+def _candidate_diagnostics(value: Any) -> dict[str, Any] | None:
+    """Compact persisted diagnostics for the exhausted-review HITL card."""
+    if not isinstance(value, dict):
+        return None
+    plan = value.get("plan") if isinstance(value.get("plan"), dict) else {}
+    return {
+        "status": value.get("status"),
+        "reason": value.get("reason"),
+        "experiment_run_id": value.get("experiment_run_id") or plan.get("experiment_run_id"),
+        "plan_id": plan.get("plan_id"),
+        "revision": plan.get("revision"),
+        "task_count": len(plan.get("tasks") or []),
+        "digest": value.get("digest"),
+        "partial": bool(value.get("partial")),
+        "uncovered_operations": list(value.get("uncovered_operations") or []),
+        "readiness": copy.deepcopy(value.get("readiness") or {}),
+        "critique": copy.deepcopy(value.get("critique")),
+    }
 
 
 def _stamp_context_invariants(
@@ -472,13 +662,15 @@ _RESULT_WORDS = {
         "title": "Experiment results", "count": "Task results",
         "locations": "Canonical artifact locations (do not invent URLs)",
         "none": "(none captured)", "route": "Route", "artifact": "Artifact",
-        "summary": "Summary",
+        "summary": "Summary", "execution": "Execution", "assessment": "Assessment",
+        "version": "Result version", "scientific": "Scientific conclusion",
     },
     "ru": {
         "title": "Результаты эксперимента", "count": "Результатов задач",
         "locations": "Канонические адреса артефактов (не придумывать URL)",
         "none": "(ничего не собрано)", "route": "Маршрут", "artifact": "Артефакт",
-        "summary": "Итог",
+        "summary": "Итог", "execution": "Исполнение", "assessment": "Оценка результата",
+        "version": "Версия результата", "scientific": "Научный вывод",
     },
 }
 
@@ -557,7 +749,18 @@ def render_experiment_results(state: Any) -> str:
             f"## {r.get('task_id')} · {r.get('status')}",
             str(r.get("summary") or ""),
             f"{w['route']}: `{r.get('route_used')}`",
+            (
+                f"{w['execution']}: `{r.get('execution_status') or r.get('status')}` · "
+                f"{w['assessment']}: `{r.get('assessment_status') or 'not_evaluated'}` · "
+                f"{w['version']}: `{r.get('result_version') or 1}`"
+            ),
         ]
+        scientific = r.get("scientific_check")
+        if isinstance(scientific, dict):
+            L.append(
+                f"{w['scientific']}: `{scientific.get('status')}` — "
+                f"{scientific.get('details') or ''}"
+            )
         for a in r.get("artifacts") or []:
             if not isinstance(a, dict):
                 continue
@@ -569,6 +772,29 @@ def render_experiment_results(state: Any) -> str:
     if summary := state.get("experiment_summary"):
         L += ["", f"## {w['summary']}", str(summary)]
     return "\n".join(L)
+
+
+def result_review_identity(runtime: dict[str, Any]) -> tuple[str, str]:
+    """Stable pending-review id; a new TaskResult revision gets a new id."""
+    rows = [
+        {
+            "task_id": item.get("task_id"),
+            "result_id": item.get("result_id"),
+            "result_version": item.get("result_version", 1),
+            "status": item.get("status"),
+        }
+        for item in (runtime.get("results") or [])
+        if isinstance(item, dict)
+    ]
+    payload = {
+        "run_id": runtime.get("run_id"),
+        "plan_id": runtime.get("plan_id"),
+        "results": rows,
+    }
+    signature = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    return f"experiment-result:{runtime.get('run_id')}:{signature[:24]}", signature
 
 
 def _is_refusal(response: HITLResponse) -> bool:
@@ -654,8 +880,16 @@ _REVIEW_OWNED_STATE_KEYS = (
     "experiment_plan_view",
     "experiment_plan_critique",
     "experiment_plan_validation_errors",
+    "experiment_plan_candidate",
+    _LAST_SCHEMA_VALID_CANDIDATE_KEY,
+    _LAST_EXECUTABLE_CANDIDATE_KEY,
+    _PLAN_RECOVERY_REQUESTED_KEY,
+    "experiment_plan_fallback_pending",
+    "experiment_module_outcome",
     "experiment_plan_review_paused",
     "experiment_plan_record_id",
+    "experiment_plan_review_id",
+    "experiment_plan_review_signature",
     ROUTE_SELECTIONS_STATE_KEY,
     PAUSE_REASON_STATE_KEY,
     "experiment_plan_revision_count",
@@ -663,6 +897,8 @@ _REVIEW_OWNED_STATE_KEYS = (
     "experiment_artifacts_manifest",
     "experiment_task_results",
     "experiment_summary",
+    "experiment_result_review_id",
+    "experiment_result_review_signature",
     REPLAN_ROUNDS_KEY,
 )
 
@@ -693,9 +929,157 @@ class ExperimentReviewSessionAgent(SessionAgent):
         except Exception:
             return str(output_text)
 
-    def _revise(
+    @staticmethod
+    def _prepare_candidate_cache(state: Any, expected_run_id: str) -> None:
+        """Migrate the legacy single slot and discard cross-run/corrupt caches."""
+        schema_saved = _load_candidate(
+            state.get(_LAST_SCHEMA_VALID_CANDIDATE_KEY),
+            expected_run_id=expected_run_id,
+            require_executable=False,
+        )
+        executable_saved = _load_candidate(
+            state.get(_LAST_EXECUTABLE_CANDIDATE_KEY),
+            expected_run_id=expected_run_id,
+            require_executable=True,
+        )
+        state[_LAST_SCHEMA_VALID_CANDIDATE_KEY] = (
+            copy.deepcopy(schema_saved[2]) if schema_saved else None
+        )
+        state[_LAST_EXECUTABLE_CANDIDATE_KEY] = (
+            copy.deepcopy(executable_saved[2]) if executable_saved else None
+        )
+
+        # Sessions saved before the split have only experiment_plan_candidate.
+        # Migrate it once, after validating its digest/run/critique instead of
+        # trusting the old `readiness.executable` boolean.
+        legacy_schema = _load_candidate(
+            state.get("experiment_plan_candidate"),
+            expected_run_id=expected_run_id,
+            require_executable=False,
+        )
+        if schema_saved is None and legacy_schema is not None:
+            state[_LAST_SCHEMA_VALID_CANDIDATE_KEY] = copy.deepcopy(legacy_schema[2])
+        if executable_saved is None:
+            legacy_executable = _load_candidate(
+                state.get("experiment_plan_candidate"),
+                expected_run_id=expected_run_id,
+                require_executable=True,
+            )
+            if legacy_executable is not None:
+                state[_LAST_EXECUTABLE_CANDIDATE_KEY] = copy.deepcopy(
+                    legacy_executable[2]
+                )
+
+    @staticmethod
+    def _candidate_previous(candidate: dict[str, Any]) -> ExperimentPlan | None:
+        try:
+            return ExperimentPlan.model_validate(candidate.get("validation_previous_plan"))
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _revalidate_exhausted_candidate(
+        *,
+        ctx: InvocationContext,
+        plan: ExperimentPlan,
+        context: dict[str, Any],
+        previous: ExperimentPlan | None,
+        route_agents: set[str],
+        digest: str,
+    ) -> tuple[ExperimentPlan, PlanCritique, dict[str, Any], Any, set[str] | frozenset[str] | None]:
+        """Re-check a cached candidate against state as it exists right now."""
+        state = ctx.session.state
+        current_context = state.get("experiment_context")
+        if not isinstance(current_context, dict):
+            current_context = context
+        cfg = effective_plan_settings(get_settings().experiments, current_context)
+        current_route_agents = session_route_agents(getattr(ctx, "agent", None))
+        if current_route_agents is None:
+            current_route_agents = route_agents
+        checked_plan, checked_critique = validate_and_critique_plan(
+            plan.model_dump(mode="json"),
+            settings=cfg,
+            available_tools=(
+                current_context.get("critique_mcp_capabilities")
+                or current_context.get("available_mcp_capabilities") or []
+            ),
+            preferred_tools=current_context.get("preferred_mcp_capabilities"),
+            previous_plan=previous,
+            hypothesis_refs=current_context.get("hypothesis_refs") or [],
+            repo_candidates=current_context.get("repo_candidates") or [],
+            operations=[*(current_context.get("operations") or []),
+                        *(current_context.get("external_literature_operations") or [])],
+            pipeline_scope=current_context.get("pipeline_scope"),
+            fedot_on=fedot_route_available(cfg, route_agents=current_route_agents),
+            medical_on=medical_route_available(route_agents=current_route_agents),
+        )
+        invariant_errors = _context_invariant_errors(checked_plan, current_context)
+        blockers = _execution_blockers(checked_critique)
+        checked_digest = _plan_digest(checked_plan)
+        if invariant_errors or blockers or checked_digest != digest:
+            raise PlanValidationError(
+                "Plan is no longer executable after review",
+                errors=invariant_errors or blockers or [{
+                    "type": "candidate_changed", "loc": [],
+                    "msg": "Plan digest changed while awaiting approval",
+                }],
+            )
+        return (
+            checked_plan,
+            checked_critique,
+            current_context,
+            cfg,
+            current_route_agents,
+        )
+
+    @staticmethod
+    def _block_exhausted_candidate(
+        *,
+        state: Any,
+        plan: ExperimentPlan,
+        digest: str,
+        review_id: str,
+        errors: list[dict[str, Any]],
+    ) -> HITLResponse:
+        state["experiment_plan_validation_errors"] = errors
+        state["experiment_plan_review_paused"] = True
+        state["experiment_plan_fallback_pending"] = False
+        state[PAUSE_REASON_STATE_KEY] = "fallback_candidate_no_longer_executable"
+        candidate = copy.deepcopy(state.get("experiment_plan_candidate") or {})
+        candidate["status"] = "blocked"
+        candidate["revalidation_errors"] = copy.deepcopy(errors)
+        readiness = copy.deepcopy(candidate.get("readiness") or {})
+        readiness["executable"] = False
+        readiness["execution_blockers"] = copy.deepcopy(errors)
+        candidate["readiness"] = readiness
+        state["experiment_plan_candidate"] = candidate
+        state["experiment_module_outcome"] = {
+            "status": "blocked",
+            "stage": "plan_review",
+            "reason": "fallback_candidate_no_longer_executable",
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "digest": digest,
+            "review_id": review_id,
+            "accepted": False,
+        }
+        return HITLResponse(
+            action=HITLAction.REJECT,
+            approved=False,
+            decision_source=HITLDecisionSource.SYSTEM,
+            system_reason="fallback_candidate_no_longer_executable",
+            stop_review_loop=True,
+        )
+
+    async def _revise(
         self, *, ctx: InvocationContext, detail: Any, pause_prefix: str, edit_prefix: str,
-        inventory_blocker: bool = False, **_kwargs: Any,
+        inventory_blocker: bool = False,
+        plan: ExperimentPlan | None = None,
+        critique: Any = None,
+        context: dict[str, Any] | None = None,
+        previous: ExperimentPlan | None = None,
+        route_agents: set[str] | None = None,
+        **_kwargs: Any,
     ) -> HITLResponse:
         state = ctx.session.state
         try:
@@ -710,23 +1094,358 @@ class ExperimentReviewSessionAgent(SessionAgent):
             hits = 1 if inventory_blocker else 0
         state["experiment_inventory_blocker_hits"] = hits
 
-        max_rev = get_settings().experiments.max_plan_revisions
+        expected_run_id = str(
+            (context or {}).get("experiment_run_id")
+            or (plan.experiment_run_id if plan is not None else "")
+        )
+        self._prepare_candidate_cache(state, expected_run_id)
+
+        candidate: dict[str, Any] | None = None
+        if plan is not None and critique is not None:
+            candidate = _candidate_record(
+                plan,
+                critique,
+                reason="deterministic_critique",
+                revision_count=revisions,
+                previous=previous,
+            )
+            # Keep the newest schema-valid answer for diagnostics, but only an
+            # actually executable answer may replace the recovery checkpoint.
+            state[_LAST_SCHEMA_VALID_CANDIDATE_KEY] = copy.deepcopy(candidate)
+            if candidate["readiness"]["executable"]:
+                state[_LAST_EXECUTABLE_CANDIDATE_KEY] = copy.deepcopy(candidate)
+            state["experiment_plan_candidate"] = copy.deepcopy(candidate)
+
+        max_rev = effective_plan_settings(
+            get_settings().experiments, context or {}
+        ).max_plan_revisions
         if not (
             revisions >= max_rev
             or hits >= self.max_inventory_blocker_hits
         ):
             return HITLResponse(action=HITLAction.EDIT, approved=False, instructions=f"{edit_prefix} {detail}")
-        state["experiment_plan_review_paused"] = True
         reason = (
             "inventory_blocker_repeated"
             if hits >= self.max_inventory_blocker_hits
             else "max_plan_revisions"
         )
+
+        # Prefer the current draft when it is executable. A schema-invalid or
+        # hard-blocked final answer cannot erase the previous same-run recovery
+        # checkpoint, and is still retained above as the latest diagnostic.
+        selected = None
+        if candidate is not None and candidate["readiness"]["executable"]:
+            selected = _load_candidate(
+                candidate,
+                expected_run_id=expected_run_id,
+                require_executable=True,
+            )
+        if selected is None:
+            selected = _load_candidate(
+                state.get(_LAST_EXECUTABLE_CANDIDATE_KEY),
+                expected_run_id=expected_run_id,
+                require_executable=True,
+            )
+        if selected is not None:
+            selected_plan, selected_critique, selected_candidate = selected
+            recovered_previous = (
+                candidate is None
+                or selected_candidate["digest"] != candidate.get("digest")
+            )
+            selected_candidate["status"] = "awaiting_human"
+            selected_candidate["reason"] = reason
+            state["experiment_plan_candidate"] = copy.deepcopy(selected_candidate)
+            return await self._review_exhausted_candidate(
+                ctx=ctx,
+                plan=selected_plan,
+                critique=selected_critique,
+                reason=reason,
+                context=context or {},
+                previous=self._candidate_previous(selected_candidate) or previous,
+                route_agents=route_agents or set(),
+                recovered_previous=recovered_previous,
+            )
+
+        state["experiment_plan_review_paused"] = True
+        state["experiment_plan_fallback_pending"] = False
         state[PAUSE_REASON_STATE_KEY] = reason
+        state["experiment_module_outcome"] = {
+            "status": "blocked",
+            "stage": "plan_review",
+            "reason": reason,
+        }
         _audit(f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason}")
         return HITLResponse(
             action=HITLAction.REJECT, approved=False, stop_review_loop=True,
             instructions=f"{pause_prefix} {detail}",
+        )
+
+    async def _review_exhausted_candidate(
+        self,
+        *,
+        ctx: InvocationContext,
+        plan: ExperimentPlan,
+        critique: Any,
+        reason: str,
+        context: dict[str, Any],
+        previous: ExperimentPlan | None,
+        route_agents: set[str],
+        recovered_previous: bool = False,
+        recovery_resumed: bool = False,
+    ) -> HITLResponse:
+        """Put the current executable draft before a human exactly once."""
+        state = ctx.session.state
+        user_id, session_id = session_key(ctx)
+        digest = _plan_digest(plan)
+        review_id = (
+            f"plan-fallback:{plan.experiment_run_id}:{plan.plan_id}:"
+            f"r{plan.revision}:{digest}"
+        )
+
+        # Cached readiness is only a hint. Before showing anything to a human,
+        # prove the exact digest against the current inventory, routes, context,
+        # and effective per-run plan policy.
+        try:
+            plan, critique, context, cfg, route_agents = (
+                self._revalidate_exhausted_candidate(
+                    ctx=ctx,
+                    plan=plan,
+                    context=context,
+                    previous=previous,
+                    route_agents=route_agents,
+                    digest=digest,
+                )
+            )
+        except (PlanValidationError, ValueError, TypeError) as exc:
+            errors = json_validation_errors(getattr(exc, "errors", None) or [str(exc)])
+            return self._block_exhausted_candidate(
+                state=state,
+                plan=plan,
+                digest=digest,
+                review_id=review_id,
+                errors=errors,
+            )
+
+        critique_json = critique.model_dump(mode="json")
+
+        state["experiment_plan_review_paused"] = False
+        state["experiment_plan_fallback_pending"] = True
+        state[PAUSE_REASON_STATE_KEY] = "plan_revision_budget_exhausted_pending_human"
+        state["experiment_module_outcome"] = {
+            "status": "awaiting_human",
+            "stage": "plan_review",
+            "reason": reason,
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "digest": digest,
+            "review_id": review_id,
+            "accepted": False,
+        }
+        candidate = copy.deepcopy(state.get("experiment_plan_candidate") or {})
+        candidate.update({
+            "status": "awaiting_human",
+            "digest": digest,
+            "plan": plan.model_dump(mode="json"),
+            "critique": critique_json,
+            "uncovered_operations": _uncovered_operations(critique),
+            "partial": bool(_uncovered_operations(critique)),
+            "readiness": {"executable": True, "execution_blockers": []},
+        })
+        candidate["review_id"] = review_id
+        state["experiment_plan_candidate"] = candidate
+        runtime = initialize_runtime(state, plan, critique=critique_json)
+        view = plan_to_view(plan, critique_json, status="awaiting_human")
+        view["review_exhausted"] = True
+        view["review_exhausted_reason"] = reason
+        view["recovered_previous_candidate"] = recovered_previous
+        view["recovery_resumed"] = recovery_resumed
+        view["plan_digest"] = digest
+        view["partial_candidate"] = bool(candidate.get("partial"))
+        view["uncovered_operations"] = list(candidate.get("uncovered_operations") or [])
+        latest_diagnostics = _candidate_diagnostics(
+            state.get(_LAST_SCHEMA_VALID_CANDIDATE_KEY)
+        )
+        if latest_diagnostics and latest_diagnostics.get("digest") != digest:
+            view["superseded_schema_valid_candidate"] = latest_diagnostics
+        if recovered_previous:
+            view["superseded_validation_errors"] = list(
+                state.get("experiment_plan_validation_errors") or []
+            )
+        state["experiment_plan_view"] = view
+        record_id = record_plan_proposed(ctx, self.name, view)
+        state["experiment_plan_record_id"] = record_id
+
+        lang = session_report_language(state)
+        response = await self.hitl_handler.handle_request(self._hitl(
+            message=(
+                "Automatic plan revisions are exhausted. Review the last schema-valid "
+                "executable plan and either approve it with the listed issues or reject it."
+                if recovered_previous else
+                "Automatic plan revisions are exhausted. Review the current executable "
+                "plan and either approve it with the listed issues or reject it."
+            ),
+            kind="plan",
+            plan_id=plan.plan_id,
+            output=render_experiment_plan(plan, lang),
+            user_id=user_id,
+            session_id=session_id,
+            timeout_seconds=cfg.plan_review_timeout_s,
+            plan_view=view,
+            requires_human=True,
+            review_exhausted=True,
+            review_id=review_id,
+        ))
+
+        source = getattr(response.decision_source, "value", response.decision_source)
+        if response.approved and source == HITLDecisionSource.HUMAN.value:
+            # Re-evaluate the exact candidate after the wait. Settings and the
+            # attached route tree may have changed while the card was open.
+            try:
+                checked_plan, checked_critique, context, cfg, route_agents = (
+                    self._revalidate_exhausted_candidate(
+                        ctx=ctx,
+                        plan=plan,
+                        context=context,
+                        previous=previous,
+                        route_agents=set(route_agents or ()),
+                        digest=digest,
+                    )
+                )
+            except (PlanValidationError, ValueError, TypeError) as exc:
+                errors = json_validation_errors(getattr(exc, "errors", None) or [str(exc)])
+                blocked_response = self._block_exhausted_candidate(
+                    state=state,
+                    plan=plan,
+                    digest=digest,
+                    review_id=review_id,
+                    errors=errors,
+                )
+                view["status"] = "blocked"
+                close_plan_record(ctx, record_id, "blocked", reason=str(errors))
+                return blocked_response
+
+            runtime["critique"] = checked_critique.model_dump(mode="json")
+            state["experiment_runtime"] = runtime
+            accepted_issue_ids = [
+                issue.issue_id
+                for issue in checked_critique.issues
+                if issue.is_blocking
+            ]
+            approve_plan_with_human_override(
+                state,
+                plan_digest=digest,
+                accepted_issue_ids=accepted_issue_ids,
+                decision_source=source,
+            )
+            state["experiment_plan_fallback_pending"] = False
+            state["experiment_plan_review_paused"] = False
+            state["experiment_plan_validation_errors"] = None
+            state[PAUSE_REASON_STATE_KEY] = None
+            state["experiment_module_outcome"] = {
+                "status": "running",
+                "stage": "execution",
+                "reason": "human_approved_with_issues",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": digest,
+                "review_id": review_id,
+                "accepted": True,
+            }
+            view["status"] = "approved_with_issues"
+            _publish_approved_plan_to_graph(ctx, state)
+            close_plan_record(
+                ctx, record_id, "approved", reason="human accepted unresolved critique issues"
+            )
+            _audit(
+                f"EXPERIMENT_REVIEW_APPROVED kind=plan mode=human_override "
+                f"plan_id={plan.plan_id} digest={digest[:12]} phase=execution"
+            )
+            return response
+
+        state["experiment_plan_review_paused"] = True
+        state["experiment_plan_fallback_pending"] = False
+        terminal_reason = (
+            "fallback_review_timeout" if response.timed_out
+            else "fallback_auto_decision_rejected" if source != HITLDecisionSource.HUMAN.value
+            else "fallback_rejected_by_operator"
+        )
+        state[PAUSE_REASON_STATE_KEY] = terminal_reason
+        state["experiment_module_outcome"] = {
+            "status": "blocked",
+            "stage": "plan_review",
+            "reason": terminal_reason,
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "digest": digest,
+            "review_id": review_id,
+            "accepted": False,
+        }
+        candidate = state.get("experiment_plan_candidate") or {}
+        candidate["status"] = "timed_out" if response.timed_out else "rejected"
+        state["experiment_plan_candidate"] = candidate
+        view["status"] = candidate["status"]
+        close_plan_record(ctx, record_id, view["status"], reason=terminal_reason)
+        return response.model_copy(update={"stop_review_loop": True})
+
+    async def _resume_exhausted_candidate(
+        self,
+        *,
+        ctx: InvocationContext,
+        context: dict[str, Any],
+        route_agents: set[str],
+    ) -> HITLResponse | None:
+        """Reopen a durable fallback decision without another planner round."""
+        state = ctx.session.state
+        request = state.get(_PLAN_RECOVERY_REQUESTED_KEY)
+        if not _is_plan_recovery_request(request):
+            return None
+
+        # Consume the explicit command before any wait; a retry must be another
+        # explicit operator action, never an automatic review loop.
+        state[_PLAN_RECOVERY_REQUESTED_KEY] = None
+        expected_run_id = str(context.get("experiment_run_id") or "")
+        self._prepare_candidate_cache(state, expected_run_id)
+        selected = _load_candidate(
+            state.get(_LAST_EXECUTABLE_CANDIDATE_KEY),
+            expected_run_id=expected_run_id,
+            require_executable=True,
+        )
+        if selected is None:
+            state["experiment_plan_review_paused"] = True
+            state["experiment_plan_fallback_pending"] = False
+            state[PAUSE_REASON_STATE_KEY] = "fallback_candidate_missing"
+            state["experiment_module_outcome"] = {
+                "status": "blocked",
+                "stage": "plan_review",
+                "reason": "fallback_candidate_missing",
+                "accepted": False,
+            }
+            return HITLResponse(
+                action=HITLAction.REJECT,
+                approved=False,
+                decision_source=HITLDecisionSource.SYSTEM,
+                system_reason="fallback_candidate_missing",
+                stop_review_loop=True,
+            )
+
+        plan, critique, candidate = selected
+        latest = _candidate_diagnostics(state.get(_LAST_SCHEMA_VALID_CANDIDATE_KEY))
+        recovered_previous = bool(
+            latest and latest.get("digest") != candidate.get("digest")
+        )
+        candidate["status"] = "awaiting_human"
+        candidate["reason"] = str(request.get("reason"))
+        state["experiment_plan_candidate"] = copy.deepcopy(candidate)
+        return await self._review_exhausted_candidate(
+            ctx=ctx,
+            plan=plan,
+            critique=critique,
+            reason=str(request.get("reason")),
+            context=context,
+            previous=self._candidate_previous(candidate),
+            route_agents=route_agents,
+            recovered_previous=recovered_previous,
+            recovery_resumed=True,
         )
 
     def _review_window(self, configured: float) -> float | None:
@@ -763,6 +1482,10 @@ class ExperimentReviewSessionAgent(SessionAgent):
         self, *, message: str, kind: str, plan_id: Any, output: str,
         user_id: str, session_id: str, timeout_seconds: float | None,
         plan_view: dict[str, Any] | None = None,
+        requires_human: bool = False,
+        review_exhausted: bool = False,
+        review_id: str | None = None,
+        extra_context: dict[str, Any] | None = None,
     ) -> HITLRequest:
         context: dict[str, Any] = {
             "output": output, "experiment_review_kind": kind, "experiment_plan_id": plan_id,
@@ -773,10 +1496,17 @@ class ExperimentReviewSessionAgent(SessionAgent):
             # design matrix and the task cards from this, while ``output`` stays
             # the console's (and any other client's) copy of the same plan.
             context["experiment_plan"] = plan_view
+        if review_exhausted:
+            context["experiment_review_exhausted"] = True
+        if review_id:
+            context["experiment_review_id"] = review_id
+        if extra_context:
+            context.update(extra_context)
         return HITLRequest(
             agent_name=self.name, action_type=HITLAction.APPROVE, message=message,
             context=context,
             invoked_via="internal_loop", timeout_seconds=timeout_seconds,
+            requires_human=requires_human,
         )
 
     @staticmethod
@@ -969,6 +1699,12 @@ class ExperimentReviewSessionAgent(SessionAgent):
             state["experiment_plan_review_paused"] = True
             reason = "repository_route_timeout" if response.timed_out else "repository_route_rejected"
             state[PAUSE_REASON_STATE_KEY] = reason
+            state["experiment_module_outcome"] = {
+                "status": "blocked",
+                "stage": "plan_review",
+                "reason": reason,
+                "task_id": original.id,
+            }
             state[ROUTE_SELECTIONS_STATE_KEY] = cached
             _audit(
                 f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason} task={original.id} "
@@ -1008,14 +1744,52 @@ class ExperimentReviewSessionAgent(SessionAgent):
             )
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        if (
+            self.review_kind == "plan"
+            and _is_plan_recovery_request(
+                ctx.session.state.get(_PLAN_RECOVERY_REQUESTED_KEY)
+            )
+        ):
+            # Recovery is a durable review decision, not a request for another
+            # planner answer. SessionAgent normally calls `_produce` before
+            # `_review_decision`; bypass that order here so an explicit resume
+            # spends no model call and cannot generate a fifth revision.
+            self._state_publish_pending = False
+            await self._review_decision(ctx, "")
+            carrier = Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                branch=ctx.branch,
+            )
+            if self._state_publish_pending:
+                self._publish_state(ctx, carrier)
+            yield carrier
+            return
         if self.review_kind == "result":
             runtime = ctx.session.state.get("experiment_runtime") or {}
             if runtime.get("phase") not in {"reporting", "awaiting_result_review"}:
                 _audit(f"EXPERIMENT_REVIEW_PAUSED kind=result phase={runtime.get('phase') or 'missing'}")
+                outcome = ctx.session.state.get("experiment_module_outcome") or {}
+                if outcome.get("stage") == "plan_review":
+                    reason = str(outcome.get("reason") or "plan_not_approved")
+                    if outcome.get("status") == "awaiting_human":
+                        message = (
+                            "Automatic plan revisions are exhausted and the current "
+                            "plan is waiting for a human decision. The experiment has not started."
+                        )
+                    else:
+                        message = (
+                            f"Experiment planning stopped before execution ({reason}). "
+                            "No experiment results were produced."
+                        )
+                else:
+                    message = (
+                        "Experiment result review is paused because execution has not reached reporting."
+                    )
                 yield Event(
                     invocation_id=ctx.invocation_id, author=self.name, branch=ctx.branch,
                     content=types.Content(role="model", parts=[types.Part(
-                        text="Experiment result review is paused because execution has not reached reporting.",
+                        text=message,
                     )]),
                 )
                 return
@@ -1035,10 +1809,34 @@ class ExperimentReviewSessionAgent(SessionAgent):
             yield carrier
 
     async def _review_plan(self, ctx: InvocationContext, output_text: Any) -> HITLResponse:
-        state, cfg = ctx.session.state, get_settings().experiments
+        state = ctx.session.state
         user_id, session_id = session_key(ctx)
+        context = state.get("experiment_context") or {}
+        cfg = effective_plan_settings(get_settings().experiments, context)
+        route_agents = session_route_agents(getattr(ctx, "agent", None))
+        persisted_runtime = state.get("experiment_runtime") or {}
+        if persisted_runtime.get("approved") and persisted_runtime.get("phase") in {
+            "execution", "reporting", "awaiting_result_review", "completed",
+        }:
+            # A delayed planner/recovery event cannot replace an approved plan
+            # or its accumulated results. A deliberate redesign has its own
+            # typed runtime transition before it may enter this method again.
+            state[_PLAN_RECOVERY_REQUESTED_KEY] = None
+            return HITLResponse(
+                action=HITLAction.REJECT,
+                approved=False,
+                decision_source=HITLDecisionSource.SYSTEM,
+                system_reason="approved_plan_immutable",
+                stop_review_loop=True,
+            )
+        resumed = await self._resume_exhausted_candidate(
+            ctx=ctx,
+            context=context,
+            route_agents=set(route_agents or ()),
+        )
+        if resumed is not None:
+            return resumed
         try:
-            context = state.get("experiment_context") or {}
             runtime = state.get("experiment_runtime") or {}
             previous = ExperimentPlan.model_validate(runtime["plan"]) if runtime.get("plan") else None
             payload = _json_payload(output_text)
@@ -1048,7 +1846,6 @@ class ExperimentReviewSessionAgent(SessionAgent):
             # Asked of this session's executor, the one start_task hands work to:
             # a route switched on after the session was built must not be
             # approved here and then refused there.
-            route_agents = session_route_agents(getattr(ctx, "agent", None))
             plan, critique = validate_and_critique_plan(
                 payload, settings=cfg,
                 available_tools=(
@@ -1058,7 +1855,8 @@ class ExperimentReviewSessionAgent(SessionAgent):
                 preferred_tools=context.get("preferred_mcp_capabilities"), previous_plan=previous,
                 hypothesis_refs=context.get("hypothesis_refs") or [],
                 repo_candidates=context.get("repo_candidates") or [],
-                operations=context.get("operations") or [],
+                operations=[*(context.get("operations") or []),
+                            *(context.get("external_literature_operations") or [])],
                 pipeline_scope=context.get("pipeline_scope"),
                 fedot_on=fedot_route_available(cfg, route_agents=route_agents),
                 medical_on=medical_route_available(route_agents=route_agents),
@@ -1066,15 +1864,23 @@ class ExperimentReviewSessionAgent(SessionAgent):
             if errs := _context_invariant_errors(plan, context):
                 raise PlanValidationError("ExperimentPlan context invariants failed", errors=errs)
         except (PlanValidationError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            errors = getattr(exc, "errors", None) or [str(exc)]
+            errors = json_validation_errors(getattr(exc, "errors", None) or [str(exc)])
             state["experiment_plan_validation_errors"] = errors
             _audit("EXPERIMENT_PLAN_REVISE reason=schema errors=" + json.dumps(errors, default=str, ensure_ascii=True))
-            return self._revise(
+            return await self._revise(
                 ctx=ctx, detail=errors,
                 pause_prefix="Plan validation failed repeatedly; experiment remains paused. Last errors:",
                 edit_prefix="Deterministic schema validation failed. Return a complete corrected ExperimentPlan JSON. Errors:",
+                context=context,
+                previous=previous,
+                route_agents=set(route_agents or ()),
             )
 
+        # Diagnostics belong to the candidate that produced them.  A later
+        # schema-valid candidate must not carry an old exception through the
+        # AgentTool boundary merely because deterministic critique still asks
+        # for a revision.
+        state["experiment_plan_validation_errors"] = None
         critique_json = critique.model_dump(mode="json")
         state["experiment_plan_critique"] = critique_json
         if critique.verdict != "approve":
@@ -1084,7 +1890,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
             )
             inv = any("absent from the capability inventory" in (i.message or "") for i in critique.issues)
             _audit("EXPERIMENT_PLAN_REVISE reason=critique issues=" + json.dumps(critique_json["issues"], ensure_ascii=True))
-            return self._revise(
+            return await self._revise(
                 ctx=ctx, detail=issue_text,
                 pause_prefix="PlanCritique kept rejecting the plan; experiment remains paused. Last issues:",
                 edit_prefix=(
@@ -1094,6 +1900,11 @@ class ExperimentReviewSessionAgent(SessionAgent):
                     if inv else "Deterministic PlanCritique requires revision:"
                 ),
                 inventory_blocker=inv,
+                plan=plan,
+                critique=critique,
+                context=context,
+                previous=previous,
+                route_agents=set(route_agents or ()),
             )
 
         # A proven unchanged repository entrypoint is the only ambiguous code
@@ -1123,7 +1934,8 @@ class ExperimentReviewSessionAgent(SessionAgent):
                     previous_plan=previous,
                     hypothesis_refs=context.get("hypothesis_refs") or [],
                     repo_candidates=context.get("repo_candidates") or [],
-                    operations=context.get("operations") or [],
+                    operations=[*(context.get("operations") or []),
+                                *(context.get("external_literature_operations") or [])],
                     pipeline_scope=context.get("pipeline_scope"),
                     fedot_on=fedot_route_available(cfg, route_agents=route_agents),
                     medical_on=medical_route_available(route_agents=route_agents),
@@ -1133,13 +1945,17 @@ class ExperimentReviewSessionAgent(SessionAgent):
                         "ExperimentPlan context invariants failed", errors=errs
                     )
             except (PlanValidationError, ValueError, TypeError) as exc:
-                errors = getattr(exc, "errors", None) or [str(exc)]
+                errors = json_validation_errors(getattr(exc, "errors", None) or [str(exc)])
                 state["experiment_plan_validation_errors"] = errors
-                return self._revise(
+                return await self._revise(
                     ctx=ctx, detail=errors,
                     pause_prefix="Selected route failed deterministic validation; experiment remains paused:",
                     edit_prefix="Return a corrected plan for the selected repository route:",
+                    context=context,
+                    previous=previous,
+                    route_agents=set(route_agents or ()),
                 )
+            state["experiment_plan_validation_errors"] = None
             critique_json = critique.model_dump(mode="json")
             state["experiment_plan_critique"] = critique_json
             if critique.verdict != "approve":
@@ -1147,13 +1963,38 @@ class ExperimentReviewSessionAgent(SessionAgent):
                     f"{i.severity}/{i.category}: {i.message} Suggestion: {i.suggestion}"
                     for i in critique.issues if i.is_blocking
                 )
-                return self._revise(
+                return await self._revise(
                     ctx=ctx, detail=issue_text,
                     pause_prefix="Selected route failed deterministic critique; experiment remains paused:",
                     edit_prefix="Return a corrected plan for the selected repository route:",
+                    plan=plan,
+                    critique=critique,
+                    context=context,
+                    previous=previous,
+                    route_agents=set(route_agents or ()),
                 )
 
+        standard_candidate = _candidate_record(
+            plan,
+            critique,
+            reason="standard_plan_review",
+            revision_count=int(state.get("experiment_plan_revision_count") or 0),
+            previous=previous,
+        )
+        standard_candidate["status"] = "proposed"
+        state[_LAST_SCHEMA_VALID_CANDIDATE_KEY] = copy.deepcopy(standard_candidate)
+        state[_LAST_EXECUTABLE_CANDIDATE_KEY] = copy.deepcopy(standard_candidate)
         state["experiment_plan_review_paused"] = False
+        state["experiment_plan_fallback_pending"] = False
+        state["experiment_plan_candidate"] = None
+        state["experiment_module_outcome"] = {
+            "status": "awaiting_human" if not _auto_approve("plan") else "running",
+            "stage": "plan_review" if not _auto_approve("plan") else "execution",
+            "reason": "standard_plan_review",
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "digest": _plan_digest(plan),
+        }
         state[PAUSE_REASON_STATE_KEY] = None
         state["experiment_plan_validation_errors"] = None
         # The budget bounds CONSECUTIVE failures, not a whole session. Until this
@@ -1164,6 +2005,9 @@ class ExperimentReviewSessionAgent(SessionAgent):
         state["experiment_plan_revision_count"] = 0
         state["experiment_inventory_blocker_hits"] = 0
         runtime = initialize_runtime(state, plan, critique=critique_json)
+        review_id, review_signature = plan_review_identity(runtime["plan"])
+        state["experiment_plan_review_id"] = review_id
+        state["experiment_plan_review_signature"] = review_signature
         route_selections = state.get(ROUTE_SELECTIONS_STATE_KEY)
         if isinstance(route_selections, dict):
             for decision in route_selections.values():
@@ -1203,9 +2047,18 @@ class ExperimentReviewSessionAgent(SessionAgent):
             plan_id=plan.plan_id, output=render_experiment_plan(plan, lang),
             user_id=user_id, session_id=session_id, timeout_seconds=window,
             plan_view=view,
+            review_id=review_id,
         ))
         if response.approved:
             approve_plan(state)
+            state["experiment_module_outcome"] = {
+                "status": "running",
+                "stage": "execution",
+                "reason": "plan_approved",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": _plan_digest(plan),
+            }
             _publish_approved_plan_to_graph(ctx, state)
             _audit(f"EXPERIMENT_REVIEW_APPROVED kind=plan mode=human plan_id={plan.plan_id} phase=execution")
             _audit("EXPERIMENT_DESIGN_MATRIX\n" + render_experiment_plan(plan, "en"))
@@ -1221,6 +2074,14 @@ class ExperimentReviewSessionAgent(SessionAgent):
             # report guard turns that into an honest note instead of a report.
             state["experiment_plan_review_paused"] = True
             state[PAUSE_REASON_STATE_KEY] = "plan_rejected_by_operator"
+            state["experiment_module_outcome"] = {
+                "status": "rejected",
+                "stage": "plan_review",
+                "reason": "plan_rejected_by_operator",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": _plan_digest(plan),
+            }
             _audit(f"EXPERIMENT_REVIEW_REJECTED kind=plan plan_id={plan.plan_id} "
                    f"reason={_clip(response.instructions) or 'no reason given'}")
             view["status"] = "rejected"
@@ -1232,6 +2093,14 @@ class ExperimentReviewSessionAgent(SessionAgent):
             # The record has said "paused" all along (_plan_outcome); state
             # said nothing, so the orchestrator blamed its attempt budget.
             state[PAUSE_REASON_STATE_KEY] = "plan_review_timeout"
+            state["experiment_module_outcome"] = {
+                "status": "blocked",
+                "stage": "plan_review",
+                "reason": "plan_review_timeout",
+                "plan_id": plan.plan_id,
+                "revision": plan.revision,
+                "digest": _plan_digest(plan),
+            }
             _audit(f"EXPERIMENT_REVIEW_TIMEOUT kind=plan plan_id={plan.plan_id} "
                    f"window_s={_window_word(window)}")
         close_plan_record(ctx, record_id, view["status"],
@@ -1251,9 +2120,19 @@ class ExperimentReviewSessionAgent(SessionAgent):
         tasks_ok = result_tasks_ok(runtime)
         # Materialize canonical ArtifactRef locations before HITL / auto-approve.
         rendered = render_experiment_results(state)
+        review_id, review_signature = result_review_identity(runtime)
+        state["experiment_result_review_id"] = review_id
+        state["experiment_result_review_signature"] = review_signature
 
         if _auto_approve("result"):
             result = mark_result_review(state, approved=True)
+            state["experiment_module_outcome"] = {
+                "status": "completed",
+                "stage": "result_review",
+                "reason": "result_auto_approved",
+                "plan_id": runtime.get("plan_id"),
+                "tasks_ok": tasks_ok,
+            }
             _audit(
                 f"EXPERIMENT_REVIEW_APPROVED kind=result mode={_approval_mode()} "
                 f"plan_id={runtime.get('plan_id')} phase={result['phase']} tasks_ok={str(tasks_ok).lower()}"
@@ -1261,26 +2140,75 @@ class ExperimentReviewSessionAgent(SessionAgent):
             return _auto_approve_response()
 
         window = self._review_window(cfg.result_review_timeout_s)
+        state["experiment_module_outcome"] = {
+            "status": "awaiting_human",
+            "stage": "result_review",
+            "reason": "result_review_pending",
+            "plan_id": runtime.get("plan_id"),
+            "tasks_ok": tasks_ok,
+        }
         response = await self.hitl_handler.handle_request(self._hitl(
-            message="Accept the experiment results, or reject with feedback to request a redesigned experiment.",
+            message=(
+                "Accept the experiment results, or leave feedback. A rerun requires "
+                "explicitly selecting task IDs; feedback alone does not restart the plan."
+            ),
             kind="result", plan_id=runtime.get("plan_id"), output=rendered,
             user_id=user_id, session_id=session_id, timeout_seconds=window,
+            review_id=review_id,
+            extra_context={"experiment_targeted_redo": result_redo_context(state)},
         ))
         if response.timed_out:
             state[PAUSE_REASON_STATE_KEY] = "result_review_timeout"
+            state["experiment_module_outcome"] = {
+                "status": "blocked",
+                "stage": "result_review",
+                "reason": "result_review_timeout",
+                "plan_id": runtime.get("plan_id"),
+                "tasks_ok": tasks_ok,
+            }
             _audit(f"EXPERIMENT_REVIEW_TIMEOUT kind=result "
                    f"plan_id={runtime.get('plan_id')} "
                    f"window_s={_window_word(window)}")
             return response
         if response.approved:
-            result = mark_result_review(state, approved=True)
+            approval_notes = response.instructions or response.free_input
+            result = mark_result_review(
+                state, approved=True, feedback=approval_notes,
+            )
+            state["experiment_module_outcome"] = {
+                "status": "completed",
+                "stage": "result_review",
+                "reason": "result_approved",
+                "plan_id": runtime.get("plan_id"),
+                "tasks_ok": tasks_ok,
+                "notes": approval_notes,
+            }
             _audit(
                 f"EXPERIMENT_REVIEW_APPROVED kind=result mode=human "
                 f"plan_id={runtime.get('plan_id')} phase={result['phase']} tasks_ok={str(tasks_ok).lower()}"
             )
             return response
         feedback = response.instructions or response.free_input or "Human requested experiment redesign."
-        mark_result_review(state, approved=False, feedback=feedback)
+        selected_task_ids = (
+            list(getattr(response, "selected_task_ids", None) or [])
+            if response.decision_source == HITLDecisionSource.HUMAN
+            else []
+        )
+        review_result = mark_result_review(
+            state, approved=False, feedback=feedback,
+            selected_task_ids=selected_task_ids,
+        )
+        targeted = review_result.get("phase") == "execution"
+        state["experiment_module_outcome"] = {
+            "status": "running" if targeted else "completed",
+            "stage": "result_review",
+            "reason": "targeted_redo_requested" if targeted else "result_changes_suggested",
+            "plan_id": runtime.get("plan_id"),
+            "tasks_ok": tasks_ok,
+            "selected_task_ids": list(selected_task_ids),
+            "affected_task_ids": review_result.get("affected_task_ids") or [],
+            "resume_required": targeted,
+        }
         return response.model_copy(update={"stop_review_loop": True})
 
     async def _review_decision(self, ctx: InvocationContext, output_text: Any) -> HITLResponse:
@@ -1299,7 +2227,9 @@ __all__ = [
     "FailClosedExperimentHITLHandler",
     "build_experiment_artifacts_manifest",
     "fail_closed_handler",
+    "plan_review_identity",
     "render_experiment_plan",
     "render_experiment_results",
+    "result_review_identity",
     "result_tasks_ok",
 ]

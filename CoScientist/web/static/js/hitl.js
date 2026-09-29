@@ -52,6 +52,8 @@ function captureHitlCardState(requestId) {
     [...card.querySelectorAll('input[data-wr-finding]')]
       .map(el => [el.dataset.wrFinding, el.checked])
   );
+  state.redoTasks = [...card.querySelectorAll('input[data-redo-task]:checked')]
+    .map(el => el.dataset.redoTask);
   return state;
 }
 
@@ -74,6 +76,10 @@ function restoreHitlCardState(requestId) {
         el.checked = state.findings[el.dataset.wrFinding];
       }
     });
+    card.querySelectorAll('input[data-redo-task]').forEach(el => {
+      el.checked = (state.redoTasks || []).includes(el.dataset.redoTask);
+    });
+    syncExperimentRedo(rid);
     woRecount(card);
   }
   if (state.closed || state.history) {
@@ -186,6 +192,13 @@ function relocalizeHitlCards() {
   });
   redrawPlanCards();
   redrawWorkOrderCards();
+  hitlCards.forEach((data, rid) => {
+    if (!(data.context || {}).experiment_targeted_redo
+        || !document.querySelector(`[data-hitl-card="${CSS.escape(rid)}"]`)) return;
+    const state = captureHitlCardState(rid);
+    renderHitlCard(!state.closed && !state.history, data);
+    restoreHitlCardState(rid);
+  });
 }
 
 function redrawWorkOrderCards() {
@@ -326,6 +339,10 @@ function hitlSubmitHint() {
 // With corrections typed, the answer is "revise"; without, it is "accept".
 // One of the two is live at a time, so neither button quietly means the other.
 function syncHitlButtons(rid) {
+  if ((hitlCards.get(rid)?.context || {}).experiment_targeted_redo) {
+    syncExperimentRedo(rid);
+    return;
+  }
   const field = document.getElementById('hitl-feedback-' + rid);
   const hasText = !!(field && field.value.trim());
   const accept = document.getElementById('hitl-accept-' + rid);
@@ -342,6 +359,11 @@ function hitlFeedbackKeydown(event, rid) {
   const field = document.getElementById('hitl-feedback-' + rid);
   const hasText = !!(field && field.value.trim());
   if (!card || card.querySelector('[data-answered]')) return;
+  if ((data.context || {}).experiment_targeted_redo) {
+    if (card.querySelector('input[data-redo-task]:checked')) respondExperimentRedo(rid);
+    else respondHITLApprove(rid);
+    return;
+  }
   if (data.action_type === 'provide_input') respondHITLInput(rid);
   else if (hasText) respondHITLEdit(rid);
   else if (!(data.options && data.options.length)) respondHITL(rid, true);
@@ -412,7 +434,9 @@ function renderHitlCard(live, data) {
         </div>`;
 
   let controls;
-  if (isProvideInput) {
+  if ((data.context || {}).experiment_targeted_redo) {
+    controls = experimentRedoControls(data);
+  } else if (isProvideInput) {
     controls = `
           ${hitlFeedbackField(rid, 'hitl.fb.inputLabel', 'hitl.ph.input', false)}
           <div class="flex flex-wrap items-center gap-2">
@@ -473,6 +497,63 @@ function renderHitlCard(live, data) {
     </section>`);
 }
 
+// Scientific assessment never implicitly schedules another experiment. A new
+// result version requires selected tasks, a change request and a visible scope.
+function experimentRedoControls(data) {
+  const rid = String(data.request_id || '');
+  const config = data.context.experiment_targeted_redo;
+  const words = (ru, en) => currentLang === 'en' ? en : ru;
+  return `<p class="text-[12px] leading-relaxed">${escHtml(words(
+    'Отрицательный или недостаточный результат тоже завершает задачу. Принятие сохраняет результат и замечания без повторного запуска.',
+    'Negative or inconclusive findings also finish a task. Accepting saves the result and your notes without rerunning it.'))}</p>
+    <fieldset class="border border-outline-variant/25 rounded-lg p-3 space-y-2">
+      <legend class="text-[12px] font-semibold px-1">${escHtml(words('Необязательно: повторить выбранные задачи', 'Optional: redo selected tasks'))}</legend>
+      ${(config.task_choices || []).map(task => `<label class="flex items-start gap-2 text-[12px]">
+        <input type="checkbox" data-redo-task="${escHtml(task.task_id)}" onchange="syncExperimentRedo('${escJs(rid)}')" class="mt-1">
+        <span><strong>${escHtml(task.task_id)} — ${escHtml(task.name)}</strong>
+        <span class="block text-on-surface-variant whitespace-pre-wrap">${escHtml(task.summary || '')}</span></span>
+      </label>`).join('')}
+      <p id="hitl-redo-scope-${escHtml(rid)}" class="text-[12px] leading-relaxed text-on-surface-variant" aria-live="polite"></p>
+    </fieldset>
+    ${hitlFeedbackField(rid, 'hitl.fb.label', 'hitl.ph.revise', true)}
+    <div class="flex flex-wrap gap-2">
+      <button type="button" id="hitl-accept-${escHtml(rid)}" onclick="respondHITLApprove('${escJs(rid)}')" class="${HITL_BTN_PRIMARY}">${escHtml(words('Принять результат', 'Accept result'))}</button>
+      <button type="button" id="hitl-redo-${escHtml(rid)}" onclick="respondExperimentRedo('${escJs(rid)}')" disabled class="${HITL_BTN_SECONDARY}">${escHtml(words('Повторить выбранное', 'Redo selected'))}</button>
+    </div>`;
+}
+
+function syncExperimentRedo(rid) {
+  const config = (hitlCards.get(rid)?.context || {}).experiment_targeted_redo;
+  if (!config) return;
+  const card = document.querySelector(`[data-hitl-card="${CSS.escape(rid)}"]`);
+  if (!card) return;
+  const selected = [...card.querySelectorAll('input[data-redo-task]:checked')].map(el => el.dataset.redoTask);
+  const affected = [...new Set(selected.flatMap(id => config.affected_by_task?.[id] || [id]))];
+  const scope = document.getElementById('hitl-redo-scope-' + rid);
+  const feedback = document.getElementById('hitl-feedback-' + rid)?.value.trim();
+  const words = (ru, en) => currentLang === 'en' ? en : ru;
+  if (scope) scope.textContent = affected.length
+    ? words('Будут заново выполнены (включая зависимые): ', 'Will run again (including dependent tasks): ') + affected.join(', ') + '. '
+      + words('Прежние результаты сохранятся, остальные задачи не изменятся. Укажите ниже, что нужно изменить.', 'Previous results are retained; other tasks are unchanged. Describe the requested change below.')
+    : words('Ничего не выбрано: повторного запуска не будет.', 'Nothing selected: no tasks will be rerun.');
+  const button = document.getElementById('hitl-redo-' + rid);
+  if (button && !card.querySelector('[data-answered]')) button.disabled = !selected.length || !feedback;
+}
+
+function respondExperimentRedo(rid) {
+  const card = document.querySelector(`[data-hitl-card="${CSS.escape(rid)}"]`);
+  const config = (hitlCards.get(rid)?.context || {}).experiment_targeted_redo;
+  if (!card || !config) return;
+  const selected = [...card.querySelectorAll('input[data-redo-task]:checked')].map(el => el.dataset.redoTask);
+  const feedback = document.getElementById('hitl-feedback-' + rid)?.value.trim();
+  if (!selected.length || !feedback) {
+    addSystemMsg(currentLang === 'en' ? 'Select tasks and describe what should change.' : 'Выберите задачи и опишите, что нужно изменить.');
+    return;
+  }
+  sendHitlResponse({type: 'hitl_response', request_id: rid, action: 'edit', approved: false,
+    selected_task_ids: selected, instructions: feedback, free_input: feedback});
+}
+
 function disableHitlControls(requestId, { remember = true } = {}) {
   const state = captureHitlCardState(requestId);
   if (remember) {
@@ -502,6 +583,7 @@ function disableHitlControls(requestId, { remember = true } = {}) {
     }
     card.querySelectorAll('input[data-wo-assumption], input[data-wr-finding]')
       .forEach(el => { el.disabled = true; });
+    card.querySelectorAll('input[data-redo-task]').forEach(el => { el.disabled = true; });
   }
   const box = document.getElementById('hitl-controls-' + requestId);
   if (!box) return;
@@ -561,7 +643,13 @@ function hitlResponseSummary(response) {
 }
 
 function hitlTimeoutSummary(data) {
-  return t('hitl.timeoutMsg', { seconds: (data.timeout_seconds || 300), agent: hitlAgentName(data.agent_name) });
+  if (data.paused) return currentLang === 'en'
+    ? 'Research remains paused until you answer this request. No automatic approval was issued.'
+    : 'Исследование остаётся на паузе до вашего ответа. Автоматического согласования не было.';
+  return t('hitl.timeoutMsg', {
+    seconds: (data.timeout_seconds || 300),
+    agent: hitlAgentName(data.agent_name),
+  });
 }
 window.hitlTimeoutSummary = hitlTimeoutSummary;
 
@@ -593,12 +681,17 @@ function applyHitlOutcome(event) {
         el.checked = disputed.includes(el.dataset.wrFinding);
         el.disabled = true;
       });
+      card.querySelectorAll('input[data-redo-task]').forEach(el => {
+        el.checked = (event.selected_task_ids || []).includes(el.dataset.redoTask);
+        el.disabled = true;
+      });
+      syncExperimentRedo(rid);
       woRecount(card);
     }
     disableHitlControls(rid);
     addSystemMsg(hitlResponseSummary(event), event.timestamp);
   } else if (event.type === 'hitl_timeout') {
-    disableHitlControls(rid);
+    if (!event.paused) disableHitlControls(rid);
     addSystemMsg(hitlTimeoutSummary(event), event.timestamp);
   } else if (event.type === 'hitl_cancelled') {
     disableHitlControls(rid);
@@ -1887,6 +1980,7 @@ function planBullets(list) {
 function renderExperimentPlanReview(live, data) {
   const plan = (data.context || {}).experiment_plan;
   const rid = data.request_id;
+  const exhausted = !!plan.review_exhausted;
   planByRequest.set(rid, plan);
 
 
@@ -1923,6 +2017,12 @@ function renderExperimentPlanReview(live, data) {
       <h3 class="font-headline font-bold text-base text-on-surface uppercase tracking-tight">${escHtml(t('plan.title'))}</h3>
     </div>
     <p class="text-[10px] text-outline-variant font-mono mb-2">CTX: ${escHtml(String(rid).slice(0, 8))} · ${escHtml(data.agent_name || '')}</p>
+    ${exhausted ? `<div class="mb-3 rounded-lg border border-tertiary/35 bg-tertiary/10 px-3 py-2">
+      <p class="text-[12px] font-semibold text-tertiary">${escHtml(t('plan.exhausted.title'))}</p>
+      <p class="text-[11px] text-on-surface-variant mt-0.5">${escHtml(t(
+        plan.recovered_previous_candidate ? 'plan.exhausted.previousBody' : 'plan.exhausted.body'
+      ))}</p>
+    </div>` : ''}
     <div class="flex flex-wrap gap-1.5 mb-3">
       ${planChip('', t('plan.revision').replace('{n}', plan.revision), 'text-primary border-primary/30 bg-primary/5')}
       ${planChip('', t('plan.tasks').replace('{n}', plan.task_count))}
@@ -1936,15 +2036,15 @@ function renderExperimentPlanReview(live, data) {
          the operator has answered): the plan stays readable and its task
          cards stay foldable, which is the whole point of drawing it. -->
     <div id="hitl-controls-${escHtml(rid)}" class="mt-4 flex flex-col gap-2">
-      <textarea id="hitl-feedback-${escHtml(rid)}" rows="2" placeholder="${escHtml(t('plan.feedbackPlaceholder'))}"
+      <textarea id="hitl-feedback-${escHtml(rid)}" rows="2" placeholder="${escHtml(t(exhausted ? 'plan.approvalNotePlaceholder' : 'plan.feedbackPlaceholder'))}"
         class="w-full bg-surface-container-high border border-outline-variant/25 rounded-md px-2.5 py-2 text-[13px] text-on-surface placeholder:text-outline-variant focus:outline-none focus:border-primary/50"></textarea>
       <div class="flex flex-wrap gap-3">
         <button onclick="respondHITLApprove('${escJs(rid)}')" class="flex items-center justify-center gap-2 bg-primary text-on-primary px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] shadow-lg shadow-primary/20 hover:brightness-110 active:scale-95 transition-all">
-          <span class="material-symbols-outlined text-base">check_circle</span> ${escHtml(t('plan.accept'))}
+          <span class="material-symbols-outlined text-base">check_circle</span> ${escHtml(t(exhausted ? 'plan.acceptWithIssues' : 'plan.accept'))}
         </button>
-        <button onclick="respondHITLEdit('${escJs(rid)}')" class="flex items-center justify-center gap-2 bg-surface-container-high border border-outline-variant/20 text-on-surface px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] hover:bg-surface-container-highest transition-all">
+        ${exhausted ? '' : `<button onclick="respondHITLEdit('${escJs(rid)}')" class="flex items-center justify-center gap-2 bg-surface-container-high border border-outline-variant/20 text-on-surface px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] hover:bg-surface-container-highest transition-all">
           <span class="material-symbols-outlined text-base">edit_note</span> ${escHtml(t('plan.revise'))}
-        </button>
+        </button>`}
         <button onclick="respondHITL('${escJs(rid)}', false)" class="flex items-center justify-center gap-2 bg-surface-container-high border border-outline-variant/20 text-error px-4 py-2 rounded-md font-bold text-[12px] uppercase tracking-[0.08em] hover:bg-error/10 transition-all">
           <span class="material-symbols-outlined text-base">close</span> ${escHtml(t('plan.reject'))}
         </button>

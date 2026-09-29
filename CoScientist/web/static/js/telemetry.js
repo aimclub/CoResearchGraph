@@ -196,7 +196,15 @@
       isRunning: false,
 
       start(timestamp) {
-        const parsed = timestamp ? new Date(timestamp).getTime() : Date.now();
+        const parsed = timestamp != null ? new Date(timestamp).getTime() : NaN;
+        if (this.isRunning && this.startedAt !== null) {
+          // Status/usage notifications are not new runs. A server timestamp
+          // may correct the optimistic client start, but an untimed update
+          // must never reset the origin or replace the ticking interval.
+          if (Number.isFinite(parsed)) this.startedAt = parsed;
+          this.tick();
+          return;
+        }
         this.startedAt = Number.isFinite(parsed) ? parsed : Date.now();
         this.finishedAt = null;
         this.isRunning = true;
@@ -213,7 +221,8 @@
       },
 
       finish(timestamp) {
-        if (!this.isRunning && this.finishedAt) return;
+        // In particular, preserve a duration restored from session history.
+        if (!this.isRunning) return;
         this.stopInterval();
         const parsed = timestamp ? new Date(timestamp).getTime() : Date.now();
         this.finishedAt = Number.isFinite(parsed) ? parsed : Date.now();
@@ -227,7 +236,7 @@
           durEl.classList.remove('text-primary');
         }
 
-        const elapsedMs = this.startedAt ? Math.max(0, this.finishedAt - this.startedAt) : this.lastElapsedMs;
+        const elapsedMs = this.startedAt !== null ? Math.max(0, this.finishedAt - this.startedAt) : this.lastElapsedMs;
         this.lastElapsedMs = elapsedMs;
         this.render(elapsedMs, false);
       },
@@ -235,6 +244,8 @@
       setDuration(elapsedMs) {
         this.stopInterval();
         this.isRunning = false;
+        this.startedAt = null;
+        this.finishedAt = null;
         this.lastElapsedMs = Math.max(0, Number(elapsedMs) || 0);
 
         const dot = document.getElementById('metrics-duration-dot');
@@ -282,7 +293,7 @@
       },
 
       tick() {
-        if (!this.startedAt) return;
+        if (this.startedAt === null) return;
         const elapsedMs = Math.max(0, Date.now() - this.startedAt);
         this.lastElapsedMs = elapsedMs;
         this.render(elapsedMs, true);
@@ -314,8 +325,15 @@
 
       restoreFromSnapshot(snapshot) {
         if (!snapshot) return;
-        if (snapshot.status === 'processing') {
-          const start = (snapshot.run_times && snapshot.run_times.started_at)
+        const control = snapshot.run_control;
+        const ongoing = control
+          ? ['running', 'pause_requested', 'paused'].includes(control.state)
+          : ['processing', 'paused'].includes(snapshot.status);
+        if (ongoing) {
+          // Wall time includes operator/budget pauses, just as it does before
+          // reconnecting. The durable origin also survives server restarts.
+          const start = control?.started_at
+            || (snapshot.run_times && snapshot.run_times.started_at)
             || this._findLastUserMessageTimestamp(snapshot.messages)
             || Date.now();
           this.start(start);

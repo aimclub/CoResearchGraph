@@ -278,7 +278,7 @@ def test_rewrite_mismatched_control_action_suppresses_start_while_running():
     assert fixed.content.parts[0].function_call.name == "FedotAgent"
 
 
-def test_rewrite_mismatched_control_action_suppresses_orphan_outside_execution():
+def test_rewrite_mismatched_control_action_does_not_force_read_outside_execution():
     from google.adk.models import LlmResponse
     from google.genai import types
 
@@ -299,8 +299,9 @@ def test_rewrite_mismatched_control_action_suppresses_orphan_outside_execution()
         )
     )
     fixed = rewrite_mismatched_control_action(SimpleNamespace(state=state), wrong)
-    assert fixed is not None
-    assert fixed.content.parts[0].function_call.name == "get_experiment_plan"
+    # Reporting is terminal for executor transitions.  Synthesizing a
+    # get_experiment_plan call here used to create a read/rewrite loop.
+    assert fixed is None
 
 
 def test_guard_does_not_mutate_route_request_payload():

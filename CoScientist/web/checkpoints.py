@@ -59,10 +59,13 @@ def save_checkpoint(
     checkpoint_id = str(payload.get("id") or f"cp_{uuid4().hex}")
     record = dict(payload)
     record["id"] = checkpoint_id
-    # ADK state is designed to be JSON data, but extensions occasionally put a
-    # pydantic model or datetime in it.  Pydantic's converter preserves common
-    # types and uses strings only for genuinely unsupported leaves.
-    record = to_jsonable_python(record, fallback=str)
+    # ADK state is executable resume data, not a display-only export.  The
+    # converter preserves supported values such as pydantic models and
+    # datetimes, but an unknown leaf must fail the checkpoint instead of being
+    # silently replaced with a string of a different type.  The checkpoint
+    # sink is observer-only, so this error is logged without poisoning the
+    # canonical durable session.
+    record = to_jsonable_python(record)
 
     with _LOCK:
         directory = checkpoint_dir(user_id, session_id)

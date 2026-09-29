@@ -112,12 +112,14 @@ def test_a_partial_run_that_never_stopped_is_not_told_it_stopped():
 
 
 def test_a_partial_run_that_did_stop_says_why():
-    _, note = _run({
+    text, note = _run({
         "experiment_runtime": {"task_order": ["a", "b"], "phase": "awaiting_review"},
         "experiment_review_pause_reason": "plan_review_timeout",
         "experiment_task_results": [{"status": "partial"}],
     })
-    assert "Причина остановки: обзор плана не подтверждён" in note
+    assert text is not None
+    assert "обзор плана не подтверждён" in text
+    assert note == ""
 
 
 def test_a_failed_task_is_not_carried_out_work(tmp_path, monkeypatch):
@@ -132,16 +134,15 @@ def test_a_failed_task_is_not_carried_out_work(tmp_path, monkeypatch):
 
 # ── страховка: литературная часть не должна теряться ─────────────────────────
 
-def test_evidence_written_outside_the_module_keeps_the_report(monkeypatch):
-    """Оркестратор мог собрать литературу сам, без модуля экспериментов. Терять
-    её описание из-за того, что встал модуль, неправильно — поэтому «что-то
-    сделано» считается по свидетельствам в графе, а не только по задачам."""
+def test_stray_evidence_does_not_complete_a_paused_experiment(monkeypatch):
+    """Literature evidence cannot stand in for requested experiment results."""
     import CoScientist.agents.callbacks.report_guard as mod
 
     monkeypatch.setattr(mod, "_evidence_in_graph", lambda _ctx: 4)
     text, note = _run(_skipped(tasks=2))
-    assert text is None, "свидетельства есть — отчёту быть"
-    assert "НЕ ПОЛНОСТЬЮ" in note, "но о непройденном он обязан сказать"
+    assert text is not None
+    assert "**Свидетельств в графе:** 4" in text
+    assert note == ""
 
 
 def test_an_unreadable_graph_never_costs_the_run_its_report(monkeypatch):

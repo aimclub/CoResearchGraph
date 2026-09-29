@@ -224,7 +224,7 @@ def test_a_timed_out_plan_review_records_why(monkeypatch):
     from .helpers import _inventory, _plan, _task
     from CoScientist.hitl.models import HITLAction, HITLResponse
 
-    plan = _plan(_task("EXP-1"))
+    plan = _plan(_task("EXP-1", route="react_tools"))
     state = {"experiment_context": {
         "experiment_run_id": plan.experiment_run_id,
         "source_request": plan.source_request,
@@ -248,6 +248,8 @@ def test_a_timed_out_plan_review_records_why(monkeypatch):
 
     assert response.timed_out and not response.approved
     assert state[PAUSE_REASON_STATE_KEY] == "plan_review_timeout"
+    assert state["experiment_module_outcome"]["status"] == "blocked"
+    assert state["experiment_module_outcome"]["stage"] == "plan_review"
     # NOT the blocking flag: a second plan means a second review card, which
     # is the chance the operator missed. The dispatch budget bounds those.
     assert state.get("experiment_plan_review_paused") is False

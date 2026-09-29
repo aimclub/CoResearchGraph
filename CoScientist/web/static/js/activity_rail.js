@@ -5,7 +5,7 @@
     // watch it, or open one of the side tools. Settings is not a destination
     // among these, so it lives on the gear in the footer.
     const NAV_GROUPS = [
-      { key: 'nav.group.work', items: ['OrchestratorAgent', 'PlannerAgent', 'KnowledgeGraph'] },
+      { key: 'nav.group.work', items: ['OrchestratorAgent', 'PlannerAgent', 'AgentTopology', 'KnowledgeGraph'] },
       { key: 'nav.group.observe', items: ['ToolsViewer', 'ToolCatalogue', 'SessionTrace', 'PaperStatistics', 'FedotTrace', 'FedotDemo'] },
       { key: 'nav.group.tools', items: ['MCPBuilder', 'CoderSandbox'] },
     ];
@@ -17,6 +17,7 @@
       { name: "TZSpecAgent", icon: "assignment", desc: "Technical Spec" },
       { name: "ToolsViewer", icon: "handyman", desc: "Tools Viewer" },
       { name: "ToolCatalogue", icon: "inventory", desc: "Tool Catalogue", href: "/tools" },
+      { name: "AgentTopology", icon: "account_tree", desc: "MAS Configuration", id: "agent-tree-link", href: "/agent-tree" },
       // The knowledge memory is gone; this graph is the research record.
       { name: "KnowledgeGraph", icon: "bubble_chart", desc: "Research Graph", id: "graph-link", href: "/graph" },
       { name: "SessionTrace", icon: "timeline", desc: "Session Trace", id: "trace-link", href: "/trace" },
@@ -54,9 +55,7 @@
       const external = a.href ? '<span class="material-symbols-outlined text-[14px] ml-auto text-outline-variant/0 group-hover:text-outline-variant" aria-hidden="true">open_in_new</span>' : '';
       const extra = a.name === "CoderSandbox"
         ? `<span id="sandbox-status-dot" class="w-2 h-2 rounded-full bg-outline-variant/60 ml-auto shrink-0" title="Sandbox standby"></span>`
-        : a.name === "ToolsViewer"
-          ? `<span id="nav-tool-errors" class="hidden ml-auto text-[10px] tabular-nums text-error shrink-0"></span>`
-          : external;
+        : external;
       return `
           <button type="button" id="${elemId}" onclick="onAgentClick('${a.name}')"${current}
             class="${navItemClass(a.name)}">
@@ -77,16 +76,6 @@
       applyLanguage();
     }
 
-    // Tool errors of the session, on the "Tool calls" item: the one place to
-    // look when something failed, marked without opening it.
-    function renderNavToolErrors(count) {
-      const el = document.getElementById('nav-tool-errors');
-      if (!el) return;
-      el.textContent = count ? String(count) : '';
-      el.title = count ? t('rail.toolErrors', { count }) : '';
-      el.classList.toggle('hidden', !count);
-    }
-
     function onAgentClick(name) {
       if (name === "__settings__") {
         openSettings();
@@ -98,11 +87,11 @@
         openToolsViewer();
       } else if (name === "ToolCatalogue") {
         window.open('/tools', '_blank');
-      } else if (name === "KnowledgeGraph" || name === "SessionTrace") {
+      } else if (name === "KnowledgeGraph" || name === "SessionTrace" || name === "AgentTopology") {
         // Scope to the open session FIRST. The rail's own href carries no
         // session, so preferring it opened whichever session the page happened
         // to fall back to — the graph of a different run.
-        const page = name === "SessionTrace" ? '/trace' : '/graph';
+        const page = name === "SessionTrace" ? '/trace' : name === "AgentTopology" ? '/agent-tree' : '/graph';
         const scoped = (activeUser && activeSession)
           ? `${page}?user_id=${encodeURIComponent(activeUser.id)}&session_id=${encodeURIComponent(activeSession.id)}`
           : page;
@@ -334,23 +323,6 @@
             + `${escHtml(t('rail.nowWorking'))} <code translate="no">${escHtml(current.name)}</code>`
           : '';
       }
-
-      // Failed tool calls across every agent, named when there is one.
-      const failed = [];
-      activityAgents.forEach(entry => entry.tools.forEach(tool => {
-        if (tool.errors) failed.push(tool);
-      }));
-      const errors = failed.reduce((sum, tool) => sum + tool.errors, 0);
-      const errorsEl = document.getElementById('activity-summary-errors');
-      if (errorsEl) {
-        errorsEl.classList.toggle('hidden', !errors);
-        errorsEl.innerHTML = !errors ? '' : `<span class="material-symbols-outlined text-[16px]" aria-hidden="true">error</span>`
-          + (failed.length === 1
-            ? t('rail.toolFailed', { tool: `<code translate="no">${escHtml(failed[0].name)}</code>` })
-            : escHtml(t('rail.toolErrors', { count: errors })));
-        errorsEl.title = failed.map(tool => `${tool.name}: ${t('rail.toolErrors', { count: tool.errors })}`).join('\n');
-      }
-      renderNavToolErrors(errors);
     }
 
     function activityAgent(name) {

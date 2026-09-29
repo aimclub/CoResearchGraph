@@ -9,6 +9,7 @@ while their graphs and artifacts stay on disk.
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Iterable, Optional
@@ -162,6 +163,28 @@ class LocalSessionRegistry:
             self._users[user_id]["last_session_id"] = session_id
             self._save()
             return dict(session)
+
+    def set_agent_configuration(
+        self,
+        user_id: str,
+        session_id: str,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist the agent-selection overlay and advance its revision."""
+        with self._lock:
+            session = self._sessions.get((user_id, session_id))
+            if not session:
+                raise KeyError(f"Unknown session '{session_id}' for user '{user_id}'.")
+            previous = session.get("agent_configuration") or {}
+            revision = int(previous.get("revision") or 0) + 1
+            session["agent_configuration"] = {
+                "revision": revision,
+                "settings": copy.deepcopy(settings),
+            }
+            session["updated_at"] = _now()
+            self._users[user_id]["last_session_id"] = session_id
+            self._save()
+            return copy.deepcopy(session["agent_configuration"])
 
     def rename_session(self, user_id: str, session_id: str, title: str) -> dict[str, Any]:
         if not isinstance(title, str):

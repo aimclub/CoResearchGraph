@@ -23,7 +23,10 @@ import pytest
 
 from CoScientist.experiments import review as review_mod
 from CoScientist.experiments.plan_view import plan_to_view
-from CoScientist.experiments.review import ExperimentReviewSessionAgent
+from CoScientist.experiments.review import (
+    ExperimentReviewSessionAgent,
+    plan_review_identity,
+)
 from CoScientist.experiments.runtime import execution_bridge
 from CoScientist.graph.memory import KnowledgeGraph
 from CoScientist.hitl.handler import AbstractHITLHandler
@@ -183,6 +186,10 @@ def test_the_review_request_carries_the_structured_plan(monkeypatch):
     assert plan_view["task_count"] == 1
     assert plan_view["matrix"][0]["task_id"] == "EXP-1"
     assert plan_view["critique"]["verdict"] == "approve"
+    assert context["experiment_review_id"] == state["experiment_plan_review_id"]
+    assert context["experiment_review_id"] == plan_review_identity(
+        state["experiment_runtime"]["plan"]
+    )[0]
     # The Markdown stays: the console and any other client still read it — and
     # it is now written in the session's language, which defaults to Russian.
     # (This copy becomes the document the chat panel opens, so an English frame
@@ -191,6 +198,18 @@ def test_the_review_request_carries_the_structured_plan(monkeypatch):
     assert "Design matrix" not in context["output"]
     # And the view is on the state the module publishes to its caller.
     assert state["experiment_plan_view"]["plan_id"] == plan_view["plan_id"]
+
+
+def test_standard_plan_review_id_replays_stably_and_changes_with_revision(monkeypatch):
+    response = HITLResponse(action=HITLAction.APPROVE, approved=True)
+    first, _, _ = _review(monkeypatch, response)
+    replayed, _, _ = _review(monkeypatch, response)
+    first_id = first.requests[0].context["experiment_review_id"]
+    assert replayed.requests[0].context["experiment_review_id"] == first_id
+
+    plan = _plan(_task("EXP-1"))
+    revised = plan.model_copy(update={"revision": plan.revision + 1})
+    assert plan_review_identity(revised)[0] != first_id
 
 
 def test_the_record_is_closed_with_what_the_human_did(monkeypatch):

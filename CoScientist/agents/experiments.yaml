@@ -10,7 +10,7 @@
 # The module replaces main's execution lane:
 #   OrchestratorAgent → ExperimentModuleAgent (in TaskExecutorAgent's place)
 #   ExperimentModuleAgent = ToolPreparer → Planner(+HITL) → Executor → Result(+HITL)
-#   ReAct-MCP / Coder / Alembic / Research / Medical are its routes; FEDOT.MAS is
+#   ReAct-MCP / Coder / Alembic / Medical are its routes; FEDOT.MAS is
 #   an optional one, off unless EXPERIMENTS__ROUTE_FEDOT=true (see FedotAgent).
 # TaskExecutorAgent, ToolPipelineAgent and ExecutorSwitchAgent stand down: ADK
 # allows an agent exactly one `children` parent, and ToolPreparerAgent belongs
@@ -178,14 +178,18 @@ agents:
   # ── The module itself ──────────────────────────────────────────────────────
   ExperimentModuleAgent:
     class: sequential
+    required_for_pipeline: true
+    callbacks:
+      before_agent: [skip_literature_only_experiment]
     # A composite accepts only before_agent/after_agent — any other callback
     # kind is a build-time crash, not a silent no-op.
     description: >-
       Plans, reviews, executes and reports one computational experiment with
       task/attempt state, finite fallback and artifact lineage. Owns tool
-      discovery (ToolPreparer), plan HITL, MCP/Coder/Alembic/Research/Medical
+      discovery (ToolPreparer), plan HITL, MCP/Coder/Alembic/Medical
       routing, and result HITL. Primary choice for ANY computational ask
-      (mixed evidence+compute stays in one plan).
+      stage. Literature collection stays with the orchestrator's ResearchAgent;
+      the module consumes its evidence and data refs without repeating the search.
     # No route names the module picks for itself (FEDOT.MAS used to be listed
     # here): the orchestrator copies them into the brief, the brief becomes
     # the planner's source_request, and a named route is a requested route.
@@ -197,6 +201,8 @@ agents:
       to NAME the relevant tools in the brief; the FULL inventory, plan and route
       fallbacks still live inside the module, so do not try to assemble them
       yourself and do not fan out into multiple ExperimentModuleAgent calls.
+      Delegate literature search to ResearchAgent outside this module; pass its
+      sources, data refs and explicit gaps as inputs, not as experiment tasks.
     planning: |-
       Use this as your ONLY choice for computational or engineering work.
       Prefer over Research whenever the ask can be computed or coded:
@@ -235,12 +241,13 @@ agents:
     prompt: experiment_planner
     output_key: experiment_plan
     hitl: true
+    hitl_tools: false
     callbacks:
       # inject_research_context BEFORE build_experiment_context: the builder
       # reads state["research_context"], and without this callback the planner
       # inherited whatever slice the previously-run agent happened to leave
       # there — a stale, wrong-focus one, or nothing at all.
-      before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible, inject_research_context, build_experiment_context]
+      before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible, inject_research_context, build_experiment_context, check_experiment_plan_capacity]
       before_model: [skip_retriever_context]
       after_model: [sanitize_json_output]
     options:
@@ -260,16 +267,16 @@ agents:
       - ExperimentAgent
       - CoderAgent
       - McpBuilderAgent
-      - ResearchAgent
       - MedicalAgent
     output_key: experiment_execution_summary
     callbacks:
       before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible, skip_executor_without_runtime]
       before_tool: [guard_experiment_route]
       after_tool: [mark_experiment_route_returned]
-      # The order is the contract: ADK stops an after_model chain at the first
-      # callback that returns a response.
-      after_model: [enforce_pending_record_result, rewrite_mismatched_control_action, enforce_continue_until_reporting]
+      # One deterministic selector owns close/route/control transitions.  The
+      # historical callback name is retained, but it no longer composes three
+      # independent rewriters that could drive each other into a loop.
+      after_model: [enforce_pending_record_result]
 
   ExperimentResultReviewAgent:
     class: custom:experiment_review
@@ -279,6 +286,7 @@ agents:
     prompt: experiment_result_summary
     output_key: experiment_summary
     hitl: true
+    hitl_tools: false
     callbacks:
       before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible]
     options:

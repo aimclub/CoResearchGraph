@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import functools
+import hashlib
+import json
 import logging
 import os
 from datetime import timedelta
@@ -29,6 +31,7 @@ from CoScientist.experiments.runtime.artifacts import (
     criteria_valid,
     find_artifact,
     has_durable_family_evidence,
+    invalid_required_artifact_formats,
     normalise_artifacts,
     required_artifacts_present,
     route_response_text,
@@ -86,7 +89,59 @@ def _is_core_execution_failure(result: Mapping[str, Any]) -> bool:
         or code.startswith("MISSING_")
         or code.startswith("REQUIRED_INPUT_")
         or code.startswith("PRIMARY_OPERATION_")
-        or code in {"TOOL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CAPABILITY_MISSING"}
+        or code in {
+            "TOOL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CAPABILITY_MISSING",
+            "TOOL_LIMITATION", "WRONG_DATASET", "DATASET_MISMATCH",
+            "UNSUPPORTED_DATASET", "INPUT_MISMATCH", "EMPTY_RESULT",
+            "ROUTE_UNAVAILABLE", "SERVER_UNAVAILABLE", "TOOL_ERROR",
+        }
+        or any(marker in text for marker in (
+            "WRONG DATASET", "DIFFERENT DATASET", "DATASET MISMATCH",
+            "ONLY WORKS WITH ITS OWN DATASET", "CANNOT USE THE PROVIDED DATASET",
+            "TOOL LIMITATION",
+        ))
+    )
+
+
+def _is_assessment_only_failure(
+    result: Mapping[str, Any], checks: Collection[CriterionCheck],
+) -> bool:
+    """A missed quality target is not evidence of a retryable tool failure."""
+    if str(result.get("status") or "") != "failure":
+        return False
+    if not any(check.purpose == "assessment" and check.passed is False for check in checks):
+        return False
+    if any(check.purpose == "execution" and check.passed is False for check in checks):
+        return False
+    code = str(result.get("error_code") or "").strip().upper()
+    # When the payload also names a concrete infrastructure/execution failure,
+    # preserve the technical recovery path. Otherwise the explicit assessment
+    # checks are the authoritative reason for the negative status.
+    return not any(marker in code for marker in (
+        "TIMEOUT", "EXCEPTION", "NETWORK", "CONNECTION", "HTTP_",
+        "TOOL_ERROR", "TOOL_UNAVAILABLE", "ROUTE_UNAVAILABLE",
+        "SERVER_UNAVAILABLE", "MISSING_", "WRONG_DATASET",
+        "DATASET_MISMATCH", "INPUT_MISMATCH", "EMPTY_RESULT",
+        "INCOMPLETE", "ARTIFACT", "NO_OUTPUT",
+    ))
+
+
+def _result_request_digest(result: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        result, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _stored_attempt_result(runtime: Mapping[str, Any], result_id: str | None) -> dict[str, Any] | None:
+    if not result_id:
+        return None
+    return next(
+        (
+            copy.deepcopy(item) for item in (runtime.get("results") or [])
+            if isinstance(item, dict) and item.get("result_id") == result_id
+        ),
+        None,
     )
 
 
@@ -184,6 +239,10 @@ RUNTIME_KEY = "experiment_runtime"
 # left the budget bounding nothing. builder.py resets this key only when the
 # ask itself changes, so it bounds the run rather than a single plan.
 REPLAN_ROUNDS_KEY = "experiment_replan_rounds"
+# Technical attempts are deliberately outside the replaceable runtime.  A plan
+# rewrite, pause/resume, or a larger LLM budget must not make the same logical
+# operation look untried again.
+ATTEMPT_LEDGER_KEY = "experiment_operation_attempt_ledger"
 # The task as planned, before start_task moved a coder task onto the research or
 # medical family its text names; restored if that family's route goes away.
 _PRE_FAMILY_REWRITE_KEY = "task_before_family_rewrite"
@@ -211,6 +270,115 @@ FALLBACK_CHAINS = {
     ExecutionRoute.RESEARCH.value: [ExecutionRoute.RESEARCH.value],
     ExecutionRoute.MEDICAL.value: [ExecutionRoute.MEDICAL.value],
 }
+
+
+def _operation_identity_value(value: Any) -> Any:
+    """Canonicalise the stable, non-presentational part of an operation."""
+    if isinstance(value, Mapping):
+        ignored = {
+            "id", "name", "description", "rationale", "warnings", "verification",
+            "criterion_id", "required", "route", "prepare_via", "path_or_tool",
+        }
+        return {
+            str(key): _operation_identity_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(key) not in ignored and item not in (None, "", [], {})
+        }
+    if isinstance(value, (list, tuple)):
+        return [_operation_identity_value(item) for item in value]
+    return value
+
+
+def logical_operation_key(
+    task: ExperimentTask | Mapping[str, Any], *, experiment_run_id: str | None = None,
+) -> str:
+    """Stable key for one scientific operation, independent of plan cosmetics."""
+    model = task if isinstance(task, ExperimentTask) else ExperimentTask.model_validate(task)
+    dump = model.model_dump(mode="json")
+    design = dump.get("design") or {}
+    dataset = design.get("dataset") or {}
+    operation_ref = str(design.get("operation_ref") or "").strip()
+    if operation_ref:
+        # An operation_ref is the planner's explicit stable identity. Route,
+        # task id and prose may all change while implementing that operation.
+        operation = {"operation_ref": operation_ref}
+    else:
+        # Older plans have no operation_ref. Derive identity from the actual
+        # contract, deliberately excluding cosmetic ids/names/descriptions and
+        # the selected route. Renaming EXP-1 to EXP-2 must not buy more retries.
+        operation = {
+            "hypotheses": [design.get("hypothesis_ref"), *(design.get("also_tests") or [])],
+            "dataset_ref": dataset.get("ref"),
+            "dataset_kind": dataset.get("kind"),
+            "baseline_refs": [
+                item.get("ref") for item in (design.get("baselines") or []) if item.get("ref")
+            ],
+            "metrics": design.get("metrics") or [],
+            "input_data": dump.get("input_data") or [],
+            "repo_url": dump.get("repo_url"),
+            "launch_params": dump.get("launch_params") or {},
+            "code_requirement": (dump.get("code_assessment") or {}).get("requirement"),
+            # Names are excluded: output *shape* survives a cosmetic rename.
+            "expected_outputs": [
+                {"role": item.get("role"), "media_type": item.get("media_type")}
+                for item in (dump.get("expected_artifacts") or [])
+            ],
+            "criteria": [
+                {
+                    "kind": item.get("kind"),
+                    "purpose": item.get("purpose"),
+                    "metric": item.get("metric"),
+                    "operator": item.get("operator"),
+                    "target": item.get("target"),
+                }
+                for item in (dump.get("success_criteria") or [])
+            ],
+        }
+    identity = {
+        "experiment_run_id": experiment_run_id,
+        "operation": operation,
+    }
+    encoded = json.dumps(
+        _operation_identity_value(identity), sort_keys=True,
+        separators=(",", ":"), ensure_ascii=True, default=str,
+    ).encode("utf-8")
+    return "OP-" + hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def operation_attempt_count(state: Mapping[str, Any], operation_key: str) -> int:
+    ledger = state.get(ATTEMPT_LEDGER_KEY)
+    if not isinstance(ledger, Mapping):
+        return 0
+    entry = ledger.get(operation_key)
+    if isinstance(entry, Mapping):
+        return max(0, int(entry.get("attempts") or 0))
+    try:
+        return max(0, int(entry or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_operation_attempt(
+    state: MutableMapping[str, Any], operation_key: str, attempt_id: str,
+) -> int:
+    ledger = copy.deepcopy(state.get(ATTEMPT_LEDGER_KEY) or {})
+    entry = ledger.get(operation_key)
+    if not isinstance(entry, dict):
+        entry = {"attempts": operation_attempt_count(state, operation_key), "attempt_ids": []}
+    ids = list(entry.get("attempt_ids") or [])
+    if attempt_id not in ids:
+        ids.append(attempt_id)
+        entry["attempts"] = int(entry.get("attempts") or 0) + 1
+    entry["attempt_ids"] = ids
+    ledger[operation_key] = entry
+    state[ATTEMPT_LEDGER_KEY] = ledger
+    return int(entry["attempts"])
+
+
+def _max_total_attempts(settings: ExperimentsSettings) -> int:
+    # getattr keeps old settings fixtures/imports compatible while the additive
+    # setting rolls through all entry points.
+    return max(1, int(getattr(settings, "task_max_total_attempts", 3)))
 
 
 def _settings(value: ExperimentsSettings | None) -> ExperimentsSettings:
@@ -310,6 +478,13 @@ def initialize_runtime(
             "current_route": task.route.value,
             "route_history": [{"route": task.route.value, "reason": "planned"}],
             "task": task.model_dump(mode="json"),
+            "base_operation_key": logical_operation_key(
+                task, experiment_run_id=plan.experiment_run_id,
+            ),
+            "operation_key": logical_operation_key(
+                task, experiment_run_id=plan.experiment_run_id,
+            ),
+            "operation_revision": 0,
             "attempts": {},
             "attempt_order": [],
             "last_message": "",
@@ -350,26 +525,205 @@ def initialize_runtime(
     return runtime
 
 
-def approve_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
-    runtime = _runtime(state)
-    if runtime["phase"] != "awaiting_review":
-        raise ExperimentRuntimeError("invalid_phase", f"Plan approval requires awaiting_review, got {runtime['phase']!r}.")
-    if (runtime.get("critique") or {}).get("verdict") != "approve":
-        raise ExperimentRuntimeError("critique_revise", "Plan cannot be approved while deterministic critique requires revision.")
+def _mark_plan_approved(state: MutableMapping[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
     runtime["approved"] = True
     runtime["phase"] = "execution"
     state["experiment_plan_revision_count"] = 0
     state["experiment_inventory_blocker_hits"] = 0
     refresh_readiness(runtime)
     # Same reason as mark_result_review: ADK records a state delta on assignment
-    # to a top-level key, never on a nested mutation. Without this line the
-    # approval above stays invisible to the caller and the plan is re-approved.
+    # to a top-level key, never on a nested mutation.
     state[RUNTIME_KEY] = runtime
     _publish_active_tasks(state, runtime)
     return {"status": "success", "phase": runtime["phase"], "plan_id": runtime["plan_id"]}
 
 
+def approve_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
+    runtime = _runtime(state)
+    if runtime["phase"] != "awaiting_review":
+        raise ExperimentRuntimeError("invalid_phase", f"Plan approval requires awaiting_review, got {runtime['phase']!r}.")
+    if (runtime.get("critique") or {}).get("verdict") != "approve":
+        raise ExperimentRuntimeError("critique_revise", "Plan cannot be approved while deterministic critique requires revision.")
+    return _mark_plan_approved(state, runtime)
+
+
+def approve_plan_with_human_override(
+    state: MutableMapping[str, Any],
+    *,
+    plan_digest: str,
+    accepted_issue_ids: list[str],
+    decision_source: str,
+) -> dict[str, Any]:
+    """Approve one exhausted-review candidate, without weakening normal approval.
+
+    The review agent creates the candidate record after schema validation and
+    marks whether deterministic execution blockers remain.  This narrow gate
+    accepts only a real human answer for the exact plan digest shown in the
+    card; callers cannot turn an arbitrary ``critique=revise`` runtime into an
+    execution with a boolean force flag.
+    """
+    runtime = _runtime(state)
+    candidate = state.get("experiment_plan_candidate")
+    if runtime["phase"] != "awaiting_review":
+        raise ExperimentRuntimeError(
+            "invalid_phase",
+            f"Plan override requires awaiting_review, got {runtime['phase']!r}.",
+        )
+    if decision_source != "human":
+        raise ExperimentRuntimeError(
+            "human_required", "Exhausted plan review requires a human decision."
+        )
+    if not isinstance(candidate, dict) or candidate.get("status") != "awaiting_human":
+        raise ExperimentRuntimeError(
+            "override_not_pending", "No exhausted-review candidate is awaiting approval."
+        )
+    if candidate.get("digest") != plan_digest:
+        raise ExperimentRuntimeError(
+            "candidate_changed", "The approved plan is not the plan shown to the operator."
+        )
+    readiness = candidate.get("readiness") or {}
+    if not readiness.get("executable") or readiness.get("execution_blockers"):
+        raise ExperimentRuntimeError(
+            "plan_not_executable", "Human approval cannot bypass execution blockers."
+        )
+    actual_digest = hashlib.sha256(
+        json.dumps(
+            runtime.get("plan"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    if actual_digest != plan_digest:
+        raise ExperimentRuntimeError(
+            "candidate_changed", "Runtime plan changed after the review card was created."
+        )
+    runtime["human_critique_override"] = {
+        "plan_digest": plan_digest,
+        "accepted_issue_ids": list(accepted_issue_ids),
+        "decision_source": decision_source,
+        "accepted_at": utc_now().isoformat(),
+    }
+    candidate["status"] = "approved_with_issues"
+    candidate["decision"] = runtime["human_critique_override"]
+    state["experiment_plan_candidate"] = candidate
+    return _mark_plan_approved(state, runtime)
+
+
 _TASK_VIEW_FIELDS = ("status", "current_route", "planned_route", "last_message")
+
+
+def _runtime_automation_paused(state: Mapping[str, Any], runtime: Mapping[str, Any]) -> bool:
+    if str(runtime.get("phase") or "") in {
+        "paused", "awaiting_human", "manual_review", "budget_exhausted",
+    }:
+        return True
+    return any(bool(state.get(key)) for key in (
+        "experiment_plan_review_paused", "experiment_result_review_paused",
+        "experiment_execution_paused", "experiment_manual_pause",
+        "experiment_budget_paused", "experiment_hitl_paused",
+    )) or any(bool(runtime.get(key)) for key in (
+        "automation_paused", "manual_review_required", "budget_exhausted",
+    ))
+
+
+def experiment_state_revision(state: Mapping[str, Any]) -> str:
+    """Fingerprint of control-relevant state for compare-and-act clients."""
+    # google.adk State is intentionally dict-like without registering as a
+    # collections.abc.Mapping.  Control callbacks receive that wrapper in
+    # production, so use the public ``get`` protocol instead of isinstance.
+    runtime = state.get(RUNTIME_KEY) if hasattr(state, "get") else None
+    if not isinstance(runtime, Mapping):
+        return "missing"
+    tasks: dict[str, Any] = {}
+    for task_id in runtime.get("task_order") or []:
+        row = (runtime.get("tasks") or {}).get(task_id) or {}
+        attempts = row.get("attempts") or {}
+        tasks[str(task_id)] = {
+            "status": row.get("status"),
+            "route": row.get("current_route"),
+            "operation_key": row.get("operation_key"),
+            "attempts": [
+                {
+                    "id": aid,
+                    "status": (attempts.get(aid) or {}).get("status"),
+                    "result_id": (attempts.get(aid) or {}).get("result_id"),
+                    "route_returned": (attempts.get(aid) or {}).get("route_returned"),
+                }
+                for aid in row.get("attempt_order") or []
+            ],
+        }
+    snapshot = {
+        "run_id": runtime.get("run_id"),
+        "phase": runtime.get("phase"),
+        "approved": runtime.get("approved"),
+        "active_task_id": runtime.get("active_task_id"),
+        "active_attempt_id": runtime.get("active_attempt_id"),
+        "tasks": tasks,
+        "attempt_ledger": state.get(ATTEMPT_LEDGER_KEY),
+        "paused": _runtime_automation_paused(state, runtime),
+    }
+    encoded = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str,
+    ).encode("utf-8")
+    return "STATE-" + hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def experiment_next_actions(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic, currently valid executor actions (empty while paused)."""
+    runtime = state.get(RUNTIME_KEY) if hasattr(state, "get") else None
+    if (
+        not isinstance(runtime, Mapping)
+        or runtime.get("phase") != "execution"
+        or not runtime.get("approved")
+        or _runtime_automation_paused(state, runtime)
+    ):
+        return []
+    active_task_id = str(runtime.get("active_task_id") or "")
+    active_attempt_id = str(runtime.get("active_attempt_id") or "")
+    if active_task_id or active_attempt_id:
+        row = (runtime.get("tasks") or {}).get(active_task_id) or {}
+        attempt = (row.get("attempts") or {}).get(active_attempt_id)
+        if not isinstance(attempt, Mapping):
+            return []
+        if attempt.get("result_id") or attempt.get("status") != "running":
+            return []
+        if attempt.get("route_returned"):
+            return [{
+                "tool": "record_result",
+                "arguments": {"task_id": active_task_id, "attempt_id": active_attempt_id},
+                "required_arguments": ["result"],
+            }]
+        route_agent = ROUTE_AGENT_BY_ROUTE.get(str(attempt.get("route") or ""))
+        return ([{
+            "tool": route_agent,
+            "arguments": {},
+            "task_id": active_task_id,
+            "attempt_id": active_attempt_id,
+        }] if route_agent else [])
+
+    actions: list[dict[str, Any]] = []
+    for task_id in runtime.get("task_order") or []:
+        row = (runtime.get("tasks") or {}).get(task_id) or {}
+        status = str(row.get("status") or "")
+        if status == "ready":
+            actions.append({"tool": "start_task", "arguments": {"task_id": task_id}})
+        elif status == "retry_pending":
+            actions.append({"tool": "retry_task", "arguments": {"task_id": task_id}})
+        elif status == "fallback_pending":
+            prior = next(
+                (
+                    item for item in reversed(runtime.get("results") or [])
+                    if isinstance(item, Mapping) and item.get("task_id") == task_id
+                ),
+                {},
+            )
+            route = str(prior.get("route_used") or row.get("current_route") or "current route")
+            code = str(prior.get("error_code") or "route_failed")
+            detail = str(prior.get("error_message") or prior.get("summary") or "")[:500]
+            reason = f"{route} ended with {code}" + (f": {detail}" if detail else "")
+            actions.append({
+                "tool": "fallback_task",
+                "arguments": {"task_id": task_id, "reason": reason},
+            })
+    return actions
 
 
 def get_experiment_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
@@ -388,7 +742,8 @@ def get_experiment_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
     plan = runtime.get("plan") or {}
     tasks = runtime.get("tasks") or {}
     rounds = int(state.get(REPLAN_ROUNDS_KEY) or 0)
-    budget = int(get_settings().experiments.max_replan_rounds)
+    cfg = get_settings().experiments
+    budget = int(cfg.max_replan_rounds)
 
     tasks_view: dict[str, Any] = {}
     ready: list[str] = []
@@ -402,6 +757,10 @@ def get_experiment_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
         row["depends_on"] = list(task.get("depends_on") or [])
         row["optional"] = bool(task.get("optional"))
         row["attempts"] = len(task_runtime.get("attempt_order") or [])
+        operation_key = str(task_runtime.get("operation_key") or "")
+        row["operation_key"] = operation_key
+        row["total_attempts"] = operation_attempt_count(state, operation_key)
+        row["max_total_attempts"] = _max_total_attempts(cfg)
         tasks_view[task_id] = row
         if row["status"] == "ready":
             ready.append(task_id)
@@ -427,6 +786,8 @@ def get_experiment_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
         },
         "tasks": tasks_view,
         "ready": ready,
+        "state_revision": experiment_state_revision(state),
+        "next_actions": experiment_next_actions(state),
     }
     if rounds:
         view["replan_reason"] = runtime.get("result_review_feedback")
@@ -629,12 +990,15 @@ def _route_enabled(route: str, settings: ExperimentsSettings) -> bool:
     return route in {
         ExecutionRoute.REACT_TOOLS.value,
         ExecutionRoute.CODER.value,
-        ExecutionRoute.RESEARCH.value,
     }
 
 
 def _resolve_attempt_id(runtime: dict[str, Any], task_id: str, attempt_id: str) -> str:
     """Accept verbatim ids; repair common LLM truncations of the active ATT-*."""
+    task_runtime = (runtime.get("tasks") or {}).get(task_id) or {}
+    attempts = task_runtime.get("attempts") or {}
+    if attempt_id in attempts:
+        return attempt_id
     active_task = runtime.get("active_task_id")
     active_attempt = runtime.get("active_attempt_id")
     if active_task == task_id and active_attempt == attempt_id:
@@ -752,6 +1116,8 @@ def _scope_tools(task: ExperimentTask) -> tuple[list[dict[str, Any]], list[dict[
             "server_name": server.name,
             "description": tool.description,
             "input_schema": tool.input_schema,
+            "data_contract": tool.data_contract,
+            "output_schema": tool.output_schema,
             "url": str(server.url) if server.url else None,
         }
         for server in task.mcp_servers for tool in server.tools
@@ -791,12 +1157,52 @@ def start_task(
     if runtime["phase"] != "execution" or not runtime["approved"]:
         raise ExperimentRuntimeError("plan_not_approved", "Only an approved plan in execution may start tasks.")
     if runtime.get("active_attempt_id"):
-        raise ExperimentRuntimeError("task_already_running", "v0 permits only one running task at a time.")
+        active_tid = str(runtime.get("active_task_id") or "")
+        active_aid = str(runtime.get("active_attempt_id") or "")
+        active_tr = (runtime.get("tasks") or {}).get(active_tid) or {}
+        active = (active_tr.get("attempts") or {}).get(active_aid) or {}
+        if active.get("status") != "running" or active.get("result_id"):
+            # Defensive recovery from an interrupted state publication. Closed
+            # attempts are never reopened or recorded twice.
+            _clear_active(state, runtime)
+        else:
+            raise ExperimentRuntimeError("task_already_running", "v0 permits only one running task at a time.")
 
     refresh_readiness(runtime)
     if task_runtime["status"] != "ready":
         raise ExperimentRuntimeError("task_not_ready", f"Task {task_id} must be ready, got {task_runtime['status']!r}.")
     route = task_runtime["current_route"]
+    from CoScientist.experiments.scope import literature_task_reason
+
+    context = state.get("experiment_context") or {}
+    scope_operations = [
+        *(state.get("experiment_operations") or []),
+        *(context.get("operations") or []),
+        *(context.get("external_literature_operations") or []),
+    ]
+    if reason := literature_task_reason(task_runtime["task"], scope_operations):
+        exc = ExperimentRuntimeError("literature_outside_experiment_module", reason)
+        _block_unstartable(state, task_id, exc)
+        raise exc
+    operation_key = str(
+        task_runtime.get("operation_key")
+        or task_runtime.get("base_operation_key")
+        or logical_operation_key(task_runtime["task"])
+    )
+    task_runtime.setdefault("base_operation_key", operation_key)
+    task_runtime["operation_key"] = operation_key
+    total_attempts = operation_attempt_count(state, operation_key)
+    max_total_attempts = _max_total_attempts(cfg)
+    if total_attempts >= max_total_attempts:
+        task_runtime["status"] = "failed"
+        task_runtime["last_message"] = (
+            f"Logical operation exhausted its {max_total_attempts} total automatic attempts."
+        )
+        _sync_after_mutation(state, runtime)
+        raise ExperimentRuntimeError(
+            "attempt_budget_exhausted",
+            f"Task {task_id} exhausted {max_total_attempts} total attempts across all routes.",
+        )
     if _attempts_for_route(task_runtime, route) >= cfg.task_max_attempts:
         raise ExperimentRuntimeError(
             "attempt_budget_exhausted",
@@ -855,6 +1261,23 @@ def start_task(
         raise ExperimentRuntimeError("route_disabled", f"Route {route!r} is disabled for Experiment Module v0.")
 
     task_model = ExperimentTask.model_validate(task_runtime["task"])
+    if route in {ExecutionRoute.REACT_TOOLS.value, ExecutionRoute.FEDOT_MAS.value}:
+        from CoScientist.experiments.capabilities.contracts import bound_dataset_mismatches
+        from CoScientist.experiments.runtime.shared import session_inventory_rows
+
+        conflicts = bound_dataset_mismatches(task_model, session_inventory_rows(state, scoped=False))
+        if conflicts:
+            message = "Selected fixed-dataset MCP cannot process this task's declared dataset."
+            task_runtime["last_message"] = message
+            task_runtime["blocked_reason"] = {"code": "tool_dataset_scope_mismatch", "conflicts": conflicts}
+            task_runtime["status"] = (
+                "fallback_pending" if _next_fallback(task_runtime, cfg, route_agents) else "blocked"
+            )
+            _sync_after_mutation(state, runtime)
+            raise ExperimentRuntimeError(
+                "tool_dataset_scope_mismatch", message, details={"conflicts": conflicts},
+                next_actions=experiment_next_actions(state),
+            )
     allowed_hypotheses = {
         str(row.get("hypothesis_id") or "").strip().upper()
         for row in ((state.get("experiment_context") or {}).get("hypothesis_refs") or [])
@@ -879,14 +1302,13 @@ def start_task(
     ):
         from CoScientist.experiments.capabilities.inventory import (
             FAMILY_MEDICAL,
-            FAMILY_RESEARCH,
             match_named_family_capability,
         )
 
         blob = task_coverage_blob(state, task_model)
         # A switched-off medical family is no rewrite target: the rewrite would
         # only be refused as route_disabled one line later.
-        families = {FAMILY_RESEARCH} | ({FAMILY_MEDICAL} if _medical_live(route_agents) else set())
+        families = {FAMILY_MEDICAL} if _medical_live(route_agents) else set()
         if family_hit := match_named_family_capability(blob, families=families):
             route = str(family_hit["family"])
             if not _route_enabled(route, cfg):
@@ -929,7 +1351,8 @@ def start_task(
                 "name": matched["server_id"],
                 "server_id": matched["server_id"],
                 "url": url,
-                "tools": [{"name": matched["tool"], "input_schema": matched.get("input_schema")}],
+                "tools": [{"name": matched["tool"], "input_schema": matched.get("input_schema"),
+                           "data_contract": matched.get("data_contract"), "output_schema": matched.get("output_schema")}],
                 "source": "registry",
                 "health": "unknown",
             }]
@@ -1007,6 +1430,8 @@ def start_task(
         "attempt_no": attempt_no,
         "status": "running",
         "route": route,
+        "operation_key": operation_key,
+        "operation_revision": int(task_runtime.get("operation_revision") or 0),
         "route_returned": False,
         "started_at": started_at,
         "artifact_cursor": {key: len(state.get(key) or []) for key in ARTIFACT_KEYS} | {"workspace_started_at": started_at},
@@ -1014,6 +1439,7 @@ def start_task(
     }
     task_runtime["attempts"][attempt_id] = attempt
     task_runtime["attempt_order"].append(attempt_id)
+    total_attempt_no = _record_operation_attempt(state, operation_key, attempt_id)
     task_runtime["status"] = "running"
     runtime["active_task_id"] = task_id
     runtime["active_attempt_id"] = attempt_id
@@ -1024,6 +1450,9 @@ def start_task(
         "task_id": task_id,
         "attempt_id": attempt_id,
         "attempt_no": attempt_no,
+        "total_attempt_no": total_attempt_no,
+        "max_total_attempts": max_total_attempts,
+        "operation_key": operation_key,
         "route": route,
         "route_agent": ROUTE_AGENT_BY_ROUTE[route],
         "task": task_model.model_dump(mode="json"),
@@ -1087,10 +1516,16 @@ def _next_fallback(
 def _attempts_for_route(task_runtime: dict[str, Any], route: str) -> int:
     """Count attempts already spent on one route (task_max_attempts is per-route)."""
     attempts = task_runtime.get("attempts") or {}
+    operation_key = str(task_runtime.get("operation_key") or "")
     return sum(
         1
         for aid in task_runtime.get("attempt_order") or []
         if str((attempts.get(aid) or {}).get("route") or "") == route
+        and (
+            not operation_key
+            or not (attempts.get(aid) or {}).get("operation_key")
+            or str((attempts.get(aid) or {}).get("operation_key")) == operation_key
+        )
     )
 
 
@@ -1119,10 +1554,31 @@ def record_result(
     route_agents: Collection[str] | None = None,
 ) -> dict[str, Any]:
     cfg = _settings(settings)
-    runtime, task_runtime, attempt = active_attempt(state)
+    runtime = _runtime(state)
+    task_runtime = _task(runtime, task_id)
     attempt_id = _resolve_attempt_id(runtime, task_id, attempt_id)
+    attempt = (task_runtime.get("attempts") or {}).get(attempt_id)
+    if not isinstance(attempt, dict):
+        raise ExperimentRuntimeError("attempt_missing", "Attempt is missing from the task runtime.")
+    request_digest = _result_request_digest(result)
     if attempt["status"] != "running":
-        raise ExperimentRuntimeError("attempt_terminal", "Attempt is already terminal.")
+        prior = _stored_attempt_result(runtime, attempt.get("result_id"))
+        if prior is not None and attempt.get("record_request_digest") == request_digest:
+            return {
+                "status": "success",
+                "task_result": prior,
+                "phase": runtime.get("phase"),
+                "idempotent": True,
+            }
+        raise ExperimentRuntimeError(
+            "result_conflict",
+            "Attempt is already closed with a different recorded result; existing result was preserved.",
+        )
+    if (
+        runtime.get("active_task_id") != task_id
+        or runtime.get("active_attempt_id") != attempt_id
+    ):
+        raise ExperimentRuntimeError("attempt_mismatch", "Attempt is not the active route attempt.")
     if not attempt.get("route_returned"):
         raise ExperimentRuntimeError("route_not_returned", "The route agent must return before record_result.")
 
@@ -1158,6 +1614,7 @@ def record_result(
 
     task = ExperimentTask.model_validate(task_runtime["task"])
     known_criteria = {c.criterion_id for c in task.success_criteria}
+    criteria_by_id = {c.criterion_id: c for c in task.success_criteria}
     raw_checks = [
         dict(item) if isinstance(item, dict) else item
         for item in (result.get("criteria_checks") or [])
@@ -1166,13 +1623,15 @@ def record_result(
         if not isinstance(check, dict):
             continue
         cid = str(check.get("criterion_id") or "").strip()
-        if cid in known_criteria:
-            continue
-        prefixed = f"{task.id}-{cid}"
-        if prefixed in known_criteria:
-            check["criterion_id"] = prefixed
-        elif len(known_criteria) == 1:
-            check["criterion_id"] = next(iter(known_criteria))
+        if cid not in known_criteria:
+            prefixed = f"{task.id}-{cid}"
+            if prefixed in known_criteria:
+                check["criterion_id"] = prefixed
+            elif len(known_criteria) == 1:
+                check["criterion_id"] = next(iter(known_criteria))
+        canonical_id = str(check.get("criterion_id") or "").strip()
+        if canonical_id in criteria_by_id:
+            check["purpose"] = criteria_by_id[canonical_id].purpose
     result = {**result, "criteria_checks": raw_checks}
     checks = [CriterionCheck.model_validate(item) for item in raw_checks]
     raw_artifacts = captured_delta(state, attempt)
@@ -1221,8 +1680,21 @@ def record_result(
             task, artifacts, mcp_url=served, runtime=runtime, attempt=attempt,
         )
     artifacts_ok, missing_artifacts = required_artifacts_present(task, artifacts, route=attempt_route)
+    invalid_formats = invalid_required_artifact_formats(task, artifacts, route=attempt_route)
     criteria_ok, failed_criteria = criteria_valid(task, checks, route=attempt_route)
     core_failure = _is_core_execution_failure(result)
+    assessment_only_failure = (
+        not core_failure and _is_assessment_only_failure(result, checks)
+    )
+    if assessment_only_failure:
+        result = {
+            **result,
+            "retryable": False,
+            "warnings": [
+                *(result.get("warnings") or []),
+                "assessment_not_met: terminal quality outcome; no automatic technical retry",
+            ],
+        }
     material_partial = status == "partial" and (
         core_failure or not artifacts_ok or not criteria_ok
     )
@@ -1251,7 +1723,7 @@ def record_result(
     if durable_ok:
         checks = attest_durable_criteria(task, checks)
         result = {**result, "criteria_checks": [c.model_dump(mode="json") for c in checks]}
-        if not artifacts_ok:
+        if not artifacts_ok and not invalid_formats:
             artifacts_ok, missing_artifacts = True, []
             artifact_warnings.append(
                 "accepted_via_durable_family_evidence: S3/file/mcp_url present; "
@@ -1273,7 +1745,8 @@ def record_result(
                 **result,
                 "status": "partial",
                 "error_code": None,
-                "retryable": result.get("retryable", True),
+                "error_message": None,
+                "retryable": False,
                 "warnings": [
                     *(result.get("warnings") or []),
                     "accepted_via_durable_family_evidence: relabeled failure after real evidence",
@@ -1282,7 +1755,9 @@ def record_result(
             artifact_warnings.append(
                 "accepted_via_durable_family_evidence: relabeled failure after real evidence"
             )
-    if status == "success" and any(c.passed is not True for c in checks):
+    if status == "success" and any(
+        c.purpose == "execution" and c.passed is not True for c in checks
+    ):
         status = "failure"
         result = {
             **result,
@@ -1299,6 +1774,41 @@ def record_result(
             f"A successful/partial result is missing required evidence: criteria={failed_criteria}, artifacts={missing_artifacts}.",
         )
 
+    # Everything below this point is prevalidated before the result is appended
+    # or the attempt is closed. In particular, Alembic cannot leave a stored
+    # success behind and then fail post-build validation.
+    post_build_mcp_url: str | None = None
+    if status == "success" and attempt["route"] == ExecutionRoute.ALEMBIC_BUILD.value:
+        from CoScientist.experiments.runtime.alembic_bridge import harvest_alembic_mcp_url
+
+        post_build_mcp_url = harvest_alembic_mcp_url(
+            outputs if isinstance(outputs, dict) else {},
+            result.get("summary"),
+            attempt.get("alembic_snapshot"),
+            repo_url=str(task.repo_url or "").strip() or None,
+        )
+        if not post_build_mcp_url:
+            raise ExperimentRuntimeError(
+                "alembic_mcp_url_missing",
+                "Alembic success requires outputs.mcp_url before post_build_route can continue.",
+            )
+        if not task.post_build_route:
+            raise ExperimentRuntimeError(
+                "alembic_post_build_missing",
+                "Alembic success requires post_build_route on the task.",
+            )
+
+    if status != "failure":
+        result = {**result, "retryable": False}
+    result_version = int(attempt.get("operation_revision") or 0) + 1
+    prior_for_task = next(
+        (
+            item for item in reversed(runtime.get("results") or [])
+            if isinstance(item, dict) and item.get("task_id") == task_id
+        ),
+        None,
+    )
+
     task_result = TaskResult.model_validate({
         "schema_version": "task-result/0.1",
         "result_id": result.get("result_id") or f"RES-{uuid4().hex}",
@@ -1307,6 +1817,12 @@ def record_result(
         "attempt_id": attempt_id,
         "attempt_no": attempt["attempt_no"],
         "status": status,
+        "result_version": result_version,
+        "supersedes_result_id": (
+            prior_for_task.get("result_id")
+            if result_version > 1 and isinstance(prior_for_task, dict)
+            else None
+        ),
         "planned_route": task_runtime["planned_route"],
         "route_used": attempt["route"],
         "started_at": attempt["started_at"],
@@ -1315,6 +1831,7 @@ def record_result(
         "outputs": outputs if isinstance(outputs, dict) else {},
         "artifacts": artifacts,
         "criteria_checks": checks,
+        "scientific_check": result.get("scientific_check"),
         "error_code": result.get("error_code"),
         "error_message": result.get("error_message"),
         "retryable": bool(result.get("retryable", False)),
@@ -1324,36 +1841,19 @@ def record_result(
 
     attempt["status"] = status
     attempt["result_id"] = task_result.result_id
+    attempt["record_request_digest"] = request_digest
     task_runtime["last_message"] = task_result.summary
     post_build: dict[str, Any] | None = None
     if status == "success":
         if attempt["route"] == ExecutionRoute.ALEMBIC_BUILD.value:
             from CoScientist.experiments.runtime.alembic_bridge import (
                 apply_alembic_success,
-                harvest_alembic_mcp_url,
             )
-
-            mcp_url = harvest_alembic_mcp_url(
-                outputs if isinstance(outputs, dict) else {},
-                result.get("summary"),
-                attempt.get("alembic_snapshot"),
-                repo_url=str(task.repo_url or "").strip() or None,
-            )
-            if not mcp_url:
-                raise ExperimentRuntimeError(
-                    "alembic_mcp_url_missing",
-                    "Alembic success requires outputs.mcp_url before post_build_route can continue.",
-                )
-            if not task.post_build_route:
-                raise ExperimentRuntimeError(
-                    "alembic_post_build_missing",
-                    "Alembic success requires post_build_route on the task.",
-                )
             post_build = apply_alembic_success(
                 state,
                 runtime,
                 task_runtime,
-                mcp_url=mcp_url,
+                mcp_url=str(post_build_mcp_url),
                 outputs=outputs if isinstance(outputs, dict) else {},
                 settings=cfg,
             )
@@ -1363,12 +1863,16 @@ def record_result(
         task_runtime["status"] = "done_with_warnings"
     else:
         route = str(task_runtime.get("current_route") or "")
-        attempts_left = _attempts_for_route(task_runtime, route) < cfg.task_max_attempts
-        next_fb = _next_fallback(task_runtime, cfg, route_agents)
+        total_left = operation_attempt_count(
+            state, str(attempt.get("operation_key") or task_runtime.get("operation_key") or "")
+        ) < _max_total_attempts(cfg)
+        attempts_left = total_left and _attempts_for_route(task_runtime, route) < cfg.task_max_attempts
+        technical_failure = bool(task_result.retryable or core_failure or material_partial)
+        next_fb = _next_fallback(task_runtime, cfg, route_agents) if total_left else None
         # Same-route retries first; else next route in resolve_fallback_chains().
         if task_result.retryable and attempts_left:
             task_runtime["status"] = "retry_pending"
-        elif next_fb is not None:
+        elif technical_failure and next_fb is not None:
             task_runtime["status"] = "fallback_pending"
         else:
             task_runtime["status"] = "failed"
@@ -1409,6 +1913,14 @@ def retry_task(
     if task_runtime["status"] != "retry_pending":
         raise ExperimentRuntimeError("retry_not_allowed", "retry_task requires a retryable failed attempt.")
     route = str(task_runtime.get("current_route") or "")
+    operation_key = str(task_runtime.get("operation_key") or "")
+    if operation_attempt_count(state, operation_key) >= _max_total_attempts(cfg):
+        task_runtime["status"] = "failed"
+        task_runtime["last_message"] = "Total automatic attempt budget exhausted."
+        _sync_after_mutation(state, runtime)
+        raise ExperimentRuntimeError(
+            "attempt_budget_exhausted", "Total automatic attempt budget exhausted."
+        )
     if _attempts_for_route(task_runtime, route) >= cfg.task_max_attempts:
         raise ExperimentRuntimeError("attempt_budget_exhausted", f"Retry budget exhausted on route {route!r}.")
     task_runtime["status"] = "ready"
@@ -1515,6 +2027,14 @@ def _complete_as_skipped(
     task_runtime = _task(runtime, task_id)
     attempt_id = f"ATT-{uuid4().hex}"
     now = utc_now()
+    result_version = int(task_runtime.get("operation_revision") or 0) + 1
+    prior = next(
+        (
+            item for item in reversed(runtime.get("results") or [])
+            if isinstance(item, dict) and item.get("task_id") == task_id
+        ),
+        None,
+    )
     result = TaskResult(
         schema_version="task-result/0.1",
         result_id=f"RES-{uuid4().hex}",
@@ -1523,6 +2043,12 @@ def _complete_as_skipped(
         attempt_id=attempt_id,
         attempt_no=len(task_runtime["attempt_order"]) + 1,
         status="skipped",
+        result_version=result_version,
+        supersedes_result_id=(
+            prior.get("result_id")
+            if result_version > 1 and isinstance(prior, dict)
+            else None
+        ),
         planned_route=task_runtime["planned_route"],
         route_used=task_runtime["current_route"],
         started_at=now,
@@ -1536,6 +2062,8 @@ def _complete_as_skipped(
         "attempt_no": result.attempt_no,
         "status": "skipped",
         "route": task_runtime["current_route"],
+        "operation_key": task_runtime.get("operation_key"),
+        "operation_revision": int(task_runtime.get("operation_revision") or 0),
         "route_returned": False,
         "started_at": now.isoformat(),
         "result_id": result.result_id,
@@ -1607,43 +2135,187 @@ def amend_task(
     }
 
 
+def preview_task_redo(
+    state: MutableMapping[str, Any], task_ids: Collection[str],
+) -> dict[str, Any]:
+    """Return the exact dependency closure an explicit targeted redo invalidates."""
+    runtime = _runtime(state)
+    selected_set = {str(task_id).strip() for task_id in task_ids if str(task_id).strip()}
+    if not selected_set:
+        raise ExperimentRuntimeError(
+            "redo_selection_required", "Select at least one task for targeted redo."
+        )
+    unknown = selected_set - set(runtime.get("tasks") or {})
+    if unknown:
+        raise ExperimentRuntimeError("task_not_found", f"Unknown redo tasks: {sorted(unknown)}.")
+
+    affected = set(selected_set)
+    changed = True
+    while changed:
+        changed = False
+        for task_id in runtime.get("task_order") or []:
+            if task_id in affected:
+                continue
+            row = runtime["tasks"][task_id]
+            task = ExperimentTask.model_validate(row["task"])
+            sources = set(task.depends_on)
+            sources.update(
+                str(item.source_task_id)
+                for item in task.input_data
+                if item.kind == "task_artifact" and item.source_task_id
+            )
+            if sources & affected:
+                affected.add(task_id)
+                changed = True
+    order = list(runtime.get("task_order") or [])
+    selected = [task_id for task_id in order if task_id in selected_set]
+    affected_ordered = [task_id for task_id in order if task_id in affected]
+    return {
+        "status": "success",
+        "selected_task_ids": selected,
+        "affected_task_ids": affected_ordered,
+        "dependency_task_ids": [task_id for task_id in affected_ordered if task_id not in selected_set],
+        "preserved_task_ids": [task_id for task_id in order if task_id not in affected],
+    }
+
+
+def result_redo_context(state: MutableMapping[str, Any]) -> dict[str, Any]:
+    """Structured task choices and dependency previews for result-review UI."""
+    runtime = _runtime(state)
+    choices: list[dict[str, Any]] = []
+    affected_by_task: dict[str, list[str]] = {}
+    for task_id in runtime.get("task_order") or []:
+        task_runtime = runtime["tasks"][task_id]
+        latest = next(
+            (
+                item for item in reversed(runtime.get("results") or [])
+                if isinstance(item, dict) and item.get("task_id") == task_id
+            ),
+            {},
+        )
+        task = task_runtime.get("task") or {}
+        choices.append({
+            "task_id": task_id,
+            "name": str(task.get("name") or task_id),
+            "status": str(task_runtime.get("status") or ""),
+            "summary": str(latest.get("summary") or task_runtime.get("last_message") or ""),
+            "execution_status": latest.get("execution_status"),
+            "assessment_status": latest.get("assessment_status"),
+            "result_version": int(latest.get("result_version") or 0),
+        })
+        affected_by_task[task_id] = preview_task_redo(state, [task_id])["affected_task_ids"]
+    return {
+        "task_choices": choices,
+        "affected_by_task": affected_by_task,
+        "selection_required_for_redo": True,
+    }
+
+
+def request_task_redo(
+    state: MutableMapping[str, Any],
+    task_ids: Collection[str],
+    feedback: str,
+    *,
+    decision_source: str = "human",
+) -> dict[str, Any]:
+    """Start a new version of selected tasks after an explicit human decision.
+
+    Prior TaskResults and artifacts stay in ``runtime.results``. Only selected
+    tasks and their transitive consumers are reopened; every reopened operation
+    gets a fresh *explicit revision* key and its own finite technical-attempt
+    budget. Merely granting more LLM calls never invokes this function.
+    """
+    runtime = _runtime(state)
+    source = str(decision_source or "").strip().lower()
+    if source not in {"human", "operator", "api"}:
+        raise ExperimentRuntimeError(
+            "explicit_redo_required", "Targeted redo requires an explicit human/API selection."
+        )
+    if runtime.get("active_attempt_id"):
+        raise ExperimentRuntimeError("task_already_running", "Cannot request redo during an active attempt.")
+    if runtime.get("phase") not in {"reporting", "awaiting_result_review", "completed"}:
+        raise ExperimentRuntimeError(
+            "invalid_phase", "Targeted redo requires completed execution or result review."
+        )
+    preview = preview_task_redo(state, task_ids)
+    selected = set(preview["selected_task_ids"])
+    request_no = len(runtime.get("redo_requests") or []) + 1
+    prior_result_ids: dict[str, str] = {}
+    for task_id in preview["affected_task_ids"]:
+        task_runtime = runtime["tasks"][task_id]
+        prior = next(
+            (
+                item for item in reversed(runtime.get("results") or [])
+                if isinstance(item, dict) and item.get("task_id") == task_id
+            ),
+            None,
+        )
+        if isinstance(prior, dict) and prior.get("result_id"):
+            prior_result_ids[task_id] = str(prior["result_id"])
+        revision = int(task_runtime.get("operation_revision") or 0) + 1
+        base = str(
+            task_runtime.get("base_operation_key")
+            or logical_operation_key(task_runtime["task"])
+        )
+        task_runtime["base_operation_key"] = base
+        task_runtime["operation_revision"] = revision
+        task_runtime["operation_key"] = f"{base}:revision-{revision}:{task_id}"
+        task_runtime["current_route"] = task_runtime["planned_route"]
+        task_runtime["status"] = "pending"
+        why = "selected" if task_id in selected else "depends on selected task"
+        task_runtime["last_message"] = f"Targeted redo {request_no} ({why}): {feedback}"
+        task_runtime.setdefault("route_history", []).append({
+            "route": task_runtime["current_route"],
+            "reason": f"targeted_redo_{request_no}:{why}",
+        })
+    request = {
+        "request_no": request_no,
+        "decision_source": source,
+        "feedback": feedback or "Targeted redo requested.",
+        "selected_task_ids": preview["selected_task_ids"],
+        "affected_task_ids": preview["affected_task_ids"],
+        "prior_result_ids": prior_result_ids,
+        "requested_at": utc_now().isoformat(),
+    }
+    runtime.setdefault("redo_requests", []).append(request)
+    runtime["phase"] = "execution"
+    runtime["approved"] = True
+    runtime["result_review_feedback"] = feedback or "Targeted redo requested."
+    runtime["result_review_disposition"] = "targeted_redo"
+    _sync_after_mutation(state, runtime, clear_active=True)
+    state[RUNTIME_KEY] = runtime
+    return {**preview, "phase": runtime["phase"], "redo_request": copy.deepcopy(request)}
+
+
 def mark_result_review(
     state: MutableMapping[str, Any],
     *,
     approved: bool,
     feedback: str | None = None,
+    selected_task_ids: Collection[str] | None = None,
 ) -> dict[str, Any]:
     runtime = _runtime(state)
     if runtime["phase"] not in {"reporting", "awaiting_result_review"}:
         raise ExperimentRuntimeError("invalid_phase", "Result review requires a reported experiment.")
 
-    rounds = int(state.get(REPLAN_ROUNDS_KEY) or 0)
-    budget = int(get_settings().experiments.max_replan_rounds)
-    exhausted = False
-
     if approved:
         runtime["phase"] = "completed"
-    elif rounds >= budget:
-        # Out of replan budget: finish honestly rather than loop. The reviewer's
-        # objection is preserved so the report can say the run ended unresolved.
-        exhausted = True
-        runtime["phase"] = "completed"
-        runtime["replan_exhausted"] = True
-        runtime["result_review_feedback"] = (
-            f"{feedback or 'Result redesign requested.'} "
-            f"(replan budget exhausted after {rounds} round(s); stopping instead of replanning)"
+        runtime["result_review_disposition"] = "accepted"
+        if feedback:
+            runtime["result_review_feedback"] = feedback
+            runtime["result_review_notes"] = feedback
+    elif selected_task_ids:
+        return request_task_redo(
+            state, selected_task_ids, feedback or "Targeted redo requested.",
+            decision_source="human",
         )
     else:
-        rounds += 1
-        state[REPLAN_ROUNDS_KEY] = rounds
-        runtime["replan_rounds"] = rounds
-        runtime["phase"] = "replan_requested"
-        runtime["result_review_feedback"] = feedback or "Result redesign requested."
-        # A replan is a fresh planning round, so the per-round revision budget
-        # starts over. Without this the next planner hop inherits a spent budget
-        # and can pause the experiment on its first stumble.
-        state["experiment_plan_revision_count"] = 0
-        state["experiment_inventory_blocker_hits"] = 0
+        # A quality objection is an assessment, not a technical failure. Record
+        # it as a terminal suggestion; do not regenerate the whole plan.
+        runtime["phase"] = "completed"
+        runtime["result_review_disposition"] = "changes_suggested"
+        runtime["result_review_feedback"] = feedback or "Result changes suggested."
+        runtime["targeted_redo_available"] = True
 
     # Reassign, do not just mutate: ADK records a state delta on assignment, so
     # an in-place edit of the nested dict never reaches session state. That is
@@ -1653,19 +2325,21 @@ def mark_result_review(
     state[RUNTIME_KEY] = runtime
     _audit(
         f"EXPERIMENT_RESULT_REVIEW approved={str(approved).lower()} "
-        f"phase={runtime['phase']} replan_rounds={runtime.get('replan_rounds', 0)}/{budget}"
-        + (" replan_exhausted=true" if exhausted else "")
+        f"phase={runtime['phase']} disposition={runtime.get('result_review_disposition')}"
     )
     return {
         "status": "success",
         "phase": runtime["phase"],
         "replan_rounds": int(runtime.get("replan_rounds") or 0),
-        "max_replan_rounds": budget,
-        "replan_exhausted": exhausted,
+        "max_replan_rounds": int(get_settings().experiments.max_replan_rounds),
+        "replan_exhausted": False,
+        "result_review_disposition": runtime.get("result_review_disposition"),
+        "targeted_redo_available": bool(runtime.get("targeted_redo_available")),
     }
 
 
 __all__ = [
+    "ATTEMPT_LEDGER_KEY",
     "ExperimentRuntimeError",
     "FALLBACK_CHAINS",
     "ROUTE_AGENT_BY_ROUTE",
@@ -1676,14 +2350,21 @@ __all__ = [
     "fallback_task",
     "clamp_generate_launch_num",
     "force_managed_s3_launch_params",
+    "experiment_next_actions",
+    "experiment_state_revision",
     "generate_num_cap",
     "generate_presigned_s3_url",
     "get_experiment_plan",
     "initialize_runtime",
     "mark_result_review",
     "mark_route_returned",
+    "logical_operation_key",
+    "operation_attempt_count",
+    "preview_task_redo",
+    "result_redo_context",
     "record_result",
     "resolve_fallback_chains",
+    "request_task_redo",
     "retry_task",
     "skip_task",
     "start_task",

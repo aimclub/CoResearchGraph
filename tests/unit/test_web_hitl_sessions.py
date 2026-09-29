@@ -119,6 +119,83 @@ def test_unresolved_hitl_is_redelivered_only_until_it_is_resolved():
     asyncio.run(scenario())
 
 
+def test_a_required_human_is_not_bypassed_by_auto_mode(monkeypatch):
+    monkeypatch.setenv("HITL__MODE", "auto")
+
+    async def scenario():
+        handler = WebHITLHandler()
+        key = ("user_a", "session_a")
+        socket = _Socket()
+        await handler.attach_websocket(socket, key)
+        task = asyncio.create_task(handler.handle_request(HITLRequest(
+            agent_name="ExperimentPlannerAgent",
+            action_type=HITLAction.APPROVE,
+            message="Approve the exhausted plan",
+            context={"_session": {"user_id": key[0], "session_id": key[1]}},
+            timeout_seconds=10,
+            requires_human=True,
+        )))
+
+        await _delivered(socket)
+        assert not task.done()
+        payload = socket.messages[0]
+        assert payload["requires_human"] is True
+        assert payload["timeout_seconds"] == 10
+        assert handler.resolve_request(
+            payload["request_id"],
+            {"action": "approve", "approved": True},
+            key,
+        )
+        response = await task
+        assert response.approved
+        assert response.decision_source.value == "human"
+
+    asyncio.run(scenario())
+
+
+def test_logical_review_id_is_stable_and_concurrent_replays_share_one_card():
+    async def run_once(*, duplicate: bool):
+        handler = WebHITLHandler()
+        key = ("user_a", "session_a")
+        socket = _Socket()
+        await handler.attach_websocket(socket, key)
+        request = HITLRequest(
+            agent_name="ExperimentPlannerAgent",
+            action_type=HITLAction.APPROVE,
+            message="Approve the exhausted plan",
+            context={
+                "experiment_review_id": "plan-fallback:run-1:plan-1:r4:digest",
+                "_session": {"user_id": key[0], "session_id": key[1]},
+            },
+            timeout_seconds=10,
+            requires_human=True,
+        )
+        tasks = [asyncio.create_task(handler.handle_request(request))]
+        if duplicate:
+            tasks.append(asyncio.create_task(handler.handle_request(request)))
+        await _delivered(socket)
+        await asyncio.sleep(0)
+        assert len(socket.messages) == 1
+        request_id = socket.messages[0]["request_id"]
+        assert handler.resolve_request(
+            request_id,
+            {"action": "approve", "approved": True},
+            key,
+        )
+        responses = await asyncio.gather(*tasks)
+        assert all(response.approved for response in responses)
+        return request_id
+
+    async def scenario():
+        first = await run_once(duplicate=True)
+        # A new handler models a process restart.  The same durable review
+        # identity must map to the same browser-card identity.
+        second = await run_once(duplicate=False)
+        assert first == second
+
+    asyncio.run(scenario())
+
+
 def test_cancelled_hitl_is_removed_and_not_redelivered_on_reconnect():
     async def scenario():
         handler = WebHITLHandler()

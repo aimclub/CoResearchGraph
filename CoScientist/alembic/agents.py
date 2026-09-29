@@ -10,6 +10,8 @@ import asyncio
 
 import litellm
 
+from CoScientist.execution_control import before_model_attempt
+
 litellm.suppress_debug_info = True
 
 from loguru import logger
@@ -42,6 +44,15 @@ class ResilientLiteLlm(LiteLlm):
         while True:
             produced = False
             try:
+                effective_model = (
+                    getattr(llm_request, "model", None)
+                    or getattr(self, "model", "")
+                    or config.MODEL
+                )
+                await before_model_attempt(
+                    "alembic_adk_litellm",
+                    metadata={"model": effective_model, "retry": attempt},
+                )
                 async for resp in super().generate_content_async(llm_request, stream=stream):
                     produced = True
                     yield resp

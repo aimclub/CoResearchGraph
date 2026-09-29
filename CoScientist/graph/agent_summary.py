@@ -158,12 +158,18 @@ async def _complete(system: str, user: str) -> Tuple[str, str]:
     resp, used = None, model
     for i, (candidate, candidate_base) in enumerate(attempts):
         try:
+            from CoScientist.execution_control import before_model_attempt
+            await before_model_attempt(
+                "agent_summary",
+                metadata={"model": candidate, "fallback": i > 0},
+            )
             resp = await litellm.acompletion(
                 model=_routable(candidate, candidate_base), api_base=candidate_base,
                 api_key=s.openai_api_key,
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
                 temperature=0, timeout=s.request_timeout, max_tokens=_MAX_TOKENS,
+                num_retries=0,
             )
             used = candidate
             break

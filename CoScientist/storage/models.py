@@ -15,6 +15,14 @@ class RetrievalToolResult(BaseModel):
         default=None,
         description="JSON schema of the tool's accepted arguments (from the registry).",
     )
+    output_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Declared result schema; absence means unknown, not an empty result.",
+    )
+    data_contract: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Registry-declared input mode and dataset scope, when available.",
+    )
     score: float
     url: Optional[str] = Field(
         default=None,
