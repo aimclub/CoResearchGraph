@@ -1322,7 +1322,6 @@
 
 /* ── Side-nav call graph (call_graph.js) ─────────────────────────────── */
 .cg-edge { fill: none; stroke: rgb(var(--c-outline-variant) / 0.55); stroke-width: 1.25; }
-.cg-edge-nested { stroke-dasharray: 3 3; }
 .cg-edge-live { stroke: rgb(var(--c-primary) / 0.8); }
 .cg-box { fill: rgb(var(--c-surface-container-lowest)); stroke: rgb(var(--c-hairline)); stroke-width: 1; }
 .cg-label { fill: rgb(var(--c-on-surface)); font-family: inherit; }
@@ -1332,8 +1331,27 @@
 .cg-root .cg-dot { fill: rgb(var(--c-primary)); }
 .cg-running .cg-box { stroke: rgb(var(--c-primary)); }
 .cg-running .cg-dot { fill: rgb(var(--c-primary)); animation: cgPulse 1.2s ease-in-out infinite; }
+.cg-stack { opacity: 0.55; }
+/* Stack unfold/fold: nodes glide to their new places, the view follows,
+   links fade back in once the nodes have arrived. */
+.cg-world { transform-origin: 0 0; }
+.cg-world.cg-anim { transition: transform .38s cubic-bezier(.2, .8, .2, 1); }
+.cg-anim .cg-node { transition: transform .38s cubic-bezier(.2, .8, .2, 1), opacity .3s ease; }
+.cg-anim .cg-edges { transition: opacity .25s ease .22s; }
+@media (prefers-reduced-motion: reduce) {
+  .cg-world.cg-anim, .cg-anim .cg-node, .cg-anim .cg-edges { transition: none; }
+}
+.cg-count { fill: rgb(var(--c-primary)); font-weight: 600; font-family: inherit; }
+.cg-group, .cg-member { cursor: pointer; }
+.cg-group:hover .cg-box:not(.cg-stack), .cg-member:hover .cg-box { stroke: rgb(var(--c-primary) / 0.7); }
+.cg-idle .cg-box { fill: transparent; stroke: rgb(var(--c-outline-variant) / 0.55); stroke-dasharray: 4 3; }
+.cg-idle .cg-label { fill: rgb(var(--c-outline-variant)); }
+.cg-idle .cg-dot { fill: none; stroke: rgb(var(--c-outline-variant) / 0.7); stroke-width: 1; }
+.cg-edge-idle { stroke: rgb(var(--c-outline-variant) / 0.35); stroke-dasharray: 3 3; }
 .cg-error .cg-box { stroke: rgb(var(--c-error) / 0.8); }
 .cg-error .cg-dot { fill: rgb(var(--c-error)); }
+#side-nav-panel:fullscreen { margin: 0; border-radius: 0; min-height: 0; background: rgb(var(--c-surface-container-low)); }
+#side-nav-panel:fullscreen #call-graph-title { font-size: 13px; }
 #call-graph-scroll { cursor: grab; touch-action: none; user-select: none; }
 #call-graph-scroll.dragging { cursor: grabbing; }
 @keyframes cgPulse { 50% { opacity: 0.25; } }

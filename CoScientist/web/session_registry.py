@@ -313,4 +313,5 @@ class LocalSessionRegistry:
             }
             self._sessions[key] = session
             self._users[user_id]["last_session_id"] = session_id
+            self._save()
             return dict(session)

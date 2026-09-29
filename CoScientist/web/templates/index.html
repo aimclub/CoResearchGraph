@@ -133,6 +133,11 @@
         <span class="material-symbols-outlined text-[16px] text-outline-variant" aria-hidden="true">account_tree</span>
         <h3 id="call-graph-title" class="text-[11px] font-medium text-on-surface-variant" data-i18n="nav.callGraph">Call graph</h3>
         <span id="call-graph-count" class="ml-auto text-[10px] text-outline-variant tabular-nums"></span>
+        <button type="button" id="call-graph-full" onclick="CallGraph.toggleFullscreen()"
+          data-i18n-title="nav.callGraphFull" data-i18n-aria="nav.callGraphFull" title="Full screen" aria-label="Full screen"
+          class="w-6 h-6 -mr-1 rounded flex items-center justify-center text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors">
+          <span id="call-graph-full-icon" class="material-symbols-outlined text-[16px]" aria-hidden="true">open_in_full</span>
+        </button>
       </div>
       <div id="call-graph-scroll" class="flex-1 min-h-0 overflow-hidden"
         data-i18n-title="nav.callGraphHint" title="Drag to move · wheel to zoom · double-click to fit">

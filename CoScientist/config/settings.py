@@ -451,6 +451,9 @@ class WebSettings(BaseModel):
     # Default of the per-browser "Show internal agents and tools" switch. A
     # browser that flipped the switch keeps its own choice.
     show_internal_enabled: bool = _os.getenv("SHOW_INTERNAL__ENABLED", "false").lower() in ("true", "1", "yes")
+    # Side-nav call graph: how long a group of parallel calls stays unfolded
+    # after a click before it folds back.
+    call_graph_collapse_seconds: int = int(_os.getenv("CALL_GRAPH__COLLAPSE_SECONDS", "10"))
     coscientist_username: _Optional[str] = _os.getenv("COSCIENTIST_USERNAME") or _os.getenv("DEFAULT_USERNAME")
     context_init_enabled: bool = _os.getenv("RESEARCH_FRAME", "true").lower() in ("true", "1", "yes")
     session_snapshots_dir: str = _os.getenv("SESSION_SNAPSHOTS_DIR", "session_snapshots")

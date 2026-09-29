@@ -62,6 +62,7 @@ const appSettings = {
     opikEnabled: false,
     autoNamingEnabled: true,
     showInternal: false,               // default only: SHOW_INTERNAL__ENABLED; the browser's choice wins
+    callGraphCollapseSeconds: 10,      // side-nav call graph: unfolded parallel calls fold back after this
     contextInitEnabled: true,
     knowledgeGraphEnabled: true,
     autoClearGraphEnabled: false,      // read-only: GRAPH__AUTO_CLEAR in .env

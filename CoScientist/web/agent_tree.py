@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Mapping
 
 from CoScientist.assembly.registry import REGISTRY
@@ -90,6 +91,165 @@ def agent_structure() -> dict[str, Any]:
     return {"composites": composites, "roots": sorted(roots)}
 
 
+@lru_cache(maxsize=1)
+def _profile_agents() -> dict[str, frozenset[str]]:
+    """Each profile's agent names, read from its YAML (``extends`` resolved)
+    without importing its plugins."""
+    from CoScientist.assembly.schema import _load_raw, profile_paths
+
+    result: dict[str, frozenset[str]] = {}
+    for path in profile_paths():
+        try:
+            agents = (_load_raw(path) or {}).get("agents") or {}
+        except Exception:  # noqa: BLE001 — one broken profile must not hide the rest
+            continue
+        result[str(path)] = frozenset(agents)
+    return result
+
+
+def session_profile(ran: set[str]) -> str:
+    """The profile a session ran under, judged by the agents that ran in it.
+
+    Profiles are process-wide and the session records none, so an old
+    session is matched by its agents: the profile that knows most of them
+    and misses fewest wins; the current profile wins a tie, else the
+    smallest (a sub-profile over the one that extends it). A session that
+    ran nothing yet belongs to the current profile.
+    """
+    from CoScientist.assembly.schema import resolve_config_path
+
+    current = str(resolve_config_path().resolve())
+    profiles = {str(Path(p).resolve()): names for p, names in _profile_agents().items()}
+    known = set().union(*profiles.values()) if profiles else set()
+    names = {n for n in ran if n in known}
+    if not names or not profiles:
+        return current
+
+    def score(item: tuple[str, frozenset[str]]) -> tuple[int, int, int]:
+        path, agents = item
+        return (len(names & agents) - len(names - agents), path == current, -len(agents))
+
+    return max(profiles.items(), key=score)[0]
+
+
+def session_agent_names(events: list[dict[str, Any]], execution: Mapping[str, Any] | None) -> set[str]:
+    """Agents a session's transcript and execution graph say ran."""
+    names: set[str] = set()
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "tool_activity":
+            if event.get("phase") == "agent_start" or event.get("is_delegation"):
+                names.add(str(event.get("author") or ""))
+            if event.get("is_delegation"):
+                names.add(str(event.get("target_agent") or event.get("tool") or ""))
+        elif event.get("type") == "agent_event":
+            names.add(str(event.get("author") or ""))
+            for call in event.get("tool_calls") or []:
+                if isinstance(call, dict):
+                    names.add(str(call.get("name") or ""))
+    for node in (execution or {}).get("nodes") or []:
+        if isinstance(node, dict) and node.get("kind") == "agent":
+            names.add(str(node.get("executor_agent") or ""))
+    names.discard("")
+    return names
+
+
+def call_graph_skeleton(run_settings: Settings, profile: str | None = None) -> dict[str, Any]:
+    """Every place an agent can run in this session, as a tree of slots.
+
+    The side-nav call graph draws it before anything runs (dashed) and lights
+    a slot up once an agent runs there. The pipeline stages run one after
+    another; the root's calls fan out from it, each a branch of its own.
+    Modules are not slots: a sequential module becomes a chain of its agents
+    (each hangs off the one before), a parallel one or a router puts its
+    agents side by side. An agent's own calls hang off it.
+
+    ``owner`` is the slot whose calls produced a slot (None for the pipeline);
+    it is what maps a runtime run, known by its calling agent, to its slot.
+    """
+    from CoScientist.agents import config_for_mode
+    from CoScientist.assembly.schema import _load_raw, resolve_config_path
+
+    path = Path(profile) if profile else resolve_config_path()
+    # The whole walk runs under the session's settings: whether an agent is on
+    # (its YAML switch, the setting it names, the session's Settings → Agents
+    # override) is read on every is_enabled(), and an agent that is off is
+    # not drawn.
+    with settings_scope(run_settings):
+        # Another profile's config is read without its plugins: only the
+        # topology is needed, and importing them would change this process.
+        base = None if path.resolve() == resolve_config_path().resolve() \
+            else SystemConfig.model_validate(_load_raw(path))
+        config = config_for_mode(base)
+        return _skeleton(config, path.stem)
+
+
+def _skeleton(config: SystemConfig, profile: str) -> dict[str, Any]:
+    slots: list[dict[str, Any]] = []
+
+    def add(name: str, parent: str | None, owner: str | None, kind: str) -> str:
+        slot_id = f"s{len(slots)}"
+        slots.append({"id": slot_id, "agent": name, "parent": parent, "owner": owner, "kind": kind})
+        return slot_id
+
+    def expand(name: str, parent: str | None, owner: str | None, kind: str,
+               ancestors: tuple[str, ...]) -> list[str | None]:
+        """Lay out ``name`` below ``parent``; return where a next step attaches."""
+        try:
+            agent = config.agent(name)
+        except KeyError:
+            return [add(name, parent, owner, kind)]
+        if not agent.is_enabled():
+            return [parent]
+        if name in ancestors:
+            return [add(name, parent, owner, kind)]
+        path = (*ancestors, name)
+        if agent.cls in ("sequential", "loop"):
+            tails: list[str | None] = [parent]
+            step_kind = kind
+            for child in agent.children:
+                tails = expand(child, tails[-1], owner, step_kind, path) or tails
+                step_kind = "step"
+            return tails
+        if agent.cls == "parallel" or (agent.children and agent.cls != "llm" and agent.cls not in COMPOSITE_CLASSES):
+            # Side by side: a parallel module runs them all, a router one.
+            tails = [t for child in agent.children for t in expand(child, parent, owner, kind, path)]
+            return tails or [parent]
+        slot = add(name, parent, owner, kind)
+        # Its critic reviews it in place (not a YAML agent: it reports under
+        # this name), drawn beside it — only while the critic is switched on.
+        if agent.uses_critic():
+            add(str(agent.options.get("critic_agent_name") or "PlanCriticAgent"), slot, slot, "critic")
+        # An agent that already ran as a pipeline stage (the planner in
+        # "plan first" mode) is not offered again as a call.
+        stages_run = {s["agent"] for s in slots if s["owner"] is None}
+        for sub in agent.subordinates:
+            if sub not in stages_run:
+                expand(sub, slot, slot, "call", path)
+        return [slot]
+
+    stages = [n for n in config.pipeline.pre if config.agent(n).is_enabled()]
+    stages.append(config.root.name)
+    stages.extend(n for n in config.pipeline.post if config.agent(n).is_enabled())
+    tail: str | None = None
+    for index, stage in enumerate(stages):
+        tail = expand(stage, tail, None, "step" if index else "root", ())[-1]
+    # The coordinator: the pipeline slot whose calls fan out.
+    owners = {slot["owner"] for slot in slots if slot["kind"] != "critic"}
+    root_slot = next((slot["id"] for slot in slots if slot["owner"] is None and slot["id"] in owners), None)
+    return {
+        "profile": profile,
+        "slots": slots,
+        "rootSlot": root_slot,
+        "composites": sorted(
+            name for name, agent in config.agents.items()
+            if agent.cls in COMPOSITE_CLASSES
+            or (agent.children and agent.cls != "llm")
+        ),
+    }
+
+
 def agent_run_events(execution: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The agent runs of an execution graph, replayed as ``tool_activity``
     ``agent_start``/``agent_end`` records in time order.
@@ -134,55 +294,59 @@ def agent_run_events(execution: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "agent_instance": node_id, "timestamp": end,
                 "failed": node.get("status") in ("error", "failed"),
             }))
+    if not parent_of:
+        # Older graphs recorded runs but not who ran them: no tree to draw,
+        # and the transcript's own delegation calls say more.
+        return []
     events.sort(key=lambda item: (item[0], item[1]))
     return [event for _, _, event in events]
 
 
 # Short names for the side-nav call graph. Separate from _TITLES on purpose:
 # that one names the stages of the /agent-tree scheme, this one names who is
-# working — "Агент-планировщик" — and must fit a small box.
+# working — "Агент планировщик" — and must fit a small box.
 _CALL_GRAPH_TITLES: dict[str, str] = {
-    "OrchestratorAgent": "Агент-оркестратор",
-    "RootOrchestrator": "Агент-оркестратор",
-    "PlannerAgent": "Агент-планировщик",
-    "PlanCriticAgent": "Агент-критик плана",
-    "ContextInitAgent": "Агент-постановщик",
-    "InitAgent": "Агент-постановщик",
+    "OrchestratorAgent": "Агент оркестратор",
+    "RootOrchestrator": "Агент оркестратор",
+    "PlannerAgent": "Агент планировщик",
+    "PlanCriticAgent": "Агент критик плана",
+    "ContextInitAgent": "Агент постановщик",
+    "InitAgent": "Агент постановщик",
     "TZSpecAgent": "Агент ТЗ",
     "TZSpecAgent_task": "Агент ТЗ: задача",
     "TZSpecAgent_quality": "Агент ТЗ: качество",
     "TZSpecAgent_limits": "Агент ТЗ: ограничения",
     "TZQueryGenAgent": "Агент запросов",
     "HypothesesAgent": "Агент гипотез",
-    "ResearchAgent": "Агент-исследователь",
-    "TaskExecutorAgent": "Агент-исполнитель",
-    "ExperimentPlannerAgent": "Агент-планировщик эксперимента",
-    "ExperimentExecutorAgent": "Агент-экспериментатор",
-    "ExperimentResultReviewAgent": "Агент-рецензент",
+    "ResearchAgent": "Агент исследователь",
+    "TaskExecutorAgent": "Агент исполнитель",
+    "ExperimentPlannerAgent": "Агент планировщик эксперимента",
+    "ExperimentExecutorAgent": "Агент экспериментатор",
+    "ExperimentResultReviewAgent": "Агент рецензент",
     "ExperimentAgent": "Агент инструментов",
     "FedotAgent": "Агент FEDOT",
-    "CoderAgent": "Агент-разработчик",
-    "DatasetCollectorAgent": "Агент-сборщик данных",
-    "MedicalAgent": "Агент-медик",
-    "McpBuilderAgent": "Агент-сборщик MCP",
-    "LiteratureOrchestrator": "Агент-библиограф",
+    "CoderAgent": "Агент разработчик",
+    "DatasetCollectorAgent": "Агент сборщик данных",
+    "MedicalAgent": "Агент медик",
+    "McpBuilderAgent": "Агент сборщик MCP",
+    "LiteratureOrchestrator": "Агент библиограф",
     "PaperRetriever": "Агент поиска статей",
-    "LiteratureSynthesisAgent": "Агент-обозреватель",
-    "EvidenceVerifierAgent": "Агент-проверяющий",
+    "LiteratureSynthesisAgent": "Агент обозреватель",
+    "EvidenceVerifierAgent": "Агент проверяющий",
     "RouteSelectionAgent": "Агент выбора маршрута",
-    "MolDesignAgent": "Агент-дизайнер молекул",
-    "SynthRouteAgent": "Агент-синтетик",
-    "EconomicsAgent": "Агент-экономист",
-    "OptimizationAgent": "Агент-оптимизатор",
-    "OptimizerAgent": "Агент-оптимизатор",
+    "MolDesignAgent": "Агент дизайнер молекул",
+    "SynthRouteAgent": "Агент синтетик",
+    "EconomicsAgent": "Агент экономист",
+    "OptimizationAgent": "Агент оптимизатор",
+    "OptimizerAgent": "Агент оптимизатор",
     "ReactorAgent": "Агент реактора",
     "CampaignAgent": "Агент кампании",
-    "ReportAgent": "Агент отчёта",
+    "ReportAgent": "Агент отчета",
     "ResultAggregatorAgent": "Агент отчёта",
     "NirReportAgent": "Агент отчёта НИР",
     "ToolRetrieverAgent": "Агент поиска инструментов",
-    "ToolReranker": "Агент-ранжировщик",
-    "FullSetToolReranker": "Агент-ранжировщик",
+    "ToolReranker": "Агент ранжировщик",
+    "FullSetToolReranker": "Агент ранжировщик",
     "ToolWebSearcherAgent": "Агент веб-поиска",
     "WebToolsDeployerAgent": "Агент развёртывания",
 }

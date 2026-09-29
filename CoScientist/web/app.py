@@ -485,6 +485,11 @@ def _apply_frontend_settings(frontend: dict) -> None:
     if "mergeTasksEnabled" in planner:
         web.merge_tasks_enabled = bool(planner["mergeTasksEnabled"])
 
+    if "callGraphCollapseSeconds" in general:
+        val = int(general["callGraphCollapseSeconds"])
+        if 1 <= val <= 600:
+            web.call_graph_collapse_seconds = val
+
     research = frontend.get("researchAgent", {})
     if "maxSearches" in research:
         val = int(research["maxSearches"])
@@ -603,6 +608,7 @@ def _current_settings() -> dict:
             "autoNamingEnabled": web.auto_naming_enabled,
             # Read-only here: the browser stores its own choice over this default.
             "showInternal": web.show_internal_enabled,
+            "callGraphCollapseSeconds": web.call_graph_collapse_seconds,
             "coscientistUsername": web.coscientist_username or "",
             "contextInitEnabled": settings.context_init.enabled,
             "knowledgeGraphEnabled": web.knowledge_graph_enabled,
@@ -3506,6 +3512,29 @@ def create_app() -> FastAPI:
             except Exception:  # noqa: BLE001
                 events = []
         return JSONResponse({"events": events[-100:]})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/call-graph")
+    async def get_call_graph_skeleton(user_id: str, session_id: str):
+        """Where each agent can run in this session, for the side-nav graph."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.graph.memory import get_knowledge_graph
+        from CoScientist.web.agent_tree import call_graph_skeleton, session_agent_names, session_profile
+        events = runtime.agent_events.get(key) or []
+        if not events:
+            try:
+                from CoScientist.web.session_store import load_events
+                events = load_events(user_id, session_id)
+            except Exception:  # noqa: BLE001
+                events = []
+        # Each profile has agents of its own: draw the one this session ran.
+        execution = get_knowledge_graph(user_id=user_id, session_id=session_id).full()
+        profile = session_profile(session_agent_names(events, execution))
+        return JSONResponse(call_graph_skeleton(snapshot, profile), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/users/{user_id}/sessions/{session_id}/agent-runs")
     async def get_agent_runs(user_id: str, session_id: str):

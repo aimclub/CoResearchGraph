@@ -71,6 +71,8 @@
             break;
           case 'agent_configuration':
             if (typeof loadSettings === 'function') loadSettings();
+            // The set of agents changed: so did the places they can run in.
+            if (activeUser && activeSession) CallGraph.loadSkeleton(activeUser.id, activeSession.id);
             addTelemetry('AGENTS :: configuration revision ' + data.desiredRevision);
             break;
           case 'status':
