@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from typing import Any, AsyncGenerator, Literal
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -202,6 +203,24 @@ def _context_invariant_errors(plan: ExperimentPlan, context: dict[str, Any]) -> 
     return errors
 
 
+def _truncated_plan_errors(payload: Any) -> list[str]:
+    """The planner's answer was cut by the output limit: the JSON sanitiser
+    then keeps the largest complete object, which is one task, and schema
+    validation reports a missing ``schema_version`` on it. Name the real
+    cause so the revision asks for a shorter plan (KM-ARL run, 2026-09-26)."""
+    if not isinstance(payload, dict) or "tasks" in payload or "schema_version" in payload:
+        return []
+    task_id = str(payload.get("id") or "").strip().upper()
+    if not re.fullmatch(r"EXP-\d+", task_id):
+        return []
+    return [
+        f"The plan JSON was cut off by the output limit: only task {task_id} survived as a "
+        "complete object. Return the whole ExperimentPlan again and make it shorter: "
+        "task description and rationale at most 300 characters each, artifact "
+        "descriptions at most 100, no context text repeated inside tasks."
+    ]
+
+
 def _json_payload(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
@@ -209,7 +228,29 @@ def _json_payload(value: Any) -> Any:
         return value
     from CoScientist.experiments.runtime.shared import parse_fenced_json
 
-    return parse_fenced_json(value)
+    payload = parse_fenced_json(value)
+    if isinstance(payload, dict) and "tasks" not in payload and '"tasks"' in value:
+        # The planner's text carried another object first (a hypothesis it
+        # restated, a note); the plan is the object that has the tasks.
+        found = _first_object_with_key(value, "tasks")
+        if found is not None:
+            payload = found
+    return payload
+
+
+def _first_object_with_key(text: str, key: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    start = 0
+    while (start := text.find("{", start)) >= 0:
+        try:
+            obj, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            start += 1
+            continue
+        if isinstance(obj, dict) and key in obj:
+            return obj
+        start += max(end, 1)
+    return None
 
 
 def _plan_digest(plan: ExperimentPlan | dict[str, Any]) -> str:
@@ -1766,7 +1807,10 @@ class ExperimentReviewSessionAgent(SessionAgent):
         try:
             runtime = state.get("experiment_runtime") or {}
             previous = ExperimentPlan.model_validate(runtime["plan"]) if runtime.get("plan") else None
-            payload = _stamp_context_invariants(_json_payload(output_text), context, previous)
+            payload = _json_payload(output_text)
+            if cut := _truncated_plan_errors(payload):
+                raise PlanValidationError("ExperimentPlan JSON was cut off", errors=cut)
+            payload = _stamp_context_invariants(payload, context, previous)
             # Asked of this session's executor, the one start_task hands work to:
             # a route switched on after the session was built must not be
             # approved here and then refused there.

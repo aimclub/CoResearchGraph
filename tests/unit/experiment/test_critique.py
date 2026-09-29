@@ -490,3 +490,107 @@ def test_critique_allows_multiple_hypotheses_on_one_operation_via_also_tests():
     )
     assert not any("uncovered by non-optional" in i.message for i in critique.issues)
     assert not any("share the same operation_ref" in i.message for i in critique.issues)
+
+
+def test_a_conclusion_operation_is_left_to_the_reporting_stage():
+    """OP-n "draw the conclusion with numbers" has no task by design: the
+    aggregator writes it. It must not send the plan into revision."""
+    task = _task("EXP-1", route="coder")
+    task["design"]["operation_ref"] = "OP-1"
+    critique = critique_plan(
+        _plan(task),
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        operations=[
+            {"operation_id": "OP-1", "statement": "Reproduce the authors' result with their code"},
+            {"operation_id": "OP-2", "statement": "Draw the conclusion with numbers per horizon"},
+        ],
+    )
+    assert not any("Frame operations uncovered" in i.message for i in critique.issues)
+    note = next(i for i in critique.issues if "left to the reporting stage" in i.message)
+    assert note.severity == "minor" and "OP-2" in note.message
+    still = critique_plan(
+        _plan(task),
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        operations=[
+            {"operation_id": "OP-1", "statement": "Reproduce the authors' result with their code"},
+            {"operation_id": "OP-2", "statement": "Train the control models and compare on the same split"},
+        ],
+    )
+    assert any("Frame operations uncovered" in i.message and "OP-2" in i.message for i in still.issues)
+
+
+def test_a_conclusion_operation_with_glued_constraints_is_still_reporting():
+    """Run 11 of the blind Informer check: the frame parser attached the
+    request's constraints paragraph ("epochs may be reduced", "save artifacts")
+    to OP-3 "make the conclusion", and the training verb in it made the
+    critique demand a task for the conclusion again."""
+    from CoScientist.experiments.critique.validator import _is_reporting_operation
+
+    statement = (
+        "Сделай вывод: подтверждается ли заявление, с числами по каждому горизонту.\n\n"
+        "Ограничения: CPU или одна GPU 4 ГБ, несколько часов. Число эпох можно уменьшить, "
+        "если протокол одинаков для всех сравниваемых моделей. Все скрипты и метрики сохраняй как артефакты."
+    )
+    assert _is_reporting_operation(statement)
+    assert not _is_reporting_operation("Обучи модель и сделай вывод по каждому горизонту.")
+
+
+def test_invented_hypothesis_ids_are_dropped_instead_of_costing_a_revision():
+    """The planner copies postponed hypotheses from the research overview next
+    to the authoritative refs; the plan is normalised, the critique stays
+    about the tasks."""
+    from CoScientist.experiments.critique import validate_and_critique_plan
+
+    payload = _plan(
+        _task("EXP-1", hypothesis_ref="H1"),
+        _task("EXP-2", hypothesis_ref="H2", design={**_design("H2"), "also_tests": ["H1", "H3"]}),
+        hypotheses=[
+            {"hypothesis_id": "H1", "statement": "Authoritative."},
+            {"hypothesis_id": "H2", "statement": "Postponed in the graph."},
+            {"hypothesis_id": "H3", "statement": "Postponed in the graph."},
+        ],
+    ).model_dump(mode="json")
+    plan, critique = validate_and_critique_plan(
+        payload,
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Authoritative."}],
+    )
+    assert [h.hypothesis_id for h in plan.hypotheses] == ["H1"]
+    assert plan.tasks[1].design.hypothesis_ref == "H1"
+    assert plan.tasks[1].design.also_tests == []
+    assert not any("invents ids" in issue.message for issue in critique.issues)
+
+
+def test_an_ineligible_id_named_only_in_also_tests_is_dropped():
+    """The plan's hypothesis list held H1 alone and a task named H2 in
+    also_tests; start_task refused the task and amend_task cannot edit
+    also_tests, so the executor stopped."""
+    from CoScientist.experiments.critique import validate_and_critique_plan
+
+    payload = _plan(
+        _task("EXP-1", hypothesis_ref="H1", design={**_design("H1"), "also_tests": ["H2"]}),
+        hypotheses=[{"hypothesis_id": "H1", "statement": "Authoritative."}],
+    ).model_dump(mode="json")
+    plan, _ = validate_and_critique_plan(
+        payload,
+        settings=ExperimentsSettings(route_fedot=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Authoritative."}],
+    )
+    assert plan.tasks[0].design.hypothesis_ref == "H1"
+    assert plan.tasks[0].design.also_tests == []
+
+
+def test_a_directory_named_as_an_artifact_is_refused():
+    """record_result registers files; a required grid_data/ is never found and
+    the tasks that need it are blocked with the producer terminal."""
+    task = _task("EXP-1")
+    task["expected_artifacts"] = [
+        {"name": "grid_data/", "role": "data", "media_type": "text/csv", "required": True, "description": "grid"},
+    ]
+    plan = _plan(task)
+    critique = critique_plan(plan, settings=ExperimentsSettings(route_fedot=True), available_tools=_inventory())
+    assert any("names a directory" in issue.message and issue.severity == "major" for issue in critique.issues)

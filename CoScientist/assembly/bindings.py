@@ -1524,6 +1524,7 @@ _EM_CALLBACKS: tuple[tuple[str, str, str], ...] = (
     ("force_schema_s3_upload", "before_tool", f"{_EM}.runtime:force_schema_s3_upload"),
     ("force_molecule_generator_s3_upload", "before_tool", f"{_EM}.runtime:force_molecule_generator_s3_upload"),
     ("mark_experiment_route_returned", "after_tool", f"{_EM}.runtime:on_route_agent_returned"),
+    ("capture_experiment_tool_results", "after_tool", f"{_EM}.runtime:capture_experiment_tool_results"),
     ("enforce_pending_record_result", "after_model", f"{_EM}.runtime:enforce_pending_record_result"),
     ("enforce_continue_until_reporting", "after_model", f"{_EM}.runtime:enforce_continue_until_reporting"),
     ("rewrite_mismatched_control_action", "after_model", f"{_EM}.runtime:rewrite_mismatched_control_action"),

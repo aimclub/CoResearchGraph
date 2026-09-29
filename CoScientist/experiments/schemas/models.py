@@ -139,6 +139,19 @@ def _utc_iso_str(value: Any) -> str:
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_empty_unknown_keys(cls, data: Any) -> Any:
+        """An unknown key holding nothing (``"context_refs_full": null``) is
+        noise from the planner model, not a shape error; a real unknown value
+        still fails as before."""
+        if not isinstance(data, dict):
+            return data
+        known = set(cls.model_fields)
+        if all(k in known or v is not None for k, v in data.items()):
+            return data
+        return {k: v for k, v in data.items() if k in known or v is not None}
+
 
 class ExecutionRoute(str, Enum):
     REACT_TOOLS = "react_tools"
@@ -280,6 +293,21 @@ class DataRef(StrictModel):
         if not isinstance(data, dict):
             return data
         raw = dict(data)
+        # GLM keeps adding a free-text "notes" next to description, whatever the
+        # schema says; four plan revisions in a row died on it (2026-09-25).
+        # Fold it into the description instead of refusing the plan.
+        # Unknown keys: a note joins the description, an empty one ("binding":
+        # null, next revision) is dropped; anything else stays for the schema
+        # error, so a real shape mistake is still reported.
+        known = set(cls.model_fields) | {"producer"}
+        for key in [k for k in raw if k not in known]:
+            value = raw[key]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                raw.pop(key)
+            elif key in ("notes", "note", "comment", "comments") and isinstance(value, str):
+                raw.pop(key)
+                base = str(raw.get("description") or "").strip()
+                raw["description"] = f"{base} {value.strip()}".strip() if base else value.strip()
         # GLM sometimes nests producer refs instead of flat source_* fields.
         producer = raw.pop("producer", None)
         if isinstance(producer, dict):
@@ -460,6 +488,27 @@ class ExpectedArtifact(StrictModel):
     media_type: str | None = None
     required: bool = True
     description: str = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_doubled_name_key(cls, data: Any) -> Any:
+        """GLM-5.3 writes the key of the second artifact of a task as
+        ``namename`` (KM-ARL runs, 2026-09-26/27, same position every time),
+        and its revision then adds ``namename_removed`` next to it. The
+        value is the name; take it and drop the stutter."""
+        if not isinstance(data, dict) or "name" in data:
+            return data
+        stutter = re.compile(r"(?:name){2,}(?:_removed)?")
+        keys = [k for k in data if isinstance(k, str) and stutter.fullmatch(k)]
+        if not keys:
+            return data
+        fixed = {k: v for k, v in data.items() if k not in keys}
+        for k in keys:
+            value = data[k]
+            if isinstance(value, str) and value.strip():
+                fixed["name"] = value
+                break
+        return fixed
 
 
 class HypothesisSpec(StrictModel):

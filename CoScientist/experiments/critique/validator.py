@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Iterable
 from uuid import uuid4
@@ -48,6 +49,8 @@ _EXECUTION_ROUTES = {
     ExecutionRoute.CODER,
     ExecutionRoute.ALEMBIC_BUILD,
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _is_narrative_report_task(task: Any) -> bool:
@@ -107,6 +110,12 @@ def _issue(n: int, *, category: str, severity: str, message: str, suggestion: st
         issue_id=f"DET-{n:03d}", category=category, severity=severity,
         task_id=task_id, message=message, suggestion=suggestion,
     )
+
+
+def _looks_like_directory(name: str) -> bool:
+    """``grid_data/`` or ``results\\``: a path a task cannot register as one artifact."""
+    text = str(name or "").strip()
+    return text.endswith("/") or text.endswith("\\")
 
 
 def _tool_output_blob(task: Any) -> str:
@@ -269,6 +278,31 @@ def _placeholder_url_hits(text: str) -> list[str]:
     return hits
 
 
+_REPORTING_OP = re.compile(
+    r"\b(conclu(de|sion)|verdict|report|summar(y|ise|ize)|write[- ]?up|interpret(ation)?)\b"
+    r"|вывод|заключен|отч[её]т|итог|резюм|интерпрет",
+    re.I,
+)
+
+
+def _is_reporting_operation(statement: str) -> bool:
+    """A frame operation whose whole ask is the conclusion or the report."""
+    # The frame parser may glue the request's trailing paragraph (budget,
+    # constraints, "save everything as artifacts") onto the last operation;
+    # the operation itself is its first paragraph.
+    text = (statement or "").strip().split("\n", 1)[0].strip()
+    if not text:
+        return False
+    if not _REPORTING_OP.search(text):
+        return False
+    # An operation that also names a computation or measurement is a task.
+    return not re.search(
+        r"\b(train|fit|run|evaluate|compute|measure|benchmark|simulate|predict|compare)\b"
+        r"|обуч|запуст|вычисл|измер|сравн|посчит|прогон",
+        text, re.I,
+    )
+
+
 def critique_plan(
     plan: ExperimentPlan,
     *,
@@ -415,6 +449,15 @@ def critique_plan(
         if ops:
             ops_ids = [str(op["operation_id"]).strip().upper() for op in ops]
             ops_set = set(ops_ids)
+            # A frame operation that asks for the conclusion, verdict or report
+            # is the reporting stage's work (ResultAggregator), and a plan task
+            # for it is refused as a narrative task. Requiring a task for it
+            # sent every plan into revision until the budget ran out
+            # (2026-09-23, "OP-3: conclusion with numbers per horizon").
+            reporting_ops = [
+                str(op["operation_id"]).strip().upper() for op in ops
+                if _is_reporting_operation(str(op.get("statement") or ""))
+            ]
             covered: list[str] = []
             missing_ref: list[str] = []
             for task in plan.tasks:
@@ -426,7 +469,13 @@ def critique_plan(
                 else:
                     missing_ref.append(task.id)
             covered_set = set(covered)
-            if miss_ops := [oid for oid in ops_ids if oid not in covered_set]:
+            left_to_report = [oid for oid in reporting_ops if oid not in covered_set]
+            if left_to_report:
+                co("minor",
+                   f"Frame operations left to the reporting stage: {', '.join(left_to_report)}.",
+                   "A conclusion, verdict or report is written by ResultAggregator from the "
+                   "task results; no plan task is needed for it.")
+            if miss_ops := [oid for oid in ops_ids if oid not in covered_set and oid not in left_to_report]:
                 co("major",
                    f"Frame operations uncovered by non-optional tasks: {', '.join(miss_ops)}.",
                    "Add a required task per uncovered OP-n and set design.operation_ref. "
@@ -625,6 +674,25 @@ def critique_plan(
                        "document image/* outputs.",
                        "Prefer required=false for viz extras; keep a required role=data artifact.")
 
+    # A directory is not an artifact: record_result registers files, so a
+    # required "grid_data/" is never found, the producing task still records
+    # success, and every task that lists it as input is blocked with the
+    # producer terminal (KM-ARL turn 2, 2026-09-27: EXP-3/EXP-4 never ran).
+    for task in plan.tasks:
+        tid = task.id
+        for art in task.expected_artifacts:
+            if _looks_like_directory(art.name):
+                co("major",
+                   f"{tid} expected_artifacts {art.name!r} names a directory, not a file.",
+                   "Name one file per artifact (a CSV/Parquet/NPZ table for a data grid); "
+                   "a task cannot register a directory and downstream inputs never resolve.",
+                   tid)
+        for ref in task.input_data:
+            if ref.kind == "task_artifact" and _looks_like_directory(str(ref.source_artifact_id or "")):
+                co("major",
+                   f"{tid} input_data source_artifact_id {ref.source_artifact_id!r} names a directory.",
+                   "Reference one upstream file artifact by its exact name.", tid)
+
     has_mcp = any(t.route in _MCP for t in plan.tasks)
     has_evidence = any(t.route in _EVIDENCE_AGENTS for t in plan.tasks)
     named_compute = False
@@ -679,6 +747,53 @@ def critique_plan(
     )
 
 
+def _drop_invented_hypotheses(
+    plan: ExperimentPlan, hypothesis_refs: Iterable[Any],
+) -> tuple[ExperimentPlan, list[str]]:
+    """Remove plan hypothesis ids that the context never issued.
+
+    The planner sees the postponed hypotheses in the research overview and
+    copies them into the plan next to the authoritative ``hypothesis_refs``;
+    the critique then refuses the plan for "invented" ids, and the same ids
+    come back on the next revision (KM-ARL run, 2026-09-26: two of four
+    revisions lost to H2/H3). The ids are dropped here: tasks that tested one
+    of them are moved onto the first authoritative id, ``also_tests`` keeps
+    only known ids. The dropped ids are returned for the audit line.
+    """
+    ctx = _normalize_hypothesis_ids(hypothesis_refs)
+    if not ctx:
+        return plan, []
+    known = set(ctx)
+    # A task can name an id the plan's hypothesis list does not carry: the
+    # post-merge FEDOT run put H2 into also_tests only, start_task refused the
+    # task as testing an ineligible hypothesis, and amend_task cannot edit
+    # also_tests, so the executor was stuck.
+    named = [h.hypothesis_id for h in plan.hypotheses]
+    for task in plan.tasks:
+        named += [task.design.hypothesis_ref, *task.design.also_tests]
+    extra = list(dict.fromkeys(
+        str(h).strip().upper() for h in named
+        if str(h).strip() and str(h).strip().upper() not in known
+    ))
+    if not extra:
+        return plan, []
+    fallback = ctx[0]
+    hypotheses = [h for h in plan.hypotheses if h.hypothesis_id.strip().upper() in known]
+    tasks = []
+    for task in plan.tasks:
+        design = task.design
+        ref = design.hypothesis_ref.strip().upper()
+        also = [h for h in design.also_tests if str(h).strip().upper() in known]
+        if ref not in known:
+            ref = fallback
+        also = [h for h in also if h.strip().upper() != ref]
+        if ref != design.hypothesis_ref or also != list(design.also_tests):
+            design = design.model_copy(update={"hypothesis_ref": ref, "also_tests": also})
+            task = task.model_copy(update={"design": design})
+        tasks.append(task)
+    return plan.model_copy(update={"hypotheses": hypotheses, "tasks": tasks}), extra
+
+
 def validate_and_critique_plan(
     payload: Any,
     *,
@@ -713,6 +828,12 @@ def validate_and_critique_plan(
         ) from exc
     finally:
         reset_lenient_planner(token)
+    plan, dropped = _drop_invented_hypotheses(plan, hypothesis_refs)
+    if dropped:
+        logger.warning(
+            "EXPERIMENT_PLAN_HYPOTHESES_DROPPED ids=%s (absent from hypothesis_refs)",
+            ", ".join(dropped),
+        )
     return plan, critique_plan(
         plan, settings=settings, available_tools=inventory,
         preferred_tools=None if preferred_tools is None else list(preferred_tools),

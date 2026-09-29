@@ -85,6 +85,25 @@ def test_start_task_rejects_a_hypothesis_outside_the_eligible_context():
     assert "H2" in str(raised.value)
 
 
+def test_start_task_drops_an_ineligible_secondary_hypothesis():
+    """amend_task cannot edit also_tests; refusing the task left the executor
+    with no way to start it. The primary hypothesis is eligible, so the task
+    runs without the secondary id."""
+    task = _task("EXP-1", hypothesis_ref="H1")
+    task["design"]["also_tests"] = ["H2"]
+    state = _approved_state(_plan(task))
+    state["experiment_context"] = {
+        "hypothesis_refs": [{"hypothesis_id": "H1", "statement": "active"}],
+    }
+
+    start_task(state, "EXP-1")
+
+    runtime = state["experiment_runtime"]
+    assert runtime["tasks"]["EXP-1"]["task"]["design"]["also_tests"] == []
+    plan_task = next(t for t in runtime["plan"]["tasks"] if t["id"] == "EXP-1")
+    assert plan_task["design"]["also_tests"] == []
+
+
 def test_scenario_b_two_sequential_fedot_tasks_and_duplicate_route_refused():
     """§11.6 B: no session hard-stop; second call in one attempt is refused."""
     plan = _plan(
