@@ -22,7 +22,7 @@ def test_slow_delivery_does_not_delay_capture_or_event_loop(
         lambda: SimpleNamespace(enabled=True, callback_url="http://platform.test"),
     )
     monkeypatch.setattr(synapse, "_bundle_base_url", lambda: None)
-    monkeypatch.setattr(capture, "_collect_store_parts", dict)
+    monkeypatch.setattr(capture, "_collect_store_parts", lambda session: {})
     monkeypatch.setattr(capture, "collect_pins", dict)
 
     def slow_post(url, **kwargs):
