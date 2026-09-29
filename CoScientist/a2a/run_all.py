@@ -34,6 +34,7 @@ import uvicorn
 from CoScientist.a2a.config import AGENT_PORTS
 from CoScientist.a2a.server import make_a2a_app, make_agent_card
 from CoScientist.assembly import build_system
+from CoScientist.utils.interrupt import SharedSignalServer, request_exit
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ def _build_apps() -> list[tuple[str, object, int]]:
     system = build_system(config)
     specs: list[tuple[str, object, int]] = []
     for agent_cfg in config.a2a_agents():
+        if not agent_cfg.is_enabled():
+            continue
         key = agent_cfg.a2a.key
         if agent_cfg.root:
             # Served in remote mode: delegations go to the sub-agent servers.
@@ -61,35 +64,28 @@ def _build_apps() -> list[tuple[str, object, int]]:
 
 def _make_server(app, port: int) -> uvicorn.Server:
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
-    config.install_signal_handlers = False  # one shared handler is installed below
     # Don't let a long in-flight request block Ctrl+C forever.
     config.timeout_graceful_shutdown = _SHUTDOWN_TIMEOUT
-    return uvicorn.Server(config)
+    # One shared handler is installed in main(); a plain uvicorn.Server would
+    # replace it, and Ctrl+C would then stop only one of the servers.
+    return SharedSignalServer(config)
 
 
 async def main() -> None:
     specs = _build_apps()
     servers = [_make_server(app, port) for _, app, port in specs]
 
-    # Shared shutdown path: first Ctrl+C asks every server to stop gracefully;
-    # a second one forces an immediate exit (skips waiting for in-flight work).
+    # Shared shutdown path: first Ctrl+C asks every server to stop gracefully
+    # (and arms a hard-exit watchdog); a second one exits immediately.
     loop = asyncio.get_running_loop()
-    _signalled = {"n": 0}
 
     def _request_shutdown() -> None:
-        _signalled["n"] += 1
-        if _signalled["n"] == 1:
-            logger.info(
-                "Shutdown requested; stopping all A2A servers "
-                "(Ctrl+C again to force immediate exit)..."
-            )
-            for server in servers:
-                server.should_exit = True
-        else:
-            logger.info("Forcing immediate shutdown...")
-            for server in servers:
-                server.should_exit = True
-                server.force_exit = True
+        # Past the servers' own graceful timeout, so the watchdog only
+        # catches what that timeout cannot: threads blocking interpreter exit.
+        request_exit(grace=_SHUTDOWN_TIMEOUT + 2)
+        logger.info("Shutdown requested; stopping all A2A servers...")
+        for server in servers:
+            server.should_exit = True
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

@@ -195,6 +195,36 @@ A switch rather than two siblings in the sequence because `AgentTool` returns
 the LAST content-bearing event of the agent it wraps, and a stood-down sibling
 still emits one — it would overwrite the executor's answer.
 
+**In the `experiments` profile** there is no ExecutorSwitchAgent: FEDOT.MAS is
+the Experiment Module's optional `fedot_mas` route, `FedotAgent` an AgentTool of
+`ExperimentExecutorAgent`, with a single switch of its own,
+`EXPERIMENTS__ROUTE_FEDOT` (off by default; also in the web settings, where
+turning it on rebuilds cached web agent trees before their next request and
+turning it off blocks new calls without cancelling one already in flight).
+`experiments.yaml` attaches `FedotAgent` on it, and every
+route decision — the planner prompt and context, the plan critique,
+`start_task`, the fallback chains and the Alembic post-build route — asks
+`state_machine.fedot_route_available`, which also requires `FedotAgent` in
+`ExperimentExecutorAgent.subordinates`. Removing it from that list switches the
+route off as well; deleting only the `FedotAgent:` block does not, because
+`extends: system` brings it back. A session built with the route off never
+names it to the planner, and MCP work goes to `react_tools` (ExperimentAgent).
+On, `fedot_mas` is still only the exception for one task chaining several tools
+in a search loop.
+
+The Alembic builder uses the same policy boundary. `EXPERIMENTS__ROUTE_ALEMBIC`
+is off by default; it controls whether `McpBuilderAgent` is assembled, whether
+an Alembic route may start, whether the direct build tool accepts a call, and
+whether the standalone A2A service is started. Existing build records remain
+readable while the capability is off.
+
+The `medical` route follows `MedicalAgent` the same way, through
+`state_machine.medical_route_available`: its switch is `MEDICAL__ENABLED` (also
+in the web settings, research tab), which is the agent's own `enabled`. Off, the
+planner is not offered the route (clinical literature goes to `research`), the
+critique refuses it, and a task already planned on it is blocked rather than
+left waiting for an agent that is not there.
+
 **Execution Flow (FedotAgent)**:
 1. Receive task description
 2. Build FEDOT.MAS pipeline

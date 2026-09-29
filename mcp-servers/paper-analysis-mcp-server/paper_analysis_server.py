@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from langchain_core.runnables import RunnableConfig
 from fastmcp import FastMCP
@@ -31,6 +32,7 @@ from CoScientist.papers_processing_refactoring.retrieval import TwoStageRetrieve
 from CoScientist.papers_processing_refactoring.reranking import create_reranker
 
 from prompts import explore_my_papers_prompt, sys_prompt
+from chroma_stats import PaperStatisticsCache
 
 # TODO: unify S3 clients for tools (use S3DomainArtifactStore)
 s3_service = S3BucketService(
@@ -73,7 +75,27 @@ VISION_LLM_URL = os.getenv("LLM__VISION_URL")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("PaperAnalysis")
+# Paper statistics live in memory and are refreshed by a background thread: a
+# full scan reads every chunk's metadata, far too slow to repeat per call.
+paper_statistics = PaperStatisticsCache(
+    vector_store,
+    check_interval_minutes=float(os.getenv("PAPER_STATS_CHECK_MINUTES") or 10),
+    max_age_hours=float(os.getenv("PAPER_STATS_MAX_AGE_HOURS") or 24),
+)
+
+
+@asynccontextmanager
+async def lifespan(server):
+    # Start the refresh with the server, so the first scan is not triggered
+    # by - and does not keep waiting - the first agent that asks.
+    paper_statistics.start()
+    try:
+        yield
+    finally:
+        paper_statistics.stop()
+
+
+mcp = FastMCP("PaperAnalysis", lifespan=lifespan)
 
 
 @mcp.tool()
@@ -394,6 +416,37 @@ def find_relevant_data_in_db(
             return {'answer': f'An error occurred while searching images in papers for task. Error: {e}'}
             
     return {"papers": papers, "context": context}
+
+
+@mcp.tool()
+def get_papers_database_statistics() -> str:
+    """Report what the scientific paper database currently holds.
+
+    Returns the number of unique papers in the database and how those papers
+    are distributed over research domains and fields - across the whole
+    database and within each domain - as counts and percentages.
+
+    Use this tool for questions about the database itself: how many papers are
+    indexed, which domains or fields are covered, how well a topic is
+    represented. It reads only metadata, so it answers nothing about the
+    content of any paper - use explore_scientific_database for that, and
+    find_papers_in_db to list the papers on a topic.
+
+    The answer is instant: the statistics are kept up to date in the
+    background, and the report says when they were computed. Shortly after
+    the server starts they may still be computing; the report then says so.
+
+    Returns:
+        str: A report in Russian, formatted as Markdown: the paper count, then
+            the domain and field distributions as tables. Or a note that the
+            statistics are not ready yet.
+    """
+    logger.info("Running get_papers_database_statistics tool...")
+    try:
+        return paper_statistics.report()
+    except Exception as e:
+        logger.error(f"get_papers_database_statistics ERROR: {e}")
+        return f"Не удалось получить статистику базы статей. Ошибка: {e}"
 
 
 if __name__ == "__main__":

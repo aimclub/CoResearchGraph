@@ -8,5 +8,10 @@
     "url": "http://10.32.11.45:7335/mcp",
     "name": "tox-antitargets",
     "description": "Explainable computational toxicology linking antitarget / off-target protein binding to rodent acute toxicity (LD50). Reproduces Nikitin et al. 2025 (Pharmaceutics 17, 1573) from a public dataset of 12,654 compounds with mouse intravenous pLD50 and AutoDock Vina docking scores against the 44-protein Bowes safety pharmacology panel (hERG/KCNH2, AVPR1A, CACNA1C, KCNQ1, EDNRA, acetylcholinesterase, dopamine D2, cannabinoid CB1/CB2, muscarinic, adrenergic, opioid, ion channels, etc.). Use for: acute toxicity / LD50 analysis, antitarget interaction profiles, safety pharmacology, mechanism-of-action prediction via inverse docking and target fishing for a molecule given by SMILES or name, hERG and cardiotoxicity associations, NIH and Brenk medicinal-chemistry filtering, Butina chemical clustering, physicochemical property profiling, chemical-space t-SNE, and Spearman / Mann-Whitney structure-toxicity statistics."
+  },
+  {
+    "url": "http://10.32.11.22:7332/mcp",
+    "name": "hybrid-surrogate-epidemics",
+    "description": "Hybrid, network, and surrogate SEIR epidemic modeling for Barabasi-Albert and small-world networks: beta prediction, point and interval incidence estimation, R2 heatmaps, ABC-SMC calibration on complete data, short-term incidence forecasting, epidemic peak and switching diagnostics, and comparison of network, hybrid, and surrogate models."
   }
 ]

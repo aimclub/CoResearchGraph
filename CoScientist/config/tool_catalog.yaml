@@ -1,0 +1,653 @@
+version: 1
+
+# Presentation metadata only. Connections, credentials and tool schemas remain
+# in the MCP registry and application settings. Keys are stable registry IDs.
+servers:
+  d6dac6fb09066080:
+    priority: 0
+    featured: true
+    category: automl
+    role: scientific
+    display_name:
+      ru: "Инструменты автоматического машинного обучения для научных задач — FEDOT"
+      en: "Automated machine learning tools for scientific tasks — FEDOT"
+    description:
+      ru: "Обучение моделей на подготовленных данных о молекулах и предсказание свойств новых молекул по их структуре. Сервис запускает обучение, позволяет отслеживать его состояние и применять ранее обученные модели."
+      en: "Train models on prepared molecular data and predict properties of new molecules from their structures. The service starts training, tracks its state and applies previously trained models."
+  6d7e3471063c3f95:
+    category: epidemiology
+    role: scientific
+    display_name:
+      ru: "Гибридное и суррогатное моделирование эпидемий"
+      en: "Hybrid and surrogate epidemic modelling"
+    description:
+      ru: "Моделирование распространения эпидемий на сетях, калибровка параметров, краткосрочное прогнозирование заболеваемости и анализ эпидемических пиков."
+      en: "Network, hybrid and surrogate epidemic modelling, parameter calibration, short-term incidence forecasting and epidemic peak analysis."
+
+# Shared Russian presentation for tools whose machine names may appear on more
+# than one MCP server. Exact server-specific entries below take precedence.
+tool_defaults:
+  run_hybrid_model:
+    display_name: {ru: "Запустить гибридную эпидемиологическую модель"}
+    description: {ru: "Моделирует SEIR-динамику на сети и переключается на гибридную модель с выбранным методом прогноза скорости передачи инфекции."}
+  hybrid_heatmap_r2:
+    display_name: {ru: "Построить карты качества гибридной модели"}
+    description: {ru: "Строит тепловые карты коэффициента детерминации R² гибридной модели для разных сочетаний параметров α и β."}
+  run_surrogate_point:
+    display_name: {ru: "Запустить суррогатную модель с точечной оценкой"}
+    description: {ru: "Рассчитывает точечный прогноз заболеваемости суррогатной моделью для заданных параметров α и β."}
+  run_surrogate_interval:
+    display_name: {ru: "Запустить суррогатную модель с интервальной оценкой"}
+    description: {ru: "Рассчитывает среднюю, нижнюю и верхнюю оценки заболеваемости суррогатной моделью для заданных параметров α и β."}
+  surrogate_heatmap_r2:
+    display_name: {ru: "Построить карты качества суррогатной модели"}
+    description: {ru: "Строит тепловые карты R² для точечных и интервальных прогнозов суррогатной модели."}
+  calibrate_model_complete_data:
+    display_name: {ru: "Откалибровать модель по полной кривой заболеваемости"}
+    description: {ru: "Подбирает параметры выбранной модели по полной целевой кривой методом последовательного Монте-Карло с приближёнными байесовскими вычислениями."}
+  calibrate_model_complete_data_3in1:
+    display_name: {ru: "Откалибровать три модели по полной кривой"}
+    description: {ru: "Одновременно калибрует сетевую, гибридную и суррогатную модели по полной кривой заболеваемости методом ABC-SMC."}
+  calibrate_model_forecast:
+    display_name: {ru: "Откалибровать модель для краткосрочного прогноза"}
+    description: {ru: "Калибрует выбранную модель по неполной кривой заболеваемости и строит краткосрочный прогноз методом ABC-SMC."}
+  calibrate_model_forecast_3in1:
+    display_name: {ru: "Сравнить три модели в краткосрочном прогнозе"}
+    description: {ru: "Калибрует сетевую, гибридную и суррогатную модели по неполным данным и сравнивает их краткосрочные прогнозы."}
+  plot_synth_peaks:
+    display_name: {ru: "Визуализировать пики синтетических эпидемий"}
+    description: {ru: "Строит карты времени и высоты эпидемических пиков для сетей Барабаши — Альберт и малого мира."}
+  plot_synth_inc_beta:
+    display_name: {ru: "Визуализировать заболеваемость и параметр β"}
+    description: {ru: "Строит траектории заболеваемости и скорости передачи инфекции β для разных сетевых топологий."}
+  plot_forecast_peak_errors:
+    display_name: {ru: "Показать ошибки прогноза эпидемического пика"}
+    description: {ru: "Сравнивает ошибки гибридного и суррогатного прогнозов до и после эпидемического пика."}
+  plot_heatmap_switch:
+    display_name: {ru: "Показать моменты переключения гибридной модели"}
+    description: {ru: "Строит тепловые карты дней переключения и их смещения относительно эпидемического пика."}
+  get_mcp_logs:
+    display_name: {ru: "Получить журналы MCP-сервера"}
+    description: {ru: "Показывает диагностические журналы MCP-сервера для поиска причин ошибок при выполнении задач."}
+  get_s3_train_case_columns:
+    display_name: {ru: "Получить столбцы обучающего набора"}
+    description: {ru: "Загружает из S3 обучающий набор выбранного случая и возвращает названия его столбцов."}
+  health_check:
+    display_name: {ru: "Проверить доступность сервера"}
+    description: {ru: "Проверяет, что MCP-сервер запущен и готов принимать запросы."}
+  list_automl_train_cases:
+    display_name: {ru: "Показать наборы для обучения AutoML"}
+    description: {ru: "Возвращает доступные в S3 наборы данных и названия случаев, на которых можно обучить модели AutoML."}
+  calculate_docking:
+    display_name: {ru: "Рассчитать молекулярный докинг"}
+    description: {ru: "Рассчитывает оценку связывания молекулы с белком и формирует интерактивную визуализацию результата."}
+  classify_reaction:
+    display_name: {ru: "Классифицировать химическую реакцию"}
+    description: {ru: "Определяет класс химической реакции по записи реагентов и продуктов в формате SMILES."}
+  extract_molecules:
+    display_name: {ru: "Распознать молекулы на изображении"}
+    description: {ru: "Находит изображения химических структур, распознаёт молекулы и возвращает их записи SMILES."}
+  extract_reactions:
+    display_name: {ru: "Распознать реакции на изображении"}
+    description: {ru: "Находит химические реакции на изображениях и возвращает распознанные реагенты и продукты."}
+  fetch_activity_data:
+    display_name: {ru: "Получить данные о биологической активности"}
+    description: {ru: "Загружает из BindingDB или ChEMBL данные о взаимодействии белков и лигандов и сохраняет их в CSV."}
+  forward_predict:
+    display_name: {ru: "Предсказать продукты реакции"}
+    description: {ru: "Предсказывает возможные продукты химической реакции по заданным реагентам, условиям и растворителю."}
+  name2smiles:
+    display_name: {ru: "Преобразовать название молекулы в SMILES"}
+    description: {ru: "Находит молекулу по названию и возвращает представление её структуры в формате SMILES."}
+  retrosynthesis_tree_search:
+    display_name: {ru: "Построить план ретросинтеза"}
+    description: {ru: "Подбирает возможные пути синтеза целевой молекулы и ранжирует маршруты и исходные вещества."}
+  smiles2name:
+    display_name: {ru: "Определить название молекулы по SMILES"}
+    description: {ru: "Преобразует структурную запись SMILES в систематическое название молекулы IUPAC."}
+  smiles2prop:
+    display_name: {ru: "Рассчитать свойства молекулы"}
+    description: {ru: "Рассчитывает физико-химические дескрипторы молекулы по SMILES или названию IUPAC."}
+  visualize_molecule:
+    display_name: {ru: "Визуализировать молекулу"}
+    description: {ru: "Строит интерактивное изображение молекулы по SMILES и возвращает ссылку для просмотра."}
+  explore_my_papers:
+    display_name: {ru: "Исследовать загруженные статьи"}
+    description: {ru: "Отвечает на вопросы по содержанию загруженных пользователем научных статей, включая рисунки, методы и выводы."}
+  explore_scientific_database:
+    display_name: {ru: "Исследовать базу научных статей"}
+    description: {ru: "Ищет сведения в базе научных публикаций и формирует ответ с подтверждающими фрагментами, таблицами и иллюстрациями."}
+  find_papers_in_db:
+    display_name: {ru: "Найти статьи в базе"}
+    description: {ru: "Находит и ранжирует научные статьи, релевантные заданному вопросу или теме исследования."}
+  find_relevant_data_in_db:
+    display_name: {ru: "Найти данные в научной базе"}
+    description: {ru: "Возвращает релевантные статьи и структурированный контекст, включая связанные изображения и подписи."}
+  get_papers_database_statistics:
+    display_name: {ru: "Получить статистику базы статей"}
+    description: {ru: "Показывает число публикаций и их распределение по научным областям и направлениям."}
+  download_papers_from_search:
+    display_name: {ru: "Найти и загрузить научные статьи"}
+    description: {ru: "Ищет публикации в OpenAlex, загружает доступные PDF и возвращает ссылки на сохранённые файлы."}
+  search_entity:
+    display_name: {ru: "Найти автора, журнал или организацию"}
+    description: {ru: "Ищет в OpenAlex научного автора, источник или организацию и возвращает идентификатор для дальнейшего поиска."}
+  search_papers:
+    display_name: {ru: "Найти научные публикации"}
+    description: {ru: "Ищет статьи в OpenAlex по ключевым словам, автору, организации, журналу, году и доступности полного текста."}
+  compare_epidemic_waves:
+    display_name: {ru: "Сравнить эпидемические волны"}
+    description: {ru: "Сравнивает эпидемические волны по высоте и времени пика, длительности и общей нагрузке."}
+  compare_influenza_age_groups_from_db:
+    display_name: {ru: "Сравнить возрастные группы по гриппу"}
+    description: {ru: "Сравнивает заболеваемость гриппом в возрастных группах по актуальным данным исследовательской базы."}
+  compute_forecast_shap_explainability:
+    display_name: {ru: "Объяснить прогноз с помощью SHAP"}
+    description: {ru: "Оценивает вклад признаков в прогноз заболеваемости и сохраняет таблицы и графики SHAP."}
+  describe_influenza_dataset:
+    display_name: {ru: "Описать набор данных по гриппу"}
+    description: {ru: "Показывает состав, временной охват, города, возрастные группы и качество данных по гриппу."}
+  estimate_br_model_parameters:
+    display_name: {ru: "Оценить параметры модели Барояна — Рвачёва"}
+    description: {ru: "Оценивает параметры механистической эпидемиологической модели по историческим данным."}
+  export_influenza_db_dataset:
+    display_name: {ru: "Экспортировать данные по гриппу"}
+    description: {ru: "Выгружает выбранные данные по заболеваемости гриппом из исследовательской базы."}
+  export_weather_source_dataset:
+    display_name: {ru: "Экспортировать метеорологические данные"}
+    description: {ru: "Выгружает погодные данные, используемые как внешние признаки для эпидемиологических моделей."}
+  generate_br_model_forecast:
+    display_name: {ru: "Построить прогноз моделью Барояна — Рвачёва"}
+    description: {ru: "Строит механистический прогноз развития эпидемии с помощью модели Барояна — Рвачёва."}
+  list_influenza_db_cities:
+    display_name: {ru: "Показать города в базе по гриппу"}
+    description: {ru: "Возвращает список городов, для которых в базе доступны данные о заболеваемости гриппом."}
+  prepare_influenza_bulletin_context:
+    display_name: {ru: "Подготовить данные для бюллетеня по гриппу"}
+    description: {ru: "Собирает прогнозы, сравнения волн и другие результаты в единый контекст для аналитического бюллетеня."}
+  render_influenza_bulletin:
+    display_name: {ru: "Сформировать бюллетень по гриппу"}
+    description: {ru: "Создаёт оформленный эпидемиологический бюллетень с текстом, таблицами и графиками."}
+  run_influenza_forecasting:
+    display_name: {ru: "Построить прогноз заболеваемости гриппом"}
+    description: {ru: "Строит прогноз на несколько недель методом градиентного бустинга с интервалами неопределённости и метриками качества."}
+  generate_case_mols:
+    display_name: {ru: "Сгенерировать молекулы для заданной мишени"}
+    description: {ru: "Генерирует новые лекарственно-подобные молекулы с помощью предобученной модели для выбранного заболевания или белковой мишени."}
+  generate_mols:
+    display_name: {ru: "Сгенерировать молекулы"}
+    description: {ru: "Быстро генерирует набор новых лекарственно-подобных молекул и рассчитывает базовые показатели их качества."}
+  get_state_from_server:
+    display_name: {ru: "Получить состояние генеративных моделей"}
+    description: {ru: "Показывает зарегистрированные случаи, состояние обучения и доступность генеративных моделей."}
+  list_generative_train_cases:
+    display_name: {ru: "Показать наборы для обучения генеративных моделей"}
+    description: {ru: "Возвращает доступные в S3 наборы молекул, на которых можно обучить генеративную модель."}
+  start_generative_model_training:
+    display_name: {ru: "Запустить обучение генеративной модели"}
+    description: {ru: "Обучает новую генеративную модель молекул на подготовленном наборе SMILES; операция предназначена для длительного офлайн-запуска."}
+  applicability_domain:
+    display_name: {ru: "Оценить область применимости модели"}
+    description: {ru: "Оценивает надёжность предсказаний модели для химических соединений по их положению в химическом пространстве."}
+  chemical_space_clustering:
+    display_name: {ru: "Кластеризовать химическое пространство"}
+    description: {ru: "Группирует молекулы по структурному сходству и визуализирует полученные области химического пространства."}
+  dataset_overview_heracleum_tox:
+    display_name: {ru: "Обзор набора данных по токсичности борщевика"}
+    description: {ru: "Показывает состав и основные характеристики набора метаболитов борщевика Сосновского."}
+  estimate_synthesis_cost:
+    display_name: {ru: "Оценить стоимость синтеза"}
+    description: {ru: "Приближённо оценивает сложность и стоимость химического синтеза выбранных соединений."}
+  model_quality:
+    display_name: {ru: "Оценить качество моделей"}
+    description: {ru: "Возвращает метрики качества обученных моделей, включая RMSE и ROC-AUC."}
+  predict_general_toxicity:
+    display_name: {ru: "Предсказать общую токсичность"}
+    description: {ru: "Предсказывает гепатотоксичность, кардиотоксичность, канцерогенность и другие токсикологические показатели."}
+  predict_ld50:
+    display_name: {ru: "Предсказать острую токсичность LD50"}
+    description: {ru: "Оценивает медианную летальную дозу LD50 соединения с учётом способа введения и химического кластера."}
+  predict_molecule_profile:
+    display_name: {ru: "Построить токсикологический профиль молекулы"}
+    description: {ru: "Формирует комплексный профиль молекулы: LD50, токсикологические конечные точки, область применимости и стоимость синтеза."}
+  reproduce_all:
+    display_name: {ru: "Воспроизвести все ключевые результаты"}
+    description: {ru: "Пересчитывает основные результаты исследования и сопоставляет полученные значения с опубликованными."}
+  reproduce_claims:
+    display_name: {ru: "Проверить воспроизводимость выводов"}
+    description: {ru: "Проверяет сформулированные в статье выводы и связывает каждый из них с пересчитанными данными."}
+  tavily_crawl:
+    display_name: {ru: "Обойти страницы сайта"}
+    description: {ru: "Обходит сайт от заданного адреса и извлекает содержимое найденных страниц с настраиваемой глубиной."}
+  tavily_extract:
+    display_name: {ru: "Извлечь содержимое веб-страниц"}
+    description: {ru: "Загружает указанные веб-страницы и возвращает их основное содержимое в виде текста или Markdown."}
+  tavily_map:
+    display_name: {ru: "Построить карту сайта"}
+    description: {ru: "Исследует структуру сайта и возвращает список обнаруженных страниц и адресов."}
+  tavily_research:
+    display_name: {ru: "Провести расширенное веб-исследование"}
+    description: {ru: "Собирает и обобщает сведения из нескольких интернет-источников по заданной теме или вопросу."}
+  tavily_search:
+    display_name: {ru: "Найти информацию в интернете"}
+    description: {ru: "Ищет актуальные сведения в интернете и возвращает краткие фрагменты с адресами источников."}
+  get_datasets_info:
+    display_name: {ru: "Получить сведения о наборах данных"}
+    description: {ru: "Показывает доступные индексированные наборы данных, их размер, назначение и доступные столбцы."}
+  search_similar:
+    display_name: {ru: "Найти похожие молекулы"}
+    description: {ru: "Ищет в подготовленном наборе молекулы с похожей структурой по коэффициенту Танимото."}
+  antitarget_ld50_association:
+    display_name: {ru: "Оценить связь антимишеней с LD50"}
+    description: {ru: "Ранжирует антимишени по токсичности соединений, которые сильно с ними связываются."}
+  apply_medchem_filters:
+    display_name: {ru: "Применить медико-химические фильтры"}
+    description: {ru: "Применяет фильтры NIH и Brenk для выделения релевантной области химического пространства."}
+  binders_vs_nonbinders:
+    display_name: {ru: "Сравнить связывающиеся и несвязывающиеся соединения"}
+    description: {ru: "Статистически сравнивает токсичность соединений, связывающихся и не связывающихся с антимишенью."}
+  butina_clustering:
+    display_name: {ru: "Кластеризовать молекулы методом Бутины"}
+    description: {ru: "Группирует молекулы по структурному сходству ECFP4 с помощью алгоритма кластеризации Бутины."}
+  chemical_space_tsne:
+    display_name: {ru: "Визуализировать химическое пространство методом t-SNE"}
+    description: {ru: "Строит двумерную карту химического пространства по отпечаткам ECFP4 и значениям токсичности."}
+  cluster_correlation_heatmap:
+    display_name: {ru: "Построить тепловую карту корреляций"}
+    description: {ru: "Показывает корреляции между докингом и токсичностью внутри крупнейших химических кластеров."}
+  dataset_overview_tox_antitargets:
+    display_name: {ru: "Обзор набора данных по токсичности и антимишеням"}
+    description: {ru: "Показывает состав набора LD50 и антимишеней и строит распределение показателя токсичности."}
+  inverse_docking_profile:
+    display_name: {ru: "Построить профиль обратного докинга"}
+    description: {ru: "Оценивает взаимодействие одной молекулы с панелью антимишеней для поиска возможных токсических механизмов."}
+  logp_confounder_analysis:
+    display_name: {ru: "Проверить влияние LogP на результаты"}
+    description: {ru: "Анализирует, не объясняется ли наблюдаемая связь токсичности с антимишенями липофильностью соединений."}
+  physicochemical_properties:
+    display_name: {ru: "Рассчитать физико-химические свойства"}
+    description: {ru: "Рассчитывает основные молекулярные свойства RDKit и строит их распределения."}
+  protein_affinity_profiles:
+    display_name: {ru: "Построить профили сродства к белкам"}
+    description: {ru: "Сравнивает распределения оценок докинга для белков и упорядочивает их по медианному сродству."}
+  protein_panel:
+    display_name: {ru: "Показать панель белковых антимишеней"}
+    description: {ru: "Возвращает список белков панели безопасности с названиями и сопроводительными сведениями."}
+  reproduce_figure8_examples:
+    display_name: {ru: "Воспроизвести примеры профилей обратного докинга"}
+    description: {ru: "Пересчитывает профили обратного докинга для шести охарактеризованных в исследовании молекул."}
+  spearman_correlations:
+    display_name: {ru: "Рассчитать корреляции Спирмена"}
+    description: {ru: "Рассчитывает для каждого белка корреляцию Спирмена между оценкой докинга и показателем токсичности."}
+  cleanup_session:
+    display_name: {ru: "Очистить файлы сессии"}
+    description: {ru: "Показывает или удаляет временные и постоянные объекты выбранной сессии в хранилище."}
+  get_download_link:
+    display_name: {ru: "Получить ссылку для скачивания файла"}
+    description: {ru: "Создаёт HTTP-ссылку для чтения временного или постоянного артефакта из хранилища."}
+  get_session_manifest:
+    display_name: {ru: "Получить перечень файлов сессии"}
+    description: {ru: "Возвращает список всех артефактов сессии с размерами, сроком хранения и описаниями."}
+  get_upload_link:
+    display_name: {ru: "Получить ссылку для загрузки файла"}
+    description: {ru: "Создаёт временную HTTP-ссылку, по которой файл можно загрузить в хранилище сессии."}
+  list_artifacts:
+    display_name: {ru: "Показать артефакты сессии"}
+    description: {ru: "Показывает сохранённые артефакты сессии и позволяет отфильтровать их по назначению."}
+  promote_artifact:
+    display_name: {ru: "Сохранить артефакт постоянно"}
+    description: {ru: "Копирует временный артефакт в постоянное хранилище, чтобы он не был удалён по сроку хранения."}
+  update_artifact_metadata:
+    display_name: {ru: "Обновить описание артефакта"}
+    description: {ru: "Записывает краткое человекочитаемое описание для выбранного файла в хранилище."}
+
+local_tools:
+  "websearch:tavily_search":
+    display_name: {ru: "Поиск в интернете"}
+    description: {ru: "Ищет актуальные сведения и источники в интернете по заданному запросу."}
+  "websearch:tavily_extract":
+    display_name: {ru: "Извлечь содержимое страниц"}
+    description: {ru: "Читает содержимое указанных веб-страниц и URL."}
+  "websearch:tavily_crawl":
+    display_name: {ru: "Обойти сайт"}
+    description: {ru: "Обходит сайт от указанной страницы, когда одной страницы недостаточно."}
+  "paper_analysis:explore_scientific_database":
+    display_name: {ru: "Исследовать научную базу"}
+    description: {ru: "Ищет ответ с фрагментами подтверждения во внутренней базе научной литературы."}
+  "paper_analysis:find_papers_in_db":
+    display_name: {ru: "Найти статьи в базе"}
+    description: {ru: "Находит релевантные статьи во внутренней базе научной литературы."}
+  "paper_analysis:get_papers_database_statistics":
+    display_name: {ru: "Статистика базы статей"}
+    description: {ru: "Показывает число статей и их распределение по областям и направлениям."}
+  "paper_analysis:explore_my_papers":
+    display_name: {ru: "Исследовать мои статьи"}
+    description: {ru: "Отвечает на вопросы по загруженным или ранее скачанным статьям."}
+  "vault:get_upload_link":
+    display_name: {ru: "Получить ссылку для загрузки"}
+    description: {ru: "Создаёт временную ссылку для загрузки файла в хранилище сессии."}
+  "vault:get_download_link":
+    display_name: {ru: "Получить ссылку для скачивания"}
+    description: {ru: "Создаёт временную ссылку для скачивания файла из хранилища."}
+  "papers_search:search_papers":
+    display_name: {ru: "Искать научные статьи"}
+    description: {ru: "Ищет научные статьи в OpenAlex по ключевым словам."}
+  "papers_search:download_papers_from_search":
+    display_name: {ru: "Скачать найденные статьи"}
+    description: {ru: "Ищет и скачивает статьи для последующего анализа."}
+  "retrieval:retrieve_tools":
+    display_name: {ru: "Найти инструменты по возможностям"}
+    description: {ru: "Ищет в реестре MCP-инструменты, подходящие под описание задачи."}
+  "retrieval:get_server_info":
+    display_name: {ru: "Сведения о сервере"}
+    description: {ru: "Возвращает метаданные выбранного MCP-сервера."}
+  "planner_retrieval:retrieve_tools":
+    display_name: {ru: "Найти инструменты по возможностям"}
+    description: {ru: "Ищет в реестре MCP-инструменты, подходящие под описание задачи."}
+  "planner_retrieval:get_server_info":
+    display_name: {ru: "Сведения о сервере"}
+    description: {ru: "Возвращает метаданные выбранного MCP-сервера."}
+  "task_tracker:get_active_tasks":
+    display_name: {ru: "Показать активные задачи"}
+    description: {ru: "Возвращает задачи текущей сессии ADK."}
+  "task_tracker:update_task_status":
+    display_name: {ru: "Обновить статус задачи"}
+    description: {ru: "Устанавливает статус задачи: выполнена, не выполнена или выполняется."}
+  "graph:read_research_graph":
+    display_name: {ru: "Прочитать граф исследования"}
+    description: {ru: "Читает общий граф знаний с участниками и всеми шагами исследования."}
+  "graph:get_graph_history":
+    display_name: {ru: "История графа исследования"}
+    description: {ru: "Показывает хронологию шагов текущей сессии."}
+  "graph:get_agents_info":
+    display_name: {ru: "Сведения об агентах"}
+    description: {ru: "Возвращает структурированные сведения обо всех агентах системы."}
+  "planner_graph:read_research_graph":
+    display_name: {ru: "Прочитать граф исследования"}
+    description: {ru: "Читает общий граф знаний с участниками и всеми шагами исследования."}
+  "planner_graph:get_graph_history":
+    display_name: {ru: "История графа исследования"}
+    description: {ru: "Показывает хронологию шагов текущей сессии."}
+  "planner_graph:get_agents_info":
+    display_name: {ru: "Сведения об агентах"}
+    description: {ru: "Возвращает структурированные сведения обо всех агентах системы."}
+  "experiment_control:get_experiment_plan":
+    display_name: {ru: "Получить план эксперимента"}
+    description: {ru: "Читает утверждённый план эксперимента и состояние попыток."}
+  "experiment_control:start_task":
+    display_name: {ru: "Начать задачу эксперимента"}
+    description: {ru: "Создаёт новую попытку задачи и область её маршрута."}
+  "experiment_control:record_result":
+    display_name: {ru: "Записать результат задачи"}
+    description: {ru: "Проверяет и сохраняет итоговый результат попытки."}
+  "experiment_control:retry_task":
+    display_name: {ru: "Повторить задачу"}
+    description: {ru: "Разрешает повтор задачи после ошибки, допускающей повтор."}
+  "experiment_control:fallback_task":
+    display_name: {ru: "Перейти к запасному маршруту"}
+    description: {ru: "Переводит задачу на следующий маршрут цепочки обхода ошибок."}
+  "experiment_control:skip_task":
+    display_name: {ru: "Пропустить задачу"}
+    description: {ru: "Пропускает необязательную задачу и сохраняет это решение."}
+  "experiment_control:amend_task":
+    display_name: {ru: "Изменить задачу"}
+    description: {ru: "Изменяет ещё не начатую задачу с указанием причины."}
+  "research_graph:research_commit":
+    display_name: {ru: "Записать результаты исследования"}
+    description: {ru: "Атомарно добавляет результаты, связи и статусы в общий граф."}
+  "research_graph:research_context_slice":
+    display_name: {ru: "Получить фрагмент контекста"}
+    description: {ru: "Возвращает узел и его соседей на один или два перехода."}
+  "research_graph:research_overview":
+    display_name: {ru: "Обзор графа исследования"}
+    description: {ru: "Показывает компактный индекс узлов, типов и статусов графа."}
+  "research_graph:research_provenance":
+    display_name: {ru: "Происхождение узла"}
+    description: {ru: "Прослеживает узел до исходного вопроса и его источников."}
+  "research_graph_orchestrator:research_commit":
+    display_name: {ru: "Записать результаты исследования"}
+    description: {ru: "Атомарно добавляет результаты, связи и статусы в общий граф."}
+  "research_graph_orchestrator:research_context_slice":
+    display_name: {ru: "Получить фрагмент контекста"}
+    description: {ru: "Возвращает узел и его соседей на один или два перехода."}
+  "research_graph_orchestrator:research_overview":
+    display_name: {ru: "Обзор графа исследования"}
+    description: {ru: "Показывает компактный индекс узлов, типов и статусов графа."}
+  "research_graph_orchestrator:research_provenance":
+    display_name: {ru: "Происхождение узла"}
+    description: {ru: "Прослеживает узел до исходного вопроса и его источников."}
+  "research_graph_orchestrator:research_init":
+    display_name: {ru: "Инициализировать исследование"}
+    description: {ru: "Создаёт корневой вопрос и контекст нового исследования."}
+  "research_graph_orchestrator:research_prior":
+    display_name: {ru: "Найти результаты прошлых исследований"}
+    description: {ru: "Ищет связанные прошлые исследования, гипотезы, методы и выводы."}
+  "research_graph_orchestrator:research_triggers":
+    display_name: {ru: "Проверить триггеры исследования"}
+    description: {ru: "Оценивает готовность, блокировки, вопросы и прогресс исследования."}
+  "research_graph_orchestrator:research_set_focus":
+    display_name: {ru: "Задать фокус исследования"}
+    description: {ru: "Задаёт узел, на котором сосредоточится следующий исполнитель."}
+  "research_graph_readonly:research_context_slice":
+    display_name: {ru: "Получить фрагмент контекста"}
+    description: {ru: "Возвращает узел и его соседей на один или два перехода."}
+  "research_graph_readonly:research_overview":
+    display_name: {ru: "Обзор графа исследования"}
+    description: {ru: "Показывает компактный индекс узлов, типов и статусов графа."}
+  "research_graph_readonly:research_provenance":
+    display_name: {ru: "Происхождение узла"}
+    description: {ru: "Прослеживает узел до исходного вопроса и его источников."}
+  "verify:validate_dataset":
+    display_name: {ru: "Проверить набор данных"}
+    description: {ru: "Проверяет, что набор содержит реальные разнообразные молекулы и целевой столбец."}
+  "verify:validate_training":
+    display_name: {ru: "Проверить обучение"}
+    description: {ru: "Проверяет сохранённую модель и снижение ошибки обучения."}
+  "create_plan_tool:create_plan":
+    display_name: {ru: "Создать план"}
+    description: {ru: "Заменяет список задач новым планом с порядком и исполнителями."}
+  "sleep:sleep_tool":
+    display_name: {ru: "Подождать"}
+    description: {ru: "Делает паузу перед следующей проверкой длительной задачи."}
+  "mcp_server_search:search_mcp_servers":
+    display_name: {ru: "Найти MCP-серверы"}
+    description: {ru: "Ищет публичные MCP-реестры по описанию возможностей сервера."}
+  "fedot:fedot_tool":
+    display_name: {ru: "Запустить FEDOT.MAS"}
+    description: {ru: "Строит и запускает мультиагентный конвейер FEDOT.MAS для решения задачи."}
+  "result_formatter:format_results":
+    display_name: {ru: "Собрать результаты"}
+    description: {ru: "Собирает рисунки и таблицы сессии в папку отчёта и готовит Markdown."}
+  "nir_report:nir_report_outline":
+    display_name: {ru: "Показать структуру НИР"}
+    description: {ru: "Показывает разделы отчёта по ГОСТ, доказательства и пробелы."}
+  "nir_report:nir_report_draft":
+    display_name: {ru: "Подготовить черновик НИР"}
+    description: {ru: "Собирает текст исследования в документ по ГОСТ и проверяет его локально."}
+  "nir_report:nir_report_submit":
+    display_name: {ru: "Отправить НИР на проверку"}
+    description: {ru: "Проверяет отчёт на сервере нормоконтроля и формирует DOCX."}
+  "medical:search_pubmed":
+    display_name: {ru: "Искать в PubMed"}
+    description: {ru: "Ищет рецензируемые медицинские публикации по заданной теме."}
+  "medical:get_pico":
+    display_name: {ru: "Извлечь PICO"}
+    description: {ru: "Извлекает из аннотации структуру Population, Intervention, Comparison, Outcome."}
+  "medical:get_study_taxonomy":
+    display_name: {ru: "Классифицировать дизайн исследования"}
+    description: {ru: "Определяет тип и подтип дизайна медицинского исследования."}
+  "medical:analyze_medical_image":
+    display_name: {ru: "Анализировать медицинское изображение"}
+    description: {ru: "Интерпретирует загруженное изображение или DICOM-файл."}
+  "coder:execute_bash":
+    display_name: {ru: "Выполнить команду"}
+    description: {ru: "Запускает команду в рабочей песочнице и возвращает результат."}
+  "coder:check_job":
+    display_name: {ru: "Проверить фоновую задачу"}
+    description: {ru: "Проверяет длительную задачу, запущенную командой execute_bash."}
+  "coder:read_file":
+    display_name: {ru: "Прочитать файл"}
+    description: {ru: "Читает код, конфигурацию или данные из файла."}
+  "coder:write_file":
+    display_name: {ru: "Записать файл"}
+    description: {ru: "Создаёт или изменяет файл в рабочем каталоге."}
+  "coder:list_directory":
+    display_name: {ru: "Показать каталог"}
+    description: {ru: "Показывает содержимое каталога."}
+  "coder:install_package":
+    display_name: {ru: "Установить пакет"}
+    description: {ru: "Устанавливает Python-зависимость в рабочую среду."}
+  "alembic:build_mcp_server":
+    display_name: {ru: "Собрать MCP-сервер"}
+    description: {ru: "Запускает сборку MCP-сервера из научного GitHub-репозитория."}
+  "alembic:check_mcp_build":
+    display_name: {ru: "Проверить сборку MCP"}
+    description: {ru: "Показывает статус и журнал сборки MCP-сервера."}
+  "alembic:list_mcp_builds":
+    display_name: {ru: "Показать сборки MCP"}
+    description: {ru: "Показывает известные процессу текущие и завершённые сборки."}
+  "sandbox:run_sandbox_task":
+    display_name: {ru: "Запустить задачу в песочнице"}
+    description: {ru: "Передаёт тяжёлую или длительную работу автономному агенту песочницы."}
+  "sandbox:check_sandbox_task":
+    display_name: {ru: "Проверить задачу песочницы"}
+    description: {ru: "Получает результат задачи песочницы, которая ещё выполнялась."}
+  "sandbox:list_sandbox_files":
+    display_name: {ru: "Показать файлы песочницы"}
+    description: {ru: "Показывает файлы в рабочем каталоге песочницы."}
+  "sandbox:fetch_sandbox_artifact":
+    display_name: {ru: "Забрать артефакт песочницы"}
+    description: {ru: "Переносит файл из песочницы в постоянное хранилище."}
+  "fill_tz_section:fill_tz_section":
+    display_name: {ru: "Заполнить раздел ТЗ"}
+    description: {ru: "Сохраняет один следующий раздел технического задания."}
+  "fill_agent_fields:fill_agent_fields":
+    display_name: {ru: "Заполнить поля ТЗ"}
+    description: {ru: "Заполняет поля технического задания, оставленные оператором."}
+  "edit_tz_section:edit_tz_section":
+    display_name: {ru: "Изменить раздел ТЗ"}
+    description: {ru: "Заменяет поля одного уже собранного раздела технического задания."}
+  "molecular_design:molecular_design":
+    display_name: {ru: "Спроектировать молекулы"}
+    description: {ru: "Отбирает литературные аналоги с учётом дескрипторов и ограничений ТЗ."}
+  "retrosynthesis:retrosynthesis_routes":
+    display_name: {ru: "Построить ретросинтетические маршруты"}
+    description: {ru: "Ищет маршруты синтеза целевой молекулы в дереве ретросинтеза."}
+  "retrosynthesis:predict_reaction_products":
+    display_name: {ru: "Предсказать продукты реакции"}
+    description: {ru: "Предсказывает продукты для заданного набора реагентов."}
+  "retrosynthesis:classify_reactions":
+    display_name: {ru: "Классифицировать реакции"}
+    description: {ru: "Определяет классы реакций по реакционным SMILES."}
+  "economics_mcp_stub:economics_mcp_stub":
+    display_name: {ru: "Оценить стоимость маршрута (заглушка)"}
+    description: {ru: "Оценивает стоимость синтеза и доступность реагентов в режиме заглушки."}
+  "economics_mcp:resolve_chemicals":
+    display_name: {ru: "Разрешить химические названия"}
+    description: {ru: "Преобразует названия или SMILES в структуры и идентификаторы веществ."}
+  "economics_mcp:rank_routes_by_cost":
+    display_name: {ru: "Ранжировать маршруты по стоимости"}
+    description: {ru: "Сравнивает синтетические маршруты по оценённой стоимости и рискам поставок."}
+  "economics_mcp:estimate_synthesis_cost":
+    display_name: {ru: "Оценить стоимость синтеза"}
+    description: {ru: "Рассчитывает ориентировочную стоимость синтеза по маршруту и реагентам."}
+  "economics_mcp:get_price":
+    display_name: {ru: "Получить цену реагента"}
+    description: {ru: "Находит предложение и цену выбранного реагента."}
+  "economics_mcp:search_by_structure":
+    display_name: {ru: "Искать реагенты по структуре"}
+    description: {ru: "Ищет вещества по структуре, подструктуре или связности."}
+  "economics_mcp:search_reagents_by_name":
+    display_name: {ru: "Искать реагенты по названию"}
+    description: {ru: "Выполняет нечёткий поиск реагента по названию и предложениям поставщиков."}
+  "cfd_mcp:cfd_list_reactors":
+    display_name: {ru: "Показать CFD-реакторы"}
+    description: {ru: "Возвращает доступные геометрии реакторов и их возможности."}
+  "cfd_mcp:cfd_run_reactor_experiment":
+    display_name: {ru: "Запустить CFD-эксперимент"}
+    description: {ru: "Запускает расчёт течения, смешения и реакции в выбранном реакторе."}
+  "cfd_mcp:cfd_get_experiment_result":
+    display_name: {ru: "Получить результат CFD"}
+    description: {ru: "Возвращает состояние и результат расчёта по идентификатору запуска."}
+  "cfd_mcp:cfd_list_artifacts":
+    display_name: {ru: "Показать CFD-артефакты"}
+    description: {ru: "Показывает файлы, созданные CFD-расчётом."}
+  "cfd_mcp:cfd_cancel_run":
+    display_name: {ru: "Отменить CFD-запуск"}
+    description: {ru: "Останавливает выполняющийся CFD-расчёт."}
+  "cfd_mcp_stub:cfd_mcp_stub":
+    display_name: {ru: "Смоделировать поток (заглушка)"}
+    description: {ru: "Оценивает перепад давления, смешение и время пребывания в режиме заглушки."}
+  "rig_mcp_stub:rig_mcp_stub":
+    display_name: {ru: "Управить микрофлюидным стендом (заглушка)"}
+    description: {ru: "Передаёт команду микрофлюидному стенду и читает его состояние."}
+  "optimization_a2a:optimization_start":
+    display_name: {ru: "Запустить оптимизацию"}
+    description: {ru: "Передаёт проверенный план во внешний процесс оптимизации."}
+  "optimization_a2a:optimization_get_status":
+    display_name: {ru: "Проверить оптимизацию"}
+    description: {ru: "Получает статус задачи оптимизации и сохраняет ответы и артефакты."}
+  "optimization_a2a:optimization_provide_input":
+    display_name: {ru: "Передать данные оптимизации"}
+    description: {ru: "Отвечает на запрос уточнения внешней задачи оптимизации."}
+  "optimization_a2a:optimization_approve":
+    display_name: {ru: "Одобрить оптимизацию"}
+    description: {ru: "Подтверждает внешний план в рамках разрешённого задания."}
+  "campaign_a2a:campaign_start":
+    display_name: {ru: "Запустить кампанию"}
+    description: {ru: "Запускает кампанию оптимизации условий потока и синтеза."}
+  "campaign_a2a:campaign_get_status":
+    display_name: {ru: "Проверить кампанию"}
+    description: {ru: "Получает статус кампании и нормализует её результат."}
+  "campaign_a2a:campaign_provide_input":
+    display_name: {ru: "Передать данные кампании"}
+    description: {ru: "Отвечает на запрос уточнения внешней кампании."}
+  "campaign_a2a:campaign_approve":
+    display_name: {ru: "Одобрить кампанию"}
+    description: {ru: "Подтверждает план кампании после согласования оператором."}
+  "operator_screening_override:operator_authorize_screening_override":
+    display_name: {ru: "Одобрить исключение отбора"}
+    description: {ru: "Запрашивает у оператора разрешение на проверку отклонённых маршрутов."}
+  "finish_optimization:finish_optimization":
+    display_name: {ru: "Завершить оптимизацию"}
+    description: {ru: "Завершает цикл уточнения эксперимента и переводит работу к отчёту."}
+
+tools:
+  "d6dac6fb09066080:train_ml":
+    priority: 0
+    category: automl
+    role: scientific
+    display_name:
+      ru: "Обучить модель для предсказания свойств молекул"
+      en: "Train a molecular property prediction model"
+    description:
+      ru: "По таблице молекул и измеренных свойств запускает автоматический подбор и обучение модели FEDOT. Возвращает идентификатор задачи для отслеживания хода обучения."
+      en: "Starts FEDOT model selection and training from a table of molecules and measured properties. Returns a job identifier for tracking progress."
+  "d6dac6fb09066080:predict_ml":
+    priority: 1
+    category: automl
+    role: scientific
+    display_name:
+      ru: "Предсказать свойства молекул"
+      en: "Predict molecular properties"
+    description:
+      ru: "Применяет ранее обученную модель к списку молекул или файлу с их структурами и возвращает прогнозы выбранных свойств."
+      en: "Applies a previously trained model to a list or file of molecular structures and returns predictions for the selected properties."
+  "d6dac6fb09066080:train_ml_job_status":
+    category: automl
+    role: supporting
+    display_name:
+      ru: "Проверить ход обучения"
+      en: "Check training progress"
+    description:
+      ru: "Показывает состояние фоновой задачи обучения по её идентификатору."
+      en: "Shows the state of a background training job by its identifier."
+  "d6dac6fb09066080:check_state":
+    category: automl
+    role: supporting
+    display_name:
+      ru: "Проверить состояние модели"
+      en: "Check model state"
+    description:
+      ru: "Возвращает состояние зарегистрированных моделей и сведения об ошибках обучения."
+      en: "Returns registered model state and information about training errors."

@@ -6,7 +6,10 @@ crashed. Types are taken from, in order: the function's own annotation, the
 type of its literal default, and the invocation recorded in the plan.
 """
 
-from _codegen_loader import load_codegen
+try:
+    from tests.unit._codegen_loader import load_codegen
+except ImportError:
+    from _codegen_loader import load_codegen
 
 cg = load_codegen()
 

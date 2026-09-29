@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <link rel="stylesheet" href="/static/css/fonts.css" />
   <title>CoScientist — Session Trace</title>
   <style>
     :root {
@@ -11,7 +12,7 @@
     }
     * { box-sizing:border-box; }
     html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
-      font-family:-apple-system,"Segoe UI",Roboto,Inter,sans-serif; font-size:13px; }
+      font-family: "Source Sans 3", -apple-system, "Segoe UI", Roboto, sans-serif; font-size:13px; }
     #bar { position:fixed; top:0; left:0; right:0; height:46px; display:flex; align-items:center;
       gap:16px; padding:0 16px; background:var(--surface); border-bottom:1px solid var(--line); z-index:20; }
     .brand { font-weight:700; } .brand .dot { color:var(--accent); }
@@ -47,7 +48,7 @@
     .call:hover { background:var(--surface2); }
     .call .at { color:var(--ink3); font-variant-numeric:tabular-nums; font-size:11px; }
     .call .ag { color:var(--ink2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .call .tl { font-family:ui-monospace,Menlo,monospace; font-size:12px;
+    .call .tl { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size:12px;
       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bar { height:7px; border-radius:4px; background:var(--slate); min-width:2px; }
     .call .du { color:var(--ink3); text-align:right; font-variant-numeric:tabular-nums; font-size:11px; }

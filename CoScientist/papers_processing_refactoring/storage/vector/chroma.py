@@ -1,5 +1,5 @@
 import ast
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 import chromadb
 
@@ -87,6 +87,25 @@ class ChromaVectorStore(VectorStore):
     def delete_by_article_id(self, article_id: str) -> None:
         self.collection.delete(where={"article_id": article_id})
         
+    def iter_metadata(self, page_size: int = 1000) -> Iterator[Dict[str, Any]]:
+        """Yield the metadata of every chunk in the collection, page by page.
+
+        Documents and embeddings are not fetched, so a full scan stays cheap.
+        Intended for collection-level statistics over chunk metadata. Paging
+        ends at the first empty page, not the first short one, so a server
+        that returns fewer rows than asked for is still read to the end.
+        """
+        offset = 0
+        while True:
+            page = self.collection.get(
+                include=["metadatas"], limit=page_size, offset=offset
+            )
+            metadatas = page.get("metadatas") or []
+            if not metadatas:
+                return
+            yield from metadatas
+            offset += len(metadatas)
+
     def show_collections(self):
         return self.client.list_collections()
     

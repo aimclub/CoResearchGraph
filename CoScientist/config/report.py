@@ -6,6 +6,7 @@ adapter per surface builds one of these — see :meth:`ReportConfig.from_cli`.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -18,13 +19,20 @@ from typing import Any, Dict, Optional
 LATEX_MODES = ("skip", "standalone", "body", "tree")
 
 
+def _default_reports_root() -> Path:
+    env_root = os.getenv("REPORTS_ROOT") or os.getenv("EXPERIMENTS__REPORTS_DIR")
+    if env_root:
+        return Path(env_root)
+    return Path("logs/reports")
+
+
 @dataclass
 class ReportConfig:
     """Everything the Result Aggregator needs to render the deliverable."""
 
     latex: str = "skip"
     # Base directory under which per-run report folders are written.
-    reports_root: Path = field(default_factory=lambda: Path("logs/reports"))
+    reports_root: Path = field(default_factory=_default_reports_root)
 
     def __post_init__(self) -> None:
         if self.latex not in LATEX_MODES:
@@ -37,18 +45,20 @@ class ReportConfig:
     @classmethod
     def from_cli(cls, args: Any) -> "ReportConfig":
         """Build from an argparse Namespace (or anything with these attrs)."""
+        root = getattr(args, "reports_root", None)
         return cls(
             latex=getattr(args, "latex", None) or "skip",
-            reports_root=Path(getattr(args, "reports_root", None) or "logs/reports"),
+            reports_root=Path(root) if root else _default_reports_root(),
         )
 
     @classmethod
     def from_mapping(cls, data: Optional[Dict[str, Any]]) -> "ReportConfig":
         """Build from a dict (e.g. HTTP JSON params). Unknown keys ignored."""
         data = data or {}
+        root = data.get("reports_root")
         return cls(
             latex=data.get("latex") or "skip",
-            reports_root=Path(data.get("reports_root") or "logs/reports"),
+            reports_root=Path(root) if root else _default_reports_root(),
         )
 
     # ── serialisation (config -> session state, for the aggregator tool) ─────

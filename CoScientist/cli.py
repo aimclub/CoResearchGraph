@@ -45,10 +45,13 @@ def _configure_utf8_stdio() -> None:
 def run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None:
     """Serve the FastAPI web interface via uvicorn."""
     import uvicorn
+    from uvicorn.supervisors import ChangeReload
+
+    from CoScientist.utils.interrupt import InterruptibleServer
 
     # Pass the import string (not the app object) so ``--reload`` can re-import
     # the worker. The app itself lives in CoScientist.web.server:app.
-    uvicorn.run(
+    config = uvicorn.Config(
         "CoScientist.web.server:app",
         host=host,
         port=port,
@@ -59,6 +62,17 @@ def run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> 
         # browser reported a NetworkError for an action that never arrived.
         timeout_keep_alive=30,
     )
+    # uvicorn.run() would build a plain Server, which can stay alive after
+    # Ctrl+C while a tool thread is blocked. The reload supervisor pickles
+    # ``server.run`` into the worker, so the worker gets this class too.
+    server = InterruptibleServer(config)
+    try:
+        if config.should_reload:
+            ChangeReload(config, target=server.run, sockets=[config.bind_socket()]).run()
+        else:
+            server.run()
+    except KeyboardInterrupt:
+        pass
 
 
 def run_repl() -> None:
@@ -67,6 +81,11 @@ def run_repl() -> None:
     import asyncio
 
     from CoScientist.main import create_manager
+    from CoScientist.utils.interrupt import install_sigint_exit
+
+    # asyncio.run's own SIGINT handler only cancels the main task, which does
+    # nothing while it sits in the blocking input() — Ctrl+C looked ignored.
+    install_sigint_exit()
 
     async def _loop() -> None:
         manager = await create_manager()
@@ -84,7 +103,10 @@ def run_repl() -> None:
         finally:
             await manager.close()
 
-    asyncio.run(_loop())
+    try:
+        asyncio.run(_loop())
+    except KeyboardInterrupt:
+        pass
 
 
 def _run_a2a(a2a_cmd: str, rest: list) -> None:

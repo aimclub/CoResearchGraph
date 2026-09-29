@@ -237,6 +237,40 @@ OR
 uv run python -m CoScientist.main
 ```
 
+### FEDOT.MAS graph and traces
+
+Open the FEDOT graph or trace from the current session's activity rail. Both
+views list **all FEDOT calls in that session**, including failed/timed-out or
+cancelled attempts, and select a concrete `run_id`. Switching between graph and
+trace keeps that run. Manual selection disables automatic following of new runs.
+Opening a page without a session never falls back to another session's run.
+
+The graph renderer is bundled with CoScientist; no GUI stand, submodule checkout,
+port 4173 or `FEDOT_GUI_URL` is needed. This is an observation-only viewer; start
+computations from the CoScientist chat.
+
+Every new run saves its configuration (MAS/MAW graph), ADK agent/model/tool
+events, inputs, outputs and outcome under `WEB_STATE_DIR/fedot_runs` (default:
+`graph_runs/web_state/fedot_runs`). There is no automatic five-run history cap.
+These journals contain research data: protect/back up this directory and session
+exports accordingly. Remote artifacts referenced by tools retain their existing
+artifact lifecycle; the trace archive does not download arbitrary external URLs.
+
+Session export includes `fedot/runs.json`. Import restores graphs and traces
+locally under the new session, preserves original provenance, and does not resume
+an in-flight snapshot. Old archives without this section still import normally.
+Previously unsaved/global Langfuse runs cannot reliably be assigned to a session
+retroactively, so they are not guessed into its history.
+
+Langfuse is optional: local traces work without its keys or service. When the
+plugin is available it receives the session and FEDOT run IDs; its exact trace
+and root-observation IDs are retained in the local journal for correlation.
+The trace tab no longer asks Langfuse for a global latest trace.
+
+Web and same-host A2A workers must use the **same persistent `WEB_STATE_DIR`**.
+For workers in separate containers/hosts, mount shared storage at that directory;
+an in-memory broadcaster alone does not transfer their history to the web server.
+
 ### Chemical Computing Examples
 
 ```python

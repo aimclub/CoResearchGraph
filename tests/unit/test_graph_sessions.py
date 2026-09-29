@@ -445,3 +445,87 @@ def test_web_graph_delete_all_clears_every_store(tmp_path, monkeypatch):
         }
         assert "goal:all" not in {node["id"] for node in execution.full()["nodes"]}
         assert research.full()["nodes"] == []
+
+
+def test_resuming_a_session_does_not_archive_the_study(tmp_path, monkeypatch):
+    """Building a manager must not cost the session its record.
+
+    The graphs were wiped wherever a manager had to be built, and "no manager
+    yet" means "none since this process started" — not "a new session". So a
+    server restart archived the study of any session that was then continued,
+    before its next message was even read. The research graph is meant to
+    accumulate across all the prompts of one session; that is what makes it
+    readable as one investigation instead of a pile of single turns.
+    """
+    import asyncio
+
+    from CoScientist.config import get_settings
+
+    monkeypatch.setenv("GRAPH_SNAPSHOT_DIR", str(tmp_path / "execution"))
+    monkeypatch.setenv(
+        "KG_MEMORY_PATH",
+        str(tmp_path / "memory" / "knowledge_memory.json"),
+    )
+    monkeypatch.setattr(
+        research_store,
+        "_default_dir",
+        lambda: str(tmp_path / "research"),
+    )
+
+    # Imported after the temporary graph paths are configured.
+    from CoScientist.web import app as web_app
+
+    monkeypatch.setattr(
+        get_settings().web, "auto_clear_graph_enabled", True,
+    )
+
+    wiped = []
+    real_clear = web_app._clear_session_graphs
+
+    def _spy(user_id, session_id, view="all"):
+        wiped.append((user_id, session_id, view))
+        return real_clear(user_id, session_id, view=view)
+
+    monkeypatch.setattr(web_app, "_clear_session_graphs", _spy)
+
+    class _StubManager:
+        """Stands in for the real one: building it pulls the whole agent system."""
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def initialize(self):
+            return None
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(web_app, "CoScientistManager", _StubManager)
+
+    with TestClient(web_app.create_app()) as client:
+        runtime = client.app.state.runtime
+        user = _create_user(client, f"graph-user-{uuid4().hex}")
+        session = _create_session(client, user["id"], "Yesterday's study")
+        assert wiped == [(user["id"], session["id"], "all")], \
+            "a NEW session does start clean"
+
+        graph = research_store.get_research_graph(
+            user_id=user["id"], session_id=session["id"],
+        )
+        graph.ensure_root("Does compound X inhibit target Y?")
+        graph.commit(
+            source="ResearchAgent",
+            nodes=[{"type": "Evidence",
+                    "attrs": {"subtype": "literature", "content": "a finding"}}],
+        )
+        before = len(graph.full()["nodes"])
+        assert before == 2
+
+        wiped.clear()
+        asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+            runtime.get_manager(user["id"], session["id"])
+        )
+
+    assert wiped == [], "resuming a session is not a reason to wipe it"
+    assert len(graph.full()["nodes"]) == before, "the study is still there"
+    assert graph.root_id() == "Q1"

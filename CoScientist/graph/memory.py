@@ -38,7 +38,13 @@ ROOT_ID = "system:root"
 
 # Node kinds that represent things that actually happened during a run (as
 # opposed to the static roster), in the order we show them as "history".
-_HISTORY_KINDS = ("goal", "agent_call", "tool_call", "result", "decision", "reflection")
+# `agent` is the activation node the in-process plugin writes (one per agent
+# run, since #358); `agent_call` is what the A2A emitter still writes. Listing
+# only the latter is why history, root_summary and therefore inject_graph_root
+# went blind to every agent that ran locally.
+_HISTORY_KINDS = (
+    "goal", "agent", "agent_call", "tool_call", "result", "decision", "reflection",
+)
 
 
 def _now() -> float:
@@ -132,6 +138,16 @@ class KnowledgeGraph:
     def full(self) -> dict:
         self.ensure_seeded()
         return self._store.full(self.run_id)
+
+    def restore(self, payload: dict) -> None:
+        """Replace this session trace with a checkpointed snapshot."""
+        self._store.replace(self.run_id, payload)
+        with self._lock:
+            self._seeded = any(
+                node.get("id") == ROOT_ID for node in payload.get("nodes", [])
+                if isinstance(node, dict)
+            )
+        self.ensure_seeded()
 
     def tool_vs_coder(self) -> Dict[str, Any]:
         """Whether this run used a tool from the catalogue or wrote code from

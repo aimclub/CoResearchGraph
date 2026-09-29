@@ -10,12 +10,14 @@ import re
 from typing import Any, AsyncGenerator, Optional
 
 import litellm
+from google.adk.models._capabilities import LlmCapabilities
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
 from CoScientist.config import get_settings
+from CoScientist.execution_control import before_model_attempt, before_tool_action
 from CoScientist.hitl.handler import ConsoleHITLHandler, DelegatingHITLHandler
 from CoScientist.utils.selective_proxy import LiteLLMProxy
 
@@ -161,28 +163,42 @@ def _retry_after_s(err: Exception) -> Optional[float]:
     return float(match.group(1)) if match else None
 
 
+#: Connect-phase failures: the request never reached a provider, so with a
+#: forward proxy configured the proxy is the thing to check.
+_PROXY_ERROR_SUBSTRINGS = (
+    "proxy",
+    "proxyerror",
+    "all connection attempts failed",
+    "connection refused",
+    "cannot connect to host",
+    "failed to connect",
+    "connecterror",
+    "connecttimeout",
+)
+#: Ambiguous with a proxy in the path — the connection failed somewhere between
+#: here and the provider — so these only count when a proxy is configured.
+_PROXY_ERROR_TYPES = ("ProxyError", "ConnectError", "ConnectTimeout", "APIConnectionError")
+
+
 def is_proxy_error(err: Exception) -> bool:
-    """Return True if *err* represents an unreachable proxy or network connection failure."""
+    """True when the failure looks like the forward proxy is unreachable.
+
+    Deliberately narrow, and a read timeout is deliberately NOT one. "timeout"
+    and "timed out" used to match here, so a model that simply took longer than
+    LLM__REQUEST_TIMEOUT to answer was reported to the operator as a dead proxy
+    — while the proxy was fine and the provider had just billed the run. Worse,
+    ``_is_transient`` short-circuits on this function, so classifying a timeout
+    as a proxy failure also cancelled the retry `_RETRYABLE_TYPES` grants it:
+    one slow answer ended the turn instead of being tried again.
+    """
     if not settings.web.use_proxy:
         return False
     msg = str(err).lower()
-    proxy_keywords = (
-        "proxy",
-        "all connection attempts failed",
-        "connecterror",
-        "connection refused",
-        "cannot connect to host",
-        "failed to connect",
-        "proxyerror",
-        "timed out",
-        "timeout",
-        "connecttimeout",
+    if any(k in msg for k in _PROXY_ERROR_SUBSTRINGS):
+        return True
+    return bool(settings.services.proxy_url) and (
+        type(err).__name__ in _PROXY_ERROR_TYPES or "connectionerror" in msg
     )
-    if any(k in msg for k in proxy_keywords):
-        return True
-    if settings.services.proxy_url and ("connectionerror" in msg or "connecterror" in msg or "apiconnectionerror" in msg):
-        return True
-    return False
 
 
 def _is_transient(err: Exception) -> bool:
@@ -192,6 +208,67 @@ def _is_transient(err: Exception) -> bool:
         return True
     msg = str(err).lower()
     return any(s in msg for s in _RETRYABLE_SUBSTRINGS)
+
+
+_proxy_verified: bool = False
+_proxy_verify_lock: Optional[asyncio.Lock] = None
+
+
+def _get_proxy_verify_lock() -> asyncio.Lock:
+    global _proxy_verify_lock
+    if _proxy_verify_lock is None:
+        _proxy_verify_lock = asyncio.Lock()
+    return _proxy_verify_lock
+
+
+def reset_proxy_verification() -> None:
+    """Reset the proxy verification state so the next check performs a fresh probe."""
+    global _proxy_verified
+    _proxy_verified = False
+
+
+async def verify_proxy_reachable(force: bool = False) -> None:
+    """Fast HTTP probe to confirm the corporate proxy can reach upstream endpoints.
+
+    When a corporate VPN is not connected, the local proxy container accepts
+    TCP connections on localhost, but hangs indefinitely when trying to reach
+    upstream endpoints. litellm's default request_timeout is 6000s (100 min),
+    causing an infinite freeze in the UI. We probe an upstream endpoint THROUGH
+    the proxy during system initialization to fail fast when VPN is off.
+    Once verified, subsequent calls are no-ops unless force=True.
+    """
+    global _proxy_verified
+    if _proxy_verified and not force:
+        return
+
+    if not settings.web.use_proxy or not settings.services.proxy_url:
+        _proxy_verified = True
+        return
+
+    lock = _get_proxy_verify_lock()
+    async with lock:
+        if _proxy_verified and not force:
+            return
+
+        import httpx
+
+        probe_url = "https://openrouter.ai/api/v1/models"
+        try:
+            async with httpx.AsyncClient(
+                proxy=settings.services.proxy_url,
+                timeout=httpx.Timeout(15.0, connect=10.0, read=15.0)
+            ) as client:
+                async with client.stream("GET", probe_url) as response:
+                    pass
+            _proxy_verified = True
+            _logger.info("Proxy pre-flight check succeeded: proxy is reachable.")
+        except Exception as err:
+            _logger.warning("Proxy pre-flight probe failed: %s", err)
+            raise ConnectionError(
+                f"Error connecting to proxy server."
+                f"Please ensure the proxy container is running, corporate VPN is enabled (other - disabled), "
+                f"and proxy is accessible: {err}"
+            ) from err
 
 
 class RetryingLiteLlm(LiteLlm):
@@ -216,35 +293,25 @@ class RetryingLiteLlm(LiteLlm):
         super().__init__(model=model, **kwargs)
         self._deadline_s = deadline_s
 
-    @staticmethod
-    async def _verify_proxy_reachable() -> None:
-        """Fast HTTP probe to confirm the corporate proxy can reach the internet/VPN.
+    @property
+    def capabilities(self) -> LlmCapabilities:
+        """No native output schema next to tools.
 
-        When a corporate VPN is not connected, the local proxy container accepts
-        TCP connections on localhost, but hangs indefinitely when trying to reach
-        upstream endpoints. litellm's default request_timeout is 6000s (100 min),
-        causing an infinite freeze in the UI. We probe an upstream endpoint THROUGH
-        the proxy with a 5s deadline to fail fast when VPN is off.
+        LiteLlm declares it, so ADK would send the JSON schema as the response
+        format together with the tools. Providers behind OpenRouter then answer
+        with the JSON straight away and never call a tool (seen with DeepSeek
+        on the microfluidics design stages). Declaring it unsupported makes ADK
+        add its set_model_response tool instead: the model calls its tools
+        first and gives the structured answer through that tool at the end.
+        Agents with an output schema and no tools are not affected.
         """
-        if not settings.web.use_proxy or not settings.services.proxy_url:
-            return
+        return LlmCapabilities(
+            **super().capabilities.model_dump() | {"output_schema_and_tools": False}
+        )
 
-        import httpx
-
-        probe_url = "https://openrouter.ai/api/v1/models"
-        try:
-            async with httpx.AsyncClient(
-                proxy=settings.services.proxy_url,
-                timeout=httpx.Timeout(5.0, connect=5.0)
-            ) as client:
-                await client.get(probe_url)
-        except Exception as err:
-            _logger.warning("Proxy pre-flight probe failed: %s", err)
-            raise ConnectionError(
-                f"Error connecting to proxy server."
-                f"Please ensure the proxy container is running, corporate VPN is enabled (other - disabled), "
-                f"and proxy is accessible: {err}"
-            ) from err
+    @staticmethod
+    async def _verify_proxy_reachable(force: bool = False) -> None:
+        await verify_proxy_reachable(force=force)
 
     async def _stream(self, llm_request: LlmRequest, stream: bool):
         """Yield the upstream response, bounding the wait between chunks.
@@ -303,13 +370,25 @@ class RetryingLiteLlm(LiteLlm):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        await self._verify_proxy_reachable()
         effective_model = getattr(llm_request, "model", None) or getattr(self, "model", "") or ""
+        # The proxy probe is network I/O too.  It does not consume model
+        # budget, but a paused/stopped run must not start it.
+        await before_tool_action(
+            "model_provider_preflight", metadata={"model": effective_model}
+        )
+        if not _proxy_verified:
+            await verify_proxy_reachable()
         self._apply_dynamic_openrouter_provider(effective_model)
         attempt = throttle_attempt = 0
         while True:
             yielded = False
             try:
+                # Reserve immediately before each real provider attempt.  This
+                # is inside our retry loop, so failed attempts count too.
+                await before_model_attempt(
+                    "adk_litellm",
+                    metadata={"model": effective_model, "stream": bool(stream)},
+                )
                 if self._deadline_s is None:
                     async for resp in self._stream(llm_request, stream=stream):
                         yielded = True
@@ -423,7 +502,7 @@ class RetryingLiteLlm(LiteLlm):
 
 MODEL = settings.llm.main_model
 litellm.api_key = settings.llm.openai_api_key
-litellm.request_timeout = 45.0
+litellm.request_timeout = 600.0
 # Silence litellm's "Provider List: https://docs.litellm.ai/docs/providers" spam.
 # It fires when litellm can't map a model prefix (e.g. "qwen/...") to a known
 # provider during cost/token bookkeeping — harmless, but it floods the console.
@@ -443,6 +522,7 @@ def sync_proxy_session() -> None:
             _litellm_proxy.enable()
         else:
             _litellm_proxy.disable()
+            reset_proxy_verification()
 
 hitl_handler = DelegatingHITLHandler(ConsoleHITLHandler())
 
@@ -552,6 +632,7 @@ def make_llm(
     )
     return RetryingLiteLlm(
         model=model, deadline_s=deadline_s, timeout=REQUEST_TIMEOUT,
+        num_retries=0,
         **kwargs
     )
 
@@ -568,5 +649,6 @@ def make_coder_llm(
         model=CODER_MODEL,
         deadline_s=deadline_s,
         timeout=REQUEST_TIMEOUT,
+        num_retries=0,
         **kwargs
     )

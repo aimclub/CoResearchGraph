@@ -38,3 +38,24 @@ def test_touch_and_rename_update_session_metadata():
     assert renamed["title"] == "New title"
     assert touched["status"] == "processing"
     assert registry.get_user(user["id"])["last_session_id"] == session["id"]
+
+
+
+def test_hide_old_sessions_keeps_the_given_and_running_ones():
+    registry = LocalSessionRegistry(persist=False)
+    user = registry.create_user("Gleb")
+    other = registry.create_user("Alex")
+    old = registry.create_session(user["id"], "Old run")
+    running = registry.create_session(user["id"], "Running")
+    registry.touch_session(user["id"], running["id"], status="processing")
+    fresh = registry.create_session(user["id"], "Fresh")
+    foreign = registry.create_session(other["id"], "Not mine")
+
+    assert registry.hide_old_sessions(user["id"], keep=[fresh["id"]]) == 1
+    hidden = {item["id"]: item.get("hidden", False) for item in registry.list_sessions(user["id"])}
+    assert hidden == {old["id"]: True, running["id"]: False, fresh["id"]: False}
+    assert registry.get_session(user["id"], old["id"])["updated_at"] == old["updated_at"]
+    assert "hidden" not in registry.get_session(other["id"], foreign["id"])
+
+    assert registry.unhide_sessions(user["id"]) == 1
+    assert not any(item.get("hidden") for item in registry.list_sessions(user["id"]))

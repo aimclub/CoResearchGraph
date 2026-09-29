@@ -68,6 +68,43 @@ def reported_agents() -> frozenset[str]:
         return frozenset()
 
 
+def pipeline_reported_agents() -> frozenset[str]:
+    """Flagged agents that no one delegates to through an ``AgentTool``.
+
+    A subordinate's answer is reported when its AgentTool call closes. An agent
+    that runs as a pipeline step instead (a ``sequential`` module's child, e.g.
+    EconomicsAgent under ModuleB_Design) never produces such a call, so its
+    answer is reported when the agent itself ends — see
+    ``AgentOutputPlugin.after_agent_callback``.
+    """
+    try:
+        from CoScientist.assembly.schema import get_config
+        config = get_config()
+        return frozenset(config.reported_output_agents() - config.delegatable_names())
+    except Exception:  # noqa: BLE001 - an unloadable config must not break a run
+        logger.debug("Could not resolve pipeline-reported agents from the config")
+        return frozenset()
+
+
+def _output_key_text(agent: str, state: Any) -> str:
+    """The agent's answer as its ``output_key`` holds it, when one is declared.
+
+    The fallback for a pipeline step whose answer never came from the model in
+    this run (a before_agent callback that short-circuits it, for instance).
+    """
+    try:
+        from CoScientist.assembly.schema import get_config
+        key = get_config().agent(agent).output_key
+    except Exception:  # noqa: BLE001
+        return ""
+    if not key or state is None:
+        return ""
+    try:
+        return _as_text(state.get(key))
+    except Exception:  # noqa: BLE001 - state shapes vary across ADK paths
+        return ""
+
+
 def _as_text(result: Any) -> str:
     """Render an AgentTool result as the text the agent effectively answered.
 
@@ -91,6 +128,18 @@ def _as_text(result: Any) -> str:
 def _caller(tool_context: Any) -> str:
     """The agent that delegated — an AgentTool runs in ITS parent's context."""
     return getattr(tool_context, "agent_name", None) or "system"
+
+
+def _parent_of(agent: str) -> str:
+    """The composite that runs ``agent`` as a step — its caller, in chat terms."""
+    try:
+        from CoScientist.assembly.schema import get_config
+        for candidate in get_config().agents.values():
+            if agent in (candidate.children or []):
+                return candidate.name
+    except Exception:  # noqa: BLE001 - no resolvable parent, no attribution
+        pass
+    return "system"
 
 
 # A sandbox-relative file reference in agent prose (e.g. ``results/fig.png``).
@@ -205,10 +254,21 @@ async def report_output(context: Any, payload: dict) -> None:
 
 
 class AgentOutputPlugin(BasePlugin):
-    """Report the final answer of every agent flagged ``report_output``."""
+    """Report the final answer of every agent flagged ``report_output``.
+
+    Two paths, because a flagged agent reaches its caller in one of two ways:
+
+    * as an ``AgentTool`` delegation — the answer is the tool result, reported
+      when the call closes (``after_tool_callback``);
+    * as a step of a ``sequential`` module — nothing wraps it, so its last
+      model message is kept as it speaks and reported when the agent ends
+      (``after_model_callback`` / ``after_agent_callback``).
+    """
 
     def __init__(self, name: str = "agent_output") -> None:
         super().__init__(name=name)
+        # (invocation_id, agent) -> text of that agent's latest plain message.
+        self._pipeline_text: dict[tuple[str, str], str] = {}
 
     async def _dispatch(self, tool_context: Any, payload: dict) -> None:
         await report_output(tool_context, payload)
@@ -237,3 +297,59 @@ class AgentOutputPlugin(BasePlugin):
             "content": text,
         })
         return None  # never override the delegation's own result
+
+    async def after_model_callback(self, *, callback_context, llm_response) -> None:
+        """Keep the latest plain message of a pipeline step, for its ending.
+
+        A turn that calls tools is not the answer, and a streamed chunk is only
+        part of one — the answer is the last complete, tool-free message the
+        agent produced before it ended.
+        """
+        agent = getattr(callback_context, "agent_name", "") or ""
+        if not agent or agent not in pipeline_reported_agents():
+            return None
+        if llm_response is None or getattr(llm_response, "partial", False):
+            return None
+        parts = getattr(getattr(llm_response, "content", None), "parts", None) or []
+        if any(getattr(part, "function_call", None) for part in parts):
+            return None
+        text = "".join(
+            part.text for part in parts
+            if getattr(part, "text", None) and not getattr(part, "thought", False)
+        )
+        if text.strip():
+            key = (getattr(callback_context, "invocation_id", "") or "", agent)
+            self._pipeline_text[key] = text
+        return None
+
+    async def after_agent_callback(self, *, agent, callback_context) -> None:
+        """Report a pipeline step's own answer as it finishes.
+
+        Returning ``None`` matters: any Content returned here is appended as
+        the agent's response and saved through its ``output_schema``, which
+        would fail the run for a structured step. The chat gets the answer
+        through the sink instead.
+        """
+        name = getattr(agent, "name", "") or ""
+        key = (getattr(callback_context, "invocation_id", "") or "", name)
+        text = self._pipeline_text.pop(key, "")
+        if not name or name not in pipeline_reported_agents():
+            return None
+        if not text.strip():
+            # The model never spoke in this run (a before_agent callback may
+            # have produced the answer itself) — fall back to what it stored.
+            text = _output_key_text(name, getattr(callback_context, "state", None))
+        text = _as_text(text)
+        if not text.strip():
+            return None  # nothing was answered; an empty bubble helps nobody
+        try:
+            text = await asyncio.to_thread(_rewrite_workspace_paths, text, callback_context)
+        except Exception:  # noqa: BLE001 - a rewrite must not break reporting
+            logger.warning("Workspace path rewrite failed", exc_info=True)
+        await self._dispatch(callback_context, {
+            "agent": name,
+            "caller": _parent_of(name),
+            "call_id": f"{name}-{key[0]}",
+            "content": text,
+        })
+        return None

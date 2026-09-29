@@ -17,7 +17,10 @@ import sys
 import types
 from pathlib import Path
 
-from _codegen_loader import load_codegen
+try:
+    from tests.unit._codegen_loader import load_codegen
+except ImportError:
+    from _codegen_loader import load_codegen
 
 cg = load_codegen()
 

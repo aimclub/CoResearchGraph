@@ -25,17 +25,37 @@ s3_service = S3BucketService(
 mcp = FastMCP("PapersSearch")
 
 
-def _get_credentials() -> tuple[str | None, str | None]:
-    """Return (email, api_key) from request headers."""
-    headers = get_http_request().headers
-    return headers.get("x-openalex-email"), headers.get("x-openalex-api-key")
+def _get_credentials(email: str | None = None, api_key: str | None = None) -> tuple[str | None, str | None]:
+    """Return (email, api_key): tool args overlay headers, then environment."""
+    header_email, header_key = None, None
+    try:
+        headers = get_http_request().headers
+        header_email = headers.get("x-openalex-email")
+        header_key = headers.get("x-openalex-api-key")
+    except Exception:
+        pass
+    resolved_email = (
+        email
+        or header_email
+        or os.getenv("OPENALEX_EMAIL")
+        or os.getenv("SERVICES__OPENALEX_EMAIL")
+    )
+    resolved_key = (
+        api_key
+        or header_key
+        or os.getenv("OPENALEX_API_KEY")
+        or os.getenv("SERVICES__OPENALEX_API_KEY")
+    )
+    return resolved_email, resolved_key
 
 
 def _sanitize_filename(name: str) -> str:
-    return re.sub(r'[\\/*?:"<>|]', "", name)
+    if not name:
+        return "unnamed_paper"
+    return re.sub(r'[\\/*?:"<>|]', "", str(name))
 
 @mcp.tool()
-def search_entity(entity_type: str, entity_name: str) -> dict:
+def search_entity(entity_type: str, entity_name: str, email: str = None, api_key: str = None) -> dict:
     """
     Search for an entity (author, source, institution) in OpenAlex and return its ID.
     This ID can be further used to search for papers using the search_papers or download_papers_from_search tools.
@@ -43,8 +63,10 @@ def search_entity(entity_type: str, entity_name: str) -> dict:
     Args:
         entity_type: Type of entity to search for ("author", "source", "institution")
         entity_name: Name of the entity to search for (e.g., author name, journal name, institution name)
+        email: Optional OpenAlex mailto / polite-pool email (overrides headers/env).
+        api_key: Optional OpenAlex API key (overrides headers/env).
     """
-    email, api_key = _get_credentials()
+    email, api_key = _get_credentials(email, api_key)
     client = OpenAlexClient(email=email, api_key=api_key)
     result = client.search_entity(entity_type=entity_type, entity_name=entity_name)
     if result:
@@ -64,6 +86,8 @@ def search_papers(
     has_pdf: bool = True,
     limit: int = 10,
     sort: str = None,
+    email: str = None,
+    api_key: str = None,
 ) -> dict:
     """
     Search papers in OpenAlex using filters and return normalized metadata.
@@ -78,8 +102,10 @@ def search_papers(
         has_pdf: Include only works with PDF available
         limit: Max number of results
         sort: OpenAlex sort field (e.g., "cited_by_count:desc")
+        email: Optional OpenAlex mailto / polite-pool email (overrides headers/env).
+        api_key: Optional OpenAlex API key (overrides headers/env).
     """
-    email, api_key = _get_credentials()
+    email, api_key = _get_credentials(email, api_key)
     client = OpenAlexClient(email=email, api_key=api_key)
     response = client.search_works(
         keywords=keywords,
@@ -128,13 +154,17 @@ def download_papers_from_search(
     sort: str = None,
     session_id: str = "1",
     user_id: str = "1",
+    email: str = None,
+    api_key: str = None,
 ) -> dict:
     """Search papers in OpenAlex and upload found PDFs directly to S3.
+
+    Optional ``email`` / ``api_key`` overlay headers and environment credentials.
 
     Each uploaded paper carries ``bucket``, ``s3_key`` and ``presigned_url``. The
     bucket and the key are the durable reference. The URL expires in one hour.
     """
-    email, api_key = _get_credentials()
+    email, api_key = _get_credentials(email, api_key)
     client = OpenAlexClient(email=email, api_key=api_key)
     response = client.search_works(
         keywords=keywords,
@@ -160,13 +190,16 @@ def download_papers_from_search(
     uploaded = []
 
     for index, work in enumerate(works):
-        pdf_url = work.get("content_urls").get("pdf")
+        content_urls = work.get("content_urls") or {}
+        pdf_url = content_urls.get("pdf")
+        if not pdf_url:
+            continue
 
-        title = work.get("title")
-        file_name = f"{_sanitize_filename(title)}.pdf"
+        title = work.get("title") or f"paper_{work.get('id', index)}"
+        file_name = f"{_sanitize_filename(str(title))}.pdf"
         s3_key = f"{s3_prefix.rstrip('/')}/{file_name}"
 
-        response = client.request_with_retry(endpoint=pdf_url)
+        response = client.request_with_retry(endpoint=pdf_url, stream=True)
         destination_path = f"{s3_prefix.rstrip('/')}/{file_name}"
         s3_client.upload_fileobj(BytesIO(response.content), s3_service.bucket_name, destination_path)
         logging.info(f"Uploaded paper '{title}' to S3 at {destination_path}")
@@ -193,4 +226,5 @@ def download_papers_from_search(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", port=7331, path="/mcp")
+    port = int(os.getenv("PORT", "7333"))
+    mcp.run(transport="http", host="127.0.0.1", port=port, path="/mcp")

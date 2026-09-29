@@ -1,43 +1,78 @@
 // =========================================================================
 // Navigation & Activity Rail
 // =========================================================================
+    // The left rail, grouped by what the reader came to do: run the study,
+    // watch it, or open one of the side tools. Settings is not a destination
+    // among these, so it lives on the gear in the footer.
+    const NAV_GROUPS = [
+      { key: 'nav.group.work', items: ['OrchestratorAgent', 'PlannerAgent', 'AgentTopology', 'KnowledgeGraph'] },
+      { key: 'nav.group.observe', items: ['ToolsViewer', 'ToolCatalogue', 'SessionTrace', 'PaperStatistics', 'FedotTrace', 'FedotDemo'] },
+      { key: 'nav.group.tools', items: ['MCPBuilder', 'CoderSandbox'] },
+    ];
+
     const AGENTS = [
       { name: "OrchestratorAgent", icon: "hub", desc: "Master Orchestrator" },
       { name: "PlannerAgent", icon: "map", desc: "Roadmap Planner" },
-      { name: "ToolsViewer", icon: "science", desc: "Tools Viewer" },
+      // The microfluidics pipeline plans through a ТЗ rather than a roadmap.
+      { name: "TZSpecAgent", icon: "assignment", desc: "Technical Spec" },
+      { name: "ToolsViewer", icon: "handyman", desc: "Tools Viewer" },
+      { name: "ToolCatalogue", icon: "inventory", desc: "Tool Catalogue", href: "/tools" },
+      { name: "AgentTopology", icon: "account_tree", desc: "MAS Configuration", id: "agent-tree-link", href: "/agent-tree" },
       // The knowledge memory is gone; this graph is the research record.
       { name: "KnowledgeGraph", icon: "bubble_chart", desc: "Research Graph", id: "graph-link", href: "/graph" },
-      { name: "SessionTrace", icon: "schedule", desc: "Session Trace", id: "trace-link", href: "/trace" },
+      { name: "SessionTrace", icon: "timeline", desc: "Session Trace", id: "trace-link", href: "/trace" },
+      { name: "PaperStatistics", icon: "query_stats", desc: "Paper Statistics", href: "/stats" },
       { name: "MCPBuilder", icon: "build", desc: "MCP Builder", href: "/alembic/" },
+      { name: "FedotTrace", icon: "monitoring", desc: "FEDOT.MAS Trace", href: "/fedot-trace" },
+      { name: "FedotDemo", icon: "account_tree", desc: "FEDOT.MAS Demo (agent graph)", href: "/fedot-demo/" },
       { name: "CoderSandbox", icon: "terminal", desc: "CoderSandbox", id: "coder-sandbox-link", href: "http://localhost:8884/" },
-      { name: "__settings__", icon: "settings", desc: "Settings" },
+      { name: "SandboxArtifacts", icon: "inventory_2", desc: "Sandbox artifacts" },
     ];
 
-    function isAgentHighlightedByDefault(name) {
-      return true;
+    // The page this rail sits on. It is the one item marked as current; an
+    // agent that is merely running does not move the marker.
+    const NAV_CURRENT = 'OrchestratorAgent';
+
+    const NAV_ITEM = 'nav-item group flex w-full items-center gap-3 px-3 py-1.5 rounded-md text-left transition-colors';
+
+    function navItemClass(name) {
+      return name === NAV_CURRENT
+        ? `${NAV_ITEM} bg-surface-container-high text-on-surface`
+        : `${NAV_ITEM} text-on-surface-variant hover:bg-surface-container hover:text-on-surface`;
+    }
+
+    function navIconClass(name, running) {
+      if (running) return 'material-symbols-outlined text-[18px] text-primary';
+      return name === NAV_CURRENT
+        ? 'material-symbols-outlined text-[18px] text-primary'
+        : 'material-symbols-outlined text-[18px] text-outline-variant group-hover:text-on-surface-variant';
+    }
+
+    function navItem(a) {
+      const elemId = a.id || `agent-${a.name}`;
+      const current = a.name === NAV_CURRENT ? ' aria-current="page"' : '';
+      // Opens in a new tab: say so to a screen reader, the icon says it to the eye.
+      const external = a.href ? '<span class="material-symbols-outlined text-[14px] ml-auto text-outline-variant/0 group-hover:text-outline-variant" aria-hidden="true">open_in_new</span>' : '';
+      const extra = a.name === "CoderSandbox"
+        ? `<span id="sandbox-status-dot" class="w-2 h-2 rounded-full bg-outline-variant/60 ml-auto shrink-0" title="Sandbox standby"></span>`
+        : external;
+      return `
+          <button type="button" id="${elemId}" onclick="onAgentClick('${a.name}')"${current}
+            class="${navItemClass(a.name)}">
+            <span class="${navIconClass(a.name, false)}" aria-hidden="true">${a.icon}</span>
+            <span class="text-[12px] truncate min-w-0" data-i18n="agent.${a.name}.desc">${a.desc}</span>
+            ${extra}
+          </button>`;
     }
 
     function initAgentNav() {
       const nav = document.getElementById('agent-nav');
-      nav.innerHTML = AGENTS.map(a => {
-        const highlighted = isAgentHighlightedByDefault(a.name);
-        const opacityClass = highlighted ? "opacity-100" : "opacity-80";
-        const iconColorClass = highlighted ? "text-primary" : "text-outline-variant";
-        const textColorClass = highlighted ? "text-on-surface font-semibold" : "text-on-surface-variant font-medium";
-        const elemIdAttr = (a.name === "KnowledgeGraph") ? 'id="graph-link"' : ((a.name === "CoderSandbox") ? 'id="coder-sandbox-link"' : `id="agent-${a.name}"`);
-        const hrefAttr = a.href ? `href="${a.href}"` : '';
-        const extraDot = (a.name === "CoderSandbox")
-          ? `<span id="sandbox-status-dot" class="w-2 h-2 rounded-full bg-outline-variant/60 ml-auto" title="Sandbox standby"></span>`
-          : '';
-
-        return `
-          <div ${elemIdAttr} ${hrefAttr} onclick="onAgentClick('${a.name}')" class="flex items-center gap-3 py-3 px-4 transition-all duration-200 ${opacityClass} cursor-pointer hover:bg-surface-variant/20 hover:opacity-100">
-            <span class="material-symbols-outlined ${iconColorClass} text-lg">${a.icon}</span>
-            <span class="text-sm ${textColorClass}" data-i18n="agent.${a.name}.desc">${a.desc}</span>
-            ${extraDot}
-          </div>
-        `;
-      }).join('');
+      const byName = new Map(AGENTS.map(a => [a.name, a]));
+      nav.innerHTML = NAV_GROUPS.map(group => `
+        <div class="pt-3 first:pt-0">
+          <h3 class="px-3 pb-1 text-[10px] font-medium text-outline-variant" data-i18n="${group.key}"></h3>
+          <div class="space-y-px">${group.items.map(name => navItem(byName.get(name))).join('')}</div>
+        </div>`).join('');
       applyLanguage();
     }
 
@@ -46,19 +81,31 @@
         openSettings();
       } else if (name === "PlannerAgent") {
         openRoadmapEditor();
+      } else if (name === "TZSpecAgent") {
+        openTzPanel();
       } else if (name === "ToolsViewer") {
         openToolsViewer();
-      } else if (name === "KnowledgeGraph" || name === "SessionTrace") {
+      } else if (name === "ToolCatalogue") {
+        window.open('/tools', '_blank');
+      } else if (name === "KnowledgeGraph" || name === "SessionTrace" || name === "AgentTopology") {
         // Scope to the open session FIRST. The rail's own href carries no
         // session, so preferring it opened whichever session the page happened
         // to fall back to — the graph of a different run.
-        const page = name === "SessionTrace" ? '/trace' : '/graph';
+        const page = name === "SessionTrace" ? '/trace' : name === "AgentTopology" ? '/agent-tree' : '/graph';
         const scoped = (activeUser && activeSession)
           ? `${page}?user_id=${encodeURIComponent(activeUser.id)}&session_id=${encodeURIComponent(activeSession.id)}`
           : page;
         window.open(scoped, '_blank');
       } else if (name === "MCPBuilder") {
         window.open('/alembic/', '_blank');
+      } else if (name === "FedotTrace") {
+        if (activeUser && activeSession) window.open(`/fedot-trace?user_id=${encodeURIComponent(activeUser.id)}&session_id=${encodeURIComponent(activeSession.id)}`, '_blank');
+      } else if (name === "FedotDemo") {
+        if (activeUser && activeSession) window.open(`/fedot-demo/?user_id=${encodeURIComponent(activeUser.id)}&session_id=${encodeURIComponent(activeSession.id)}`, '_blank');
+      } else if (name === "PaperStatistics") {
+        window.open('/stats', '_blank');
+      } else if (name === "SandboxArtifacts") {
+        openArtifactsModal();
       } else if (name === "CoderSandbox") {
         const link = document.getElementById('coder-sandbox-link');
         const url = (link && link.href) ? link.href : (activeSandboxWatchUrl || getBaseSandboxUrl());
@@ -66,47 +113,20 @@
       }
     }
 
+    // A running agent that has an item of its own (the orchestrator, the
+    // planner) gets its icon in the accent colour; the item stays where it is
+    // and nothing pulses.
     function highlightAgent(name) {
       AGENTS.forEach(a => {
-        const targetId = a.id || ('agent-' + a.name);
-        const el = document.getElementById(targetId);
+        const el = document.getElementById(a.id || ('agent-' + a.name));
         if (!el) return;
-        if (a.name === name) {
-          el.className = "flex items-center gap-3 py-3 px-4 bg-[#272a31] rounded-lg transition-all duration-200 border-l-2 border-[#00daf3] cursor-pointer";
-          const icon = el.querySelector('.material-symbols-outlined');
-          if (icon) icon.className = "material-symbols-outlined text-primary text-lg animate-pulse";
-          const label = el.querySelector('[data-i18n]');
-          if (label) label.className = "text-sm text-on-surface font-semibold";
-        } else {
-          const highlighted = isAgentHighlightedByDefault(a.name);
-          const opacityClass = highlighted ? "opacity-100" : "opacity-80";
-          el.className = `flex items-center gap-3 py-3 px-4 transition-all duration-200 ${opacityClass} cursor-pointer hover:bg-surface-variant/20 hover:opacity-100`;
-
-          const icon = el.querySelector('.material-symbols-outlined');
-          if (icon) icon.className = `material-symbols-outlined ${highlighted ? 'text-primary' : 'text-outline-variant'} text-lg`;
-
-          const label = el.querySelector('[data-i18n]');
-          if (label) label.className = `text-sm ${highlighted ? 'text-on-surface font-semibold' : 'text-on-surface-variant font-medium'}`;
-        }
+        const icon = el.querySelector('.material-symbols-outlined');
+        if (icon) icon.className = navIconClass(a.name, a.name === name);
       });
     }
 
     function resetAgents() {
-      AGENTS.forEach(a => {
-        const targetId = a.id || ('agent-' + a.name);
-        const el = document.getElementById(targetId);
-        if (el) {
-          const highlighted = isAgentHighlightedByDefault(a.name);
-          const opacityClass = highlighted ? "opacity-100" : "opacity-80";
-          el.className = `flex items-center gap-3 py-3 px-4 transition-all duration-200 ${opacityClass} cursor-pointer hover:bg-surface-variant/20 hover:opacity-100`;
-
-          const icon = el.querySelector('.material-symbols-outlined');
-          if (icon) icon.className = `material-symbols-outlined ${highlighted ? 'text-primary' : 'text-outline-variant'} text-lg`;
-
-          const label = el.querySelector('[data-i18n]');
-          if (label) label.className = `text-sm ${highlighted ? 'text-on-surface font-semibold' : 'text-on-surface-variant font-medium'}`;
-        }
-      });
+      highlightAgent(null);
     }
 
 
@@ -131,8 +151,10 @@
       InitAgent: 'flag',
       PlannerAgent: 'map',
       PlanCriticAgent: 'rate_review',
+      TZSpecAgent: 'assignment',
       HypothesesAgent: 'lightbulb',
       ResearchAgent: 'travel_explore',
+      PaperRetriever: 'travel_explore',
       TaskExecutorAgent: 'alt_route',
       ToolPipelineAgent: 'checklist',
       ToolPreparerAgent: 'precision_manufacturing',
@@ -152,6 +174,22 @@
       ContextInitAgent: 'assignment',
       ContextInitSessionAgent: 'assignment',
       ResultAggregatorAgent: 'summarize',
+      RootOrchestrator: 'hub',
+      ModuleA_TZLiterature: 'menu_book',
+      TZAgent: 'assignment',
+      TZQueryGenAgent: 'manage_search',
+      LiteratureOrchestrator: 'hub',
+      LiteratureSynthesisAgent: 'summarize',
+      EvidenceVerifierAgent: 'fact_check',
+      ModuleB_Design: 'science',
+      MolDesignAgent: 'biotech',
+      SynthRouteAgent: 'account_tree',
+      EconomicsAgent: 'payments',
+      ModuleC_Optimization: 'precision_manufacturing',
+      OptimizationAgent: 'precision_manufacturing',
+      ModuleC_Reactor: 'science',
+      ReactorAgent: 'tune',
+      ReportAgent: 'description',
     };
 
     const KNOWN_AGENTS = new Set(Object.keys(AGENT_ICONS));
@@ -199,6 +237,10 @@
         if (!resp.ok) return;
         const data = await resp.json();
         (data.internal_agents || []).forEach(name => INTERNAL_AGENTS.add(name));
+        CallGraph.setAgentMeta({
+          names: [...(data.delegatable_names || []), ...(data.agents || []).map(a => a.name)],
+          titles: data.titles, composites: data.composites, roots: data.roots,
+        });
         // Events that arrived before the list did may have recorded internal
         // agents; the render filter drops them now.
         renderActivityRail();
@@ -238,6 +280,53 @@
     function toggleActivityRail() {
       localStorage.setItem(ACTIVITY_RAIL_KEY, activityRailEnabled() ? 'off' : 'on');
       renderActivityRail();
+    }
+
+    // The per-agent chips and tool pills fold under the summary line; whether
+    // a reader keeps them open is a per-browser habit.
+    const ACTIVITY_DETAILS_KEY = 'coscientist.activity_details';
+
+    function activityDetailsOpen() {
+      try { return localStorage.getItem(ACTIVITY_DETAILS_KEY) === 'on'; } catch (_) { return false; }
+    }
+
+    function toggleActivityDetails() {
+      try { localStorage.setItem(ACTIVITY_DETAILS_KEY, activityDetailsOpen() ? 'off' : 'on'); } catch (_) { }
+      renderActivityRail();
+    }
+
+    // "1 агент", "3 агента", "10 агентов": Russian picks the noun form by count.
+    function agentsWord(count) {
+      if (currentLang !== 'ru') return count === 1 ? t('rail.agentOne') : t('rail.agentMany');
+      const mod10 = count % 10, mod100 = count % 100;
+      if (mod10 === 1 && mod100 !== 11) return t('rail.agentOne');
+      if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return t('rail.agentFew');
+      return t('rail.agentMany');
+    }
+
+    function renderActivitySummary(agents, now) {
+      const open = activityDetailsOpen();
+      const details = document.getElementById('activity-details');
+      const toggle = document.getElementById('activity-summary-agents');
+      const chevron = document.getElementById('activity-details-chevron');
+      if (details) details.classList.toggle('hidden', !open);
+      if (toggle) toggle.setAttribute('aria-expanded', String(open));
+      if (chevron) chevron.classList.toggle('rotate-180', open);
+
+      const label = document.getElementById('activity-agents-label');
+      if (label) label.textContent = agentsWord(agents.length);
+
+      // Who is working: the agent with open calls seen last, else nobody.
+      const busy = agents.filter(entry => (now - entry.lastSeen) < ACTIVITY_IDLE_MS && activityBusy(entry) > 0);
+      const current = busy.length ? busy[busy.length - 1] : null;
+      const currentEl = document.getElementById('activity-summary-current');
+      if (currentEl) {
+        currentEl.classList.toggle('hidden', !current);
+        currentEl.innerHTML = current
+          ? `<span class="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden="true"></span>`
+            + `${escHtml(t('rail.nowWorking'))} <code translate="no">${escHtml(current.name)}</code>`
+          : '';
+      }
     }
 
     function activityAgent(name) {
@@ -346,6 +435,7 @@
     // at every nesting level (top-level agents and AgentTool sub-agents alike).
     function applyToolActivity(data, quiet = false) {
       const author = data.author || 'system';
+      CallGraph.feed(data);
 
       if (data.phase === 'agent_start' || data.phase === 'agent_end') {
         if (isInternalAgent(author)) return;
@@ -371,8 +461,8 @@
         addExperimentToolCall(author, {
           name: tool, args: data.args, callId: data.call_id,
           truncated: !!data.args_truncated, timestamp: data.timestamp,
-          parent: data.parent, is_delegation: data.is_delegation,
-          target_agent: data.target_agent,
+          parent: data.parent, parentInstance: data.parent_instance, is_delegation: data.is_delegation,
+          target_agent: data.target_agent, agentInstance: data.agent_instance,
         });
         if (!quiet) addTelemetry('TOOL_CALL :: ' + author + ' → ' + tool);
         return;
@@ -388,6 +478,11 @@
       addExperimentToolResponse(author, {
         name: tool, response: response, callId: data.call_id,
         truncated: truncated, failed: failed, timestamp: data.timestamp,
+        agentInstance: data.agent_instance,
+        // Inputs the model did not write itself: its arguments as rewritten
+        // by before-tool callbacks, and the state keys the tool read.
+        effectiveArgs: data.effective_args, effectiveArgsTruncated: !!data.effective_args_truncated,
+        stateInputs: data.state_inputs, stateInputsTruncated: !!data.state_inputs_truncated,
       });
       if (!quiet) {
         addTelemetry((failed ? 'TOOL_ERROR :: ' : 'TOOL_RESULT :: ') + author
@@ -395,11 +490,21 @@
       }
     }
 
+
+    // A dropped MCP session is a transport hiccup the client reconnects from,
+    // not a failure of the tool, so it stays out of the error counters.
+    const MCP_CONNECTION_LOST_RE = /MCP session connection lost/i;
+
     function activityResponseFailed(response) {
       if (!response) return false;
-      if (typeof response === 'string') return /^\s*(error|traceback)/i.test(response);
+      if (typeof response === 'string') {
+        return /^\s*(error|traceback)/i.test(response) && !MCP_CONNECTION_LOST_RE.test(response);
+      }
       if (typeof response !== 'object') return false;
-      if (response.error) return true;
+      if (response.error) {
+        const text = typeof response.error === 'string' ? response.error : JSON.stringify(response.error);
+        return !MCP_CONNECTION_LOST_RE.test(text);
+      }
       const status = String(response.status || response.result_status || '').toLowerCase();
       return status === 'error' || status === 'failed';
     }
@@ -417,6 +522,7 @@
     }
 
     function activityReset() {
+      CallGraph.reset();
       activityAgents = new Map();
       activitySelected = null;
       activityPinned = false;
@@ -424,6 +530,7 @@
     }
 
     function activityMarkIdle() {
+      CallGraph.markIdle();
       activityAgents.forEach(entry => activityCloseAgent(entry.name));
       renderActivityRail();
     }
@@ -497,9 +604,9 @@
 
       const enabled = activityRailEnabled();
       if (toggle) {
-        toggle.className = enabled
-          ? 'text-primary hover:brightness-125 transition-colors'
-          : 'text-outline-variant hover:text-primary transition-colors';
+        toggle.classList.toggle('text-on-surface', enabled);
+        toggle.classList.toggle('text-outline-variant', !enabled);
+        toggle.setAttribute('aria-pressed', String(enabled));
       }
       rail.classList.toggle('hidden', !enabled || activityAgents.size === 0);
       if (!enabled || activityAgents.size === 0) return;
@@ -523,6 +630,7 @@
 
       const countEl = document.getElementById('activity-agents-count');
       if (countEl) countEl.textContent = agents.length;
+      renderActivitySummary(agents, now);
 
       const agentsBox = document.getElementById('activity-agents');
       if (agentsBox) {
@@ -531,38 +639,41 @@
           const busy = fresh && activityBusy(entry) > 0;
           const selected = entry.name === activitySelected;
 
-          const tone = busy
-            ? 'border-primary/80 bg-primary/15 text-white rail-chip-busy'
-            : selected
-              ? 'ring-1 ring-primary/60 border-primary bg-surface-container-high/95 text-on-surface rail-chip-selected'
-              : fresh
-                ? 'border-outline-variant/25 bg-[#161a23] text-on-surface hover:border-primary/40 hover:bg-[#1b202c]'
-                : 'border-outline-variant/10 bg-[#12151c]/60 text-outline-variant/70 hover:text-on-surface hover:border-outline-variant/30';
+          // Calm chips: the accent marks the selected agent, a dot marks a
+          // busy one, and idle agents fade. No halos, no radar pings.
+          const tone = selected
+            ? 'border-primary/60 bg-primary/10 text-on-surface'
+            : fresh
+              ? 'border-outline-variant/20 bg-surface-container-low text-on-surface hover:border-outline-variant/40'
+              : 'border-outline-variant/10 bg-transparent text-outline-variant hover:text-on-surface hover:border-outline-variant/30';
 
           const beacon = busy
-            ? `<span class="relative flex h-2 w-2 mr-0.5 shrink-0"><span class="rail-ping-anim absolute inline-flex h-full w-full rounded-full bg-[#00daf3] opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-[#00daf3]"></span></span>`
+            ? `<span class="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden="true"></span>`
             : '';
 
-          const pulse = busy ? ' animate-pulse text-primary' : (selected ? ' text-primary' : '');
-
           const badge = entry.calls
-            ? `<span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-surface-container-highest/90 border border-outline-variant/20 text-on-surface-variant group-hover:text-primary transition-colors flex items-center gap-0.5 shrink-0"><span class="material-symbols-outlined text-[10px] text-primary/80">bolt</span>${entry.calls}</span>`
+            ? `<span class="text-[10px] tabular-nums text-outline-variant shrink-0">${entry.calls}</span>`
             : '';
 
           const delegated = entry.transferred
-            ? `<span class="material-symbols-outlined text-[12px] text-primary/80 shrink-0" title="Delegated">alt_route</span>`
+            ? `<span class="material-symbols-outlined text-[12px] text-outline-variant shrink-0" title="${escHtml(t('rail.delegatedTitle'))}" aria-hidden="true">alt_route</span>`
             : '';
 
-          const cleanName = escHtml(entry.name.replace(/Agent$/, ''));
-          let hint = `${entry.name}${entry.calls ? ` — ${entry.calls} tool call(s)` : ''}${entry.transferred ? ' — delegated' : ''}`;
-          if (busy) hint += ' (Running)';
+          const displayName = (window.StatusIndicator && StatusIndicator.agentName)
+            ? StatusIndicator.agentName(entry.name)
+            : entry.name.replace(/Agent$/, '');
+          const cleanName = escHtml(displayName);
+          let hint = displayName;
+          if (entry.calls) hint += ' · ' + t('rail.hintCalls', { count: entry.calls });
+          if (entry.transferred) hint += ' · ' + t('rail.hintDelegated');
+          if (busy) hint += ' · ' + t('rail.hintRunning');
 
           return `
             <button type="button" onclick="activitySelectAgent('${escJs(entry.name)}')" title="${escHtml(hint)}"
-              class="group relative flex items-center gap-1.5 shrink-0 px-2.5 py-1 rounded-lg border text-xs font-medium transition-all duration-150 cursor-pointer select-none shadow-sm ${tone}">
+              aria-pressed="${selected}"
+              class="flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded-md border transition-colors cursor-pointer select-none ${tone}">
               ${beacon}
-              <span class="material-symbols-outlined text-[15px] shrink-0${pulse}">${entry.icon}</span>
-              <span class="font-headline tracking-tight text-[11px] font-medium shrink-0">${cleanName}</span>
+              <span class="text-[11px] shrink-0" translate="no">${cleanName}</span>
               ${delegated}
               ${badge}
             </button>`;
@@ -572,7 +683,9 @@
       const selected = activityAgents.get(activitySelected);
       const labelEl = document.getElementById('activity-selected-agent-label');
       if (labelEl) {
-        labelEl.textContent = selected ? `[${selected.name.replace(/Agent$/, '')}]` : '';
+          labelEl.textContent = selected
+            ? `[${(window.StatusIndicator && StatusIndicator.agentName) ? StatusIndicator.agentName(selected.name) : selected.name}]`
+            : '';
       }
 
       const tools = selected ? [...selected.tools.values()] : [];
@@ -580,42 +693,40 @@
       if (toolsBox) {
         if (!tools.length) {
           const noToolsText = (typeof t === 'function' ? t('rail.standby') : null) || 'Standby — awaiting tool invocation';
-          toolsBox.innerHTML = `<div class="flex items-center gap-2 py-0.5 px-2 text-[10px] font-mono text-outline-variant/50 italic shrink-0"><span class="w-1.5 h-1.5 rounded-full bg-outline-variant/30"></span><span>${selected ? escHtml(selected.name) + ' — ' + noToolsText : noToolsText}</span></div>`;
+          toolsBox.innerHTML = `<span class="py-0.5 text-[10px] text-outline-variant shrink-0">${escHtml(noToolsText)}</span>`;
         } else {
           const selectedFresh = (now - selected.lastSeen) < ACTIVITY_IDLE_MS;
           toolsBox.innerHTML = tools.map(tool => {
             const running = selectedFresh && tool.calls > tool.done;
+            // Finished calls are the normal case and stay neutral; colour is
+            // for the two that need a look: running and failed.
             const tone = tool.errors
-              ? 'border-error/50 bg-error/15 text-[#ffb4ab] hover:border-error/70'
+              ? 'border-error/40 bg-error/10 text-error hover:border-error/60'
               : running
-                ? 'border-primary/60 bg-primary/15 text-primary shadow-[0_0_12px_rgba(0,218,243,0.25)]'
-                : 'border-secondary/35 bg-secondary/10 text-[#40e56c] hover:border-secondary/60 hover:bg-secondary/15';
+                ? 'border-primary/40 bg-primary/10 text-on-surface'
+                : 'border-outline-variant/20 bg-surface-container-low text-on-surface-variant hover:border-outline-variant/40';
 
-            const iconClass = running
-              ? 'text-primary animate-spin'
-              : (tool.errors ? 'text-error' : 'text-secondary');
-            const iconName = running
-              ? 'sync'
-              : (tool.errors ? 'error' : (tool.calls > 0 ? 'check_circle' : tool.icon));
+            const iconClass = running ? 'text-primary' : (tool.errors ? 'text-error' : 'text-outline-variant');
+            const iconName = running ? 'progress_activity' : (tool.errors ? 'error' : 'check');
 
             const count = tool.calls > 1
-              ? `<span class="text-[9px] font-mono px-1 rounded bg-surface-container-highest/70 border border-outline-variant/15 text-on-surface-variant font-bold">×${tool.calls}</span>`
+              ? `<span class="text-[10px] tabular-nums text-outline-variant">×${tool.calls}</span>`
               : '';
             const errorBadge = tool.errors
-              ? `<span class="text-[8px] font-mono font-bold px-1 rounded bg-error/25 text-error">!${tool.errors}</span>`
+              ? `<span class="text-[10px] tabular-nums">${escHtml(t('rail.toolErrors', { count: tool.errors }))}</span>`
               : '';
 
-            let hint = `${tool.name} — ${tool.done}/${tool.calls} finished`;
-            if (tool.errors) hint += `, ${tool.errors} error(s)`;
+            let hint = `${tool.name} · ${t('rail.toolFinished', { done: tool.done, calls: tool.calls })}`;
+            if (tool.errors) hint += ' · ' + t('rail.toolErrors', { count: tool.errors });
             if (tool.lastArgs && Object.keys(tool.lastArgs).length) {
               hint += `\n${formatToolArgsSafe(tool.lastArgs, 200)}`;
             }
 
             return `
               <button type="button" onclick="openToolsViewer()" title="${escHtml(hint)}"
-                class="group relative flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded-md border text-[11px] font-mono transition-all duration-150 cursor-pointer shadow-sm ${tone}">
-                <span class="material-symbols-outlined text-[13px] shrink-0 ${iconClass}">${iconName}</span>
-                <span class="tracking-tight shrink-0">${escHtml(tool.name)}</span>
+                class="flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded-md border font-mono text-[11px] transition-colors cursor-pointer ${tone}">
+                <span class="material-symbols-outlined text-[13px] shrink-0 ${iconClass}" aria-hidden="true">${iconName}</span>
+                <span class="shrink-0" translate="no">${escHtml(tool.name)}</span>
                 ${count}
                 ${errorBadge}
               </button>`;
@@ -652,3 +763,182 @@
       applySideNavState();
     }
 
+    const NAV_DEFAULT = 256, NAV_MIN = 200;
+
+    function setSideNavWidth(px, save) {
+      const max = Math.max(NAV_MIN, Math.round(window.innerWidth * 0.45));
+      const width = Math.min(max, Math.max(NAV_MIN, Math.round(px)));
+      document.documentElement.style.setProperty('--nav-w', width + 'px');
+      if (save) {
+        try { localStorage.setItem(SIDE_NAV_WIDTH_KEY, String(width)); } catch (_) { }
+      }
+      return width;
+    }
+
+    // The left rail resizes the same way the right one does, from a grip on
+    // its inner edge; the call graph in it follows through its own observer.
+    function initSideNav() {
+      let saved = null;
+      try { saved = parseInt(localStorage.getItem(SIDE_NAV_WIDTH_KEY), 10); } catch (_) { }
+      if (saved) setSideNavWidth(saved, false);
+      applySideNavState();
+
+      const grip = document.getElementById('nav-grip');
+      if (!grip) return;
+      // The rail is the FIRST column, so its width is the pointer's x.
+      const widthFrom = event => event.clientX;
+      grip.addEventListener('pointerdown', event => {
+        event.preventDefault();
+        grip.setPointerCapture(event.pointerId);
+        grip.classList.add('on');
+        document.body.classList.add('resizing');
+        const move = ev => setSideNavWidth(widthFrom(ev), false);
+        const up = ev => {
+          grip.removeEventListener('pointermove', move);
+          grip.removeEventListener('pointerup', up);
+          grip.removeEventListener('pointercancel', up);
+          grip.classList.remove('on');
+          document.body.classList.remove('resizing');
+          setSideNavWidth(widthFrom(ev), true);
+        };
+        grip.addEventListener('pointermove', move);
+        grip.addEventListener('pointerup', up);
+        grip.addEventListener('pointercancel', up);
+      });
+      grip.addEventListener('dblclick', () => setSideNavWidth(NAV_DEFAULT, true));
+      // Only a width the reader set needs re-clamping to the new window.
+      window.addEventListener('resize', () => {
+        const set = parseInt(document.documentElement.style.getPropertyValue('--nav-w'), 10);
+        if (set) setSideNavWidth(set, false);
+      });
+    }
+
+    // ── The right rail: plan, pending question, spend ──────────────────────
+    // Hidden or resized per browser, the same way the left one is hidden and
+    // the graph page's detail panel is resized.
+    const RAIL_DEFAULT = 320, RAIL_MIN = 260;
+
+    function setSideRailWidth(px, save) {
+      const max = Math.max(RAIL_MIN, Math.round(window.innerWidth * 0.6));
+      const width = Math.min(max, Math.max(RAIL_MIN, Math.round(px)));
+      document.documentElement.style.setProperty('--rail-w', width + 'px');
+      if (save) {
+        try { localStorage.setItem(SIDE_RAIL_WIDTH_KEY, String(width)); } catch (_) { }
+      }
+      return width;
+    }
+
+    // Collapse the rail WITHOUT recording a preference. The plan gate below
+    // closes the column while the planner is still drafting, and the reader's
+    // own choice has to survive that: persisting here would make a run in
+    // planner mode silently turn the rail off for good.
+    function showSideRail(collapsed) {
+      document.body.classList.toggle('rail-collapsed', collapsed);
+      const icon = document.getElementById('side-rail-toggle-icon');
+      const button = document.getElementById('side-rail-toggle');
+      if (icon) icon.textContent = collapsed ? 'right_panel_open' : 'right_panel_close';
+      if (button) button.title = t(collapsed ? 'rail.show' : 'rail.hide');
+    }
+
+    function applySideRailState() {
+      showSideRail(localStorage.getItem(SIDE_RAIL_KEY) === 'off');
+    }
+
+    function toggleSideRail() {
+      const collapsed = document.body.classList.contains('rail-collapsed');
+      localStorage.setItem(SIDE_RAIL_KEY, collapsed ? 'on' : 'off');
+      applySideRailState();
+    }
+
+    function initSideRail() {
+      let saved = null;
+      try { saved = parseInt(localStorage.getItem(SIDE_RAIL_WIDTH_KEY), 10); } catch (_) { }
+      if (saved) setSideRailWidth(saved, false);
+      applySideRailState();
+
+      const grip = document.getElementById('rail-grip');
+      if (!grip) return;
+      // The rail is the LAST column, so its width is the distance from the
+      // pointer to the right edge of the window.
+      const widthFrom = event => window.innerWidth - event.clientX;
+      grip.addEventListener('pointerdown', event => {
+        event.preventDefault();
+        grip.setPointerCapture(event.pointerId);
+        grip.classList.add('on');
+        document.body.classList.add('resizing');
+        const move = ev => setSideRailWidth(widthFrom(ev), false);
+        const up = ev => {
+          grip.removeEventListener('pointermove', move);
+          grip.removeEventListener('pointerup', up);
+          grip.removeEventListener('pointercancel', up);
+          grip.classList.remove('on');
+          document.body.classList.remove('resizing');
+          setSideRailWidth(widthFrom(ev), true);
+        };
+        grip.addEventListener('pointermove', move);
+        grip.addEventListener('pointerup', up);
+        grip.addEventListener('pointercancel', up);
+      });
+      grip.addEventListener('dblclick', () => setSideRailWidth(RAIL_DEFAULT, true));
+      window.addEventListener('resize', () => setSideRailWidth(
+        parseInt(getComputedStyle(document.documentElement).getPropertyValue('--rail-w'), 10)
+        || RAIL_DEFAULT, false));
+    }
+
+    // =========================================================================
+    // Layout — plan gate (start mode "planner")
+    // =========================================================================
+    // While the planner is still drafting, the right panel stays closed and
+    // Usage & Cost is left out. Once the plan is approved the panel opens with
+    // the plan on top and usage below it. planApproved is per session: set from
+    // the snapshot's history, then live by the approval (or by any non-planner
+    // agent starting, which covers runs with HITL off). Starts unapproved so a
+    // page load in planner mode does not flash the panel before the snapshot.
+    let planApproved = false;
+
+    function planGateActive() {
+      return appSettings.general.startMode === 'planner' && !planApproved;
+    }
+
+    function refreshPlanGate() {
+      const wasGated = document.body.classList.contains('plan-gated');
+      const gated = planGateActive();
+      document.body.classList.toggle('plan-gated', gated);
+      document.body.classList.toggle('plan-first', appSettings.general.startMode === 'planner');
+      if (gated) showSideRail(true);
+      else if (wasGated) applySideRailState();
+    }
+
+    // The session was (re)loaded: approved if its history already shows the
+    // planner's plan accepted or the work carried on past the planner.
+    function resetPlanGate(messages) {
+      const plannerRequests = new Set();
+      planApproved = (messages || []).some(message => {
+        if (message.type === 'hitl_request' && message.agent_name === 'PlannerAgent') {
+          plannerRequests.add(message.request_id);
+        } else if (message.type === 'hitl_response' || message.type === 'hitl_timeout') {
+          return plannerRequests.has(message.request_id)
+            && (message.type === 'hitl_timeout' ? !message.paused : message.action === 'approve');
+        } else if (message.type === 'agent_event' || message.type === 'agent_output') {
+          return isPostPlanAgent(message.author || message.agent);
+        }
+        return false;
+      });
+      refreshPlanGate();
+    }
+
+    function isPostPlanAgent(name) {
+      return !!name && name !== 'user' && !PLAN_AGENTS.includes(name);
+    }
+
+    // The plan was accepted in this session: open the panel for the user.
+    function releasePlanGate() {
+      if (planApproved) return;
+      planApproved = true;
+      const wasGated = document.body.classList.contains('plan-gated');
+      refreshPlanGate();
+      if (wasGated) {
+        localStorage.setItem(SIDE_RAIL_KEY, 'on');
+        applySideRailState();
+      }
+    }

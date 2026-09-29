@@ -12,10 +12,14 @@ does not construct MCP sessions or read service settings.
 """
 from __future__ import annotations
 
+from importlib import import_module
+from typing import Optional
+
 from CoScientist.assembly.registry import (
     REGISTRY,
     CallbackEntry,
     ToolDoc,
+    ToolLimit,
     ToolEntry,
 )
 
@@ -24,7 +28,6 @@ from CoScientist.assembly.registry import (
 def _websearch():
     from CoScientist.tools import websearch_toolset_instance
     return websearch_toolset_instance
-
 
 def _paper_analysis():
     from CoScientist.tools import paper_analysis_toolset_instance
@@ -59,6 +62,21 @@ def _fedot():
 def _result_formatter():
     from CoScientist.tools import result_formatter_tool
     return result_formatter_tool
+
+
+def _nir_report():
+    """The GOST NIR report toolset, or None when the MCP is not configured.
+
+    Returning None (rather than a toolset that fails on first call) lets the
+    entry be `optional`, so NirReportAgent simply has nothing to offer and the
+    run completes the way it does today.
+    """
+    from CoScientist.config import get_settings
+
+    if not get_settings().mcp.normcontrol_url:
+        return None
+    from CoScientist.tools.nir_report_tool import nir_report_tools
+    return nir_report_tools
 
 
 def _dynamic_tools():
@@ -98,9 +116,16 @@ def _task_tracker():
     from CoScientist.tools import task_tracker_instance
     return task_tracker_instance
 
+
+def _experiment_control():
+    from CoScientist.experiments.runtime import experiment_control_toolset
+    return experiment_control_toolset
+
+
 def _create_plan_tool():
     from CoScientist.tools.task_tracker import create_plan_tool
     return [create_plan_tool()]
+
 
 def _sleep_tool():
     from google.adk.tools import FunctionTool
@@ -205,7 +230,35 @@ REGISTRY.register_tool(ToolEntry(
         ToolDoc(
             name="explore_scientific_database",
             signature="explore_scientific_database(task)",
+            purpose=(
+                "RAG over the internal scientific-literature corpus "
+                "(deployed paper-analysis MCP). Returns an answer with supporting "
+                "excerpts, not a list of papers - use find_papers_in_db for that."
+            ),
+        ),
+        ToolDoc(
+            name="explore_scientific_database",
+            signature="explore_scientific_database(task)",
             purpose="RAG search over an internal scientific literature database.",
+        ),
+        ToolDoc(
+            name="find_papers_in_db",
+            signature="find_papers_in_db(task)",
+            purpose=(
+                "Finds the papers in the internal scientific literature database "
+                "that are relevant to a topic. Returns a list of papers (title, "
+                "domain, field, relevance scores), not an answer."
+            ),
+        ),
+        ToolDoc(
+            name="get_papers_database_statistics",
+            signature="get_papers_database_statistics()",
+            purpose=(
+                "Reports what the internal scientific literature database "
+                "holds: the number of unique papers and their share per "
+                "research domain and field. Reads metadata only - it cannot "
+                "answer questions about what the papers say."
+            ),
         ),
         ToolDoc(
             name="explore_my_papers",
@@ -250,16 +303,21 @@ REGISTRY.register_tool(ToolEntry(
     docs=(
         ToolDoc(
             name="search_papers",
-            signature="search_papers(query, filters)",
+            signature="search_papers(keywords)",
             purpose=(
-                "Searches scientific papers in OpenAlex using metadata and "
-                "search filters. Does NOT download full paper files."
+                "Searches scientific papers in OpenAlex using keywords. "
+                "Does NOT download full paper files. Argument name is "
+                "`keywords`, not `query`. Optional `email` / `api_key` overlay "
+                "OpenAlex credentials from env/headers."
             ),
         ),
         ToolDoc(
             name="download_papers_from_search",
-            signature="download_papers_from_search(query)",
-            purpose="Searches and downloads papers for downstream analysis.",
+            signature="download_papers_from_search(keywords)",
+            purpose=(
+                "Searches and downloads papers for downstream analysis. "
+                "Optional `email` / `api_key` overlay OpenAlex credentials."
+            ),
         ),
     ),
 ))
@@ -333,6 +391,49 @@ _GRAPH_DOCS = (
 )
 
 REGISTRY.register_tool(ToolEntry(
+    key="experiment_control",
+    factory=_experiment_control,
+    runtime_resolved=True,
+    docs=(
+        ToolDoc(
+            name="get_experiment_plan",
+            signature="get_experiment_plan()",
+            purpose="Read the approved experiment plan and task/attempt runtime.",
+        ),
+        ToolDoc(
+            name="start_task",
+            signature="start_task(task_id)",
+            purpose="Create one fresh attempt and immutable scoped route envelope.",
+        ),
+        ToolDoc(
+            name="record_result",
+            signature="record_result(task_id, attempt_id, result)",
+            purpose="Validate and persist the attempt's only terminal TaskResult.",
+        ),
+        ToolDoc(
+            name="retry_task",
+            signature="retry_task(task_id)",
+            purpose="Authorize a retryable failure to use a new attempt.",
+        ),
+        ToolDoc(
+            name="fallback_task",
+            signature="fallback_task(task_id, reason)",
+            purpose="Advance to the next route in the finite acyclic fallback chain.",
+        ),
+        ToolDoc(
+            name="skip_task",
+            signature="skip_task(task_id, reason)",
+            purpose="Skip an optional task and persist a skipped TaskResult.",
+        ),
+        ToolDoc(
+            name="amend_task",
+            signature="amend_task(task_id, patch, reason)",
+            purpose="Amend an unstarted runtime task; material changes return to review.",
+        ),
+    ),
+))
+
+REGISTRY.register_tool(ToolEntry(
     key="graph",
     factory=_graph,
     optional=True,  # dropped when WEB__KNOWLEDGE_GRAPH_ENABLED is false
@@ -361,9 +462,9 @@ _RESEARCH_COMMIT_DOC = ToolDoc(
              "transaction (validated + applied all-or-nothing). You may only "
              "write types/edges/status changes your role allows."),
     usage=(
-        'create a node: {"type": "Evidence", "attrs": {...}, "status"?: "...", "ref"?: "e1"}',
+        'create a node: {"type": "Evidence", "attrs": {...}, "status"?: "...", "ref"?: "e_new"}',
         'enrich an existing node: {"id": "EB1", "attrs": {...}} (no "type")',
-        'edge: {"type": "supports", "from": "E4", "to": "H2"} — use "#e1" to point at a node created in this call',
+        'edge: {"type": "supports", "from": "E4", "to": "H2"} — use "#e_new" to point at a node created in this call',
         'status change: {"id": "H2", "status": "under_verification", "reason"?: "..."}',
         "on ok=false, read errors, fix the payload, and call it again (nothing was saved).",
     ),
@@ -536,6 +637,44 @@ REGISTRY.register_tool(ToolEntry(
                 "Collect every figure and data table this run produced (from session "
                 "artifacts and the sandbox workspace) into the per-run report folder and "
                 "return ready-to-embed Markdown blocks (image embeds + tables). Call FIRST."
+            ),
+        ),
+    ),
+))
+
+REGISTRY.register_tool(ToolEntry(
+    key="nir_report",
+    factory=_nir_report,
+    optional=True,  # built only when MCP__NORMCONTROL_URL is configured
+    docs=(
+        ToolDoc(
+            name="nir_report_outline",
+            signature="nir_report_outline()",
+            purpose=(
+                "Show the planned GOST 7.32-2017 report: section ids, the evidence "
+                "recorded for each, figures awaiting captions, and gaps. Call FIRST "
+                "and write only from what it returns."
+            ),
+        ),
+        ToolDoc(
+            name="nir_report_draft",
+            signature=(
+                "nir_report_draft(research_title, report_title, abstract_text, keywords, "
+                "introduction_paragraphs, conclusion_paragraphs, section_texts, "
+                "figure_captions=None, terms=None, abbreviations=None)"
+            ),
+            purpose=(
+                "Assemble your prose into the GOST document and check it locally — "
+                "no network, so iterate freely. Returns unwritten sections, contract "
+                "problems and style warnings."
+            ),
+        ),
+        ToolDoc(
+            name="nir_report_submit",
+            signature="nir_report_submit()",
+            purpose=(
+                "Validate the draft on the normcontrol server, build the DOCX and "
+                "return a permanent download link plus the server's warnings."
             ),
         ),
     ),
@@ -723,6 +862,17 @@ _SANDBOX_TAIL_DOCS = (
             "rely on them."
         ),
     ),
+    ToolDoc(
+        name="fetch_sandbox_artifact",
+        signature="fetch_sandbox_artifact(path)",
+        purpose=(
+            "Bring a file OUT of the sandbox into durable storage and get back "
+            "a link that keeps working. Listing only proves a file exists; this "
+            "is how a plot, a checkpoint, a results table or a generated "
+            "dataset reaches the report and the reader — including files the "
+            "sandbox agent never uploaded. A directory comes back as one ZIP."
+        ),
+    ),
 )
 
 
@@ -801,10 +951,11 @@ HITL_TOOL_DOCS = (
     ),
     ToolDoc(
         name="request_selection",
-        signature="request_selection(agent_name, message, options)",
+        signature="request_selection(agent_name, message, options, default_option=None)",
         purpose=(
             "(HITL) Ask the human to choose one of several options you generated "
-            "(e.g. hypotheses or plans). Returns 'selected' and 'approved'."
+            "(e.g. hypotheses or plans). An optional default_option controls auto mode; "
+            "otherwise auto selects the first option. Returns 'selected' and 'approved'."
         ),
     ),
 )
@@ -857,8 +1008,8 @@ WORK_ORDER_TOOL_DOCS = (
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
 
-def _cb(key: str, kind: str, func=None, factory=None) -> None:
-    REGISTRY.register_callback(CallbackEntry(key=key, kind=kind, func=func, factory=factory))
+def _cb(key: str, kind: str, func=None, factory=None, limit: Optional[ToolLimit] = None) -> None:
+    REGISTRY.register_callback(CallbackEntry(key=key, kind=kind, func=func, factory=factory, limit=limit))
 
 
 def _save_uploaded_artifacts():
@@ -891,6 +1042,16 @@ def _capture_mcp_artifacts():
     return capture_mcp_artifacts
 
 
+def _mirror_plan_after_create():
+    from CoScientist.agents.callbacks import mirror_plan_after_create
+    return mirror_plan_after_create
+
+
+def _mirror_plan_before_agent():
+    from CoScientist.agents.callbacks import mirror_plan_before_agent
+    return mirror_plan_before_agent
+
+
 def _skip_retriever_context():
     from CoScientist.agents.callbacks import before_tool_reranker_model
     return before_tool_reranker_model
@@ -904,6 +1065,11 @@ def _shortlist_reranker_tools():
 def _collect_reranked_tools():
     from CoScientist.agents.callbacks import after_tool_reranker_agent
     return after_tool_reranker_agent
+
+
+def _collect_reranked_tools_from_model():
+    from CoScientist.agents.callbacks import after_tool_reranker_model
+    return after_tool_reranker_model
 
 
 def _collect_reranked_mcps():
@@ -928,6 +1094,13 @@ def _before_get_task():
 def _inject_original_query():
     from CoScientist.agents.callbacks import inject_original_query
     return inject_original_query
+
+def _inject_upstream_artifacts():
+    # Kept for default system.yaml / non-EM profiles. EM uses
+    # seed_upstream_from_resolved_inputs at start_task instead.
+    from CoScientist.tools.fedot_artifact_handoff import inject_upstream_artifacts
+    return inject_upstream_artifacts
+
 
 def _inject_graph_root():
     from CoScientist.agents.callbacks import inject_graph_root
@@ -978,10 +1151,52 @@ def _inject_research_context(ctx):
     return make_inject_research_context(is_root=is_root)
 
 
-def _web_search_limiter():
+def _global_max_searches() -> int:
+    from CoScientist.config import get_settings
+    return get_settings().web.max_searches
+
+
+# The search budget of RESEARCH_AGENT_SEARCHES (Settings → Tools), unless the
+# agent's row in Settings → Agents sets its own.
+SEARCH_LIMIT = ToolLimit(kind="searches", default=_global_max_searches,
+                         setting="researchAgent.maxSearches", minimum=0)
+
+
+def _agent_max_searches(ctx) -> int:
+    from CoScientist.assembly.schema import agent_limit
+    return agent_limit(ctx.config.name, _global_max_searches())
+
+
+def _web_search_limiter(ctx):
+    from CoScientist.agents.callbacks.tool_callbacks import SearchLimiter
+    return SearchLimiter(max_searches=_agent_max_searches(ctx)).limit_searches
+
+
+def _count_research_searches():
     from CoScientist.agents.callbacks.tool_callbacks import SearchLimiter
     from CoScientist.config import get_settings
-    return SearchLimiter(max_searches=get_settings().web.max_searches).limit_searches
+    return SearchLimiter(max_searches=get_settings().web.max_searches).record_search_result
+
+
+def _reset_research_searches():
+    from CoScientist.agents.callbacks.tool_callbacks import SearchLimiter
+    from CoScientist.config import get_settings
+    return SearchLimiter(max_searches=get_settings().web.max_searches).reset_search_budget
+
+
+def _tavily_search_limiter(ctx):
+    from CoScientist.agents.callbacks.tool_callbacks import TavilySearchLimiter
+    return TavilySearchLimiter(max_searches=_agent_max_searches(ctx)).limit_searches
+
+
+def _paper_search_guard():
+    from CoScientist.agents.callbacks.tool_callbacks import PaperSearchGuard
+    return PaperSearchGuard().guard_paper_search
+
+
+def _forbid_explore_my_papers():
+    from CoScientist.agents.callbacks.tool_callbacks import ForbidExploreMyPapersGuard
+    return ForbidExploreMyPapersGuard().guard_tool
 
 
 def _sanitize_json_output():
@@ -989,14 +1204,9 @@ def _sanitize_json_output():
     return sanitize_json_output
 
 
-def _save_tz_document():
-    from CoScientist.microfluidics.tz_agent import save_tz_document
-    return save_tz_document
-
-
-def _export_tz_and_queries():
-    from CoScientist.microfluidics.export import export_tz_and_queries
-    return export_tz_and_queries
+def _unwrap_model_response_args():
+    from CoScientist.agents.callbacks import unwrap_model_response_args
+    return unwrap_model_response_args
 
 
 def _guard_unknown_tools(ctx):
@@ -1060,6 +1270,26 @@ def _hitl_before_model():
     return make_hitl_before_callback(hitl_handler)
 
 
+def _ask_pipeline_scope():
+    from CoScientist.agents.common import hitl_handler
+    from CoScientist.hitl.pipeline_scope import make_ask_pipeline_scope_callback
+    return make_ask_pipeline_scope_callback(hitl_handler)
+
+
+def _ask_nir_report():
+    from CoScientist.agents.common import hitl_handler
+    from CoScientist.reporting.nir.callback import make_ask_nir_report_callback
+    return make_ask_nir_report_callback(hitl_handler)
+
+
+def _enforce_pipeline_scope_hops():
+    from CoScientist.hitl.pipeline_scope import enforce_pipeline_scope_hops
+    return enforce_pipeline_scope_hops
+
+
+def _mark_pipeline_scope_lane():
+    from CoScientist.hitl.pipeline_scope import mark_pipeline_scope_lane
+    return mark_pipeline_scope_lane
 def _hitl_before_tool():
     from CoScientist.agents.common import hitl_handler
     from CoScientist.hitl.callbacks import make_hitl_before_tool_callback
@@ -1075,10 +1305,20 @@ _cb("inject_medical_artifacts", "before_model", factory=lambda ctx: _inject_medi
 _cb("inject_uploaded_papers", "before_model", factory=lambda ctx: _inject_uploaded_papers())
 _cb("log_research_tool_calls", "after_tool", factory=lambda ctx: _log_research_tool_calls())
 _cb("capture_mcp_artifacts", "after_tool", factory=lambda ctx: _capture_mcp_artifacts())
+# The registered plan becomes the research graph's method column, deterministically.
+# Two hooks because either path can be the one that fires: `create_plan` belongs to
+# an agent that ships disabled, and an operator can register a roadmap from the web.
+_cb("mirror_plan_after_create", "after_tool", factory=lambda ctx: _mirror_plan_after_create())
+_cb("mirror_plan_before_agent", "before_agent", factory=lambda ctx: _mirror_plan_before_agent())
 _cb("skip_retriever_context", "before_model", factory=lambda ctx: _skip_retriever_context())
 # Cross-encoder pre-pass: hand the LLM reranker a short list, not everything.
 _cb("shortlist_reranker_tools", "before_agent", factory=lambda ctx: _shortlist_reranker_tools())
 _cb("collect_reranked_tools", "after_agent", factory=lambda ctx: _collect_reranked_tools())
+_cb(
+    "collect_reranked_tools_from_model",
+    "after_model",
+    factory=lambda ctx: _collect_reranked_tools_from_model(),
+)
 _cb("collect_reranked_mcps", "after_agent", factory=lambda ctx: _collect_reranked_mcps())
 # Coder↔Executor redirect: abstain to CoderAgent when no tool matched the task.
 _cb("redirect_when_no_tools", "before_agent", factory=lambda ctx: _redirect_when_no_tools())
@@ -1086,6 +1326,13 @@ _cb("redirect_when_no_tools", "before_agent", factory=lambda ctx: _redirect_when
 _cb("inject_fedot_candidates", "before_agent", factory=lambda ctx: _inject_fedot_candidates())
 # Load active tasks into agent state before the agent runs.
 _cb("before_get_task", "before_agent", factory=lambda ctx: _before_get_task())
+# Project prior MCP CSV columns onto the current tools' input_schema arg names.
+# EM profile omits this — start_task seeds via seed_upstream_from_resolved_inputs.
+_cb(
+    "inject_upstream_artifacts",
+    "before_agent",
+    factory=lambda ctx: _inject_upstream_artifacts(),
+)
 _cb("inject_original_query", "before_model", factory=lambda ctx: _inject_original_query())
 # Give the orchestrator/planner the knowledge-graph root (agents + history) up front.
 _cb("inject_graph_root", "before_agent", factory=lambda ctx: _inject_graph_root())
@@ -1105,9 +1352,32 @@ _cb("expand_link_refs", "after_model", factory=lambda ctx: _expand_link_refs())
 # Human-In-The-Loop approval callback before model/agent/tool execution.
 _cb("hitl_before_model", "before_model", factory=lambda ctx: _hitl_before_model())
 _cb("hitl_before_agent", "before_agent", factory=lambda ctx: _hitl_before_model())
+_cb("ask_pipeline_scope", "before_agent", factory=lambda ctx: _ask_pipeline_scope())
+# Asks, once per session, whether the run should also produce a GOST 7.32-2017
+# NIR report, and collects the title-page requisites nothing else knows. Inert
+# unless NIR__ENABLED, MCP__NORMCONTROL_URL and HITL are all on.
+_cb("ask_nir_report", "before_agent", factory=lambda ctx: _ask_nir_report())
+_cb(
+    "enforce_pipeline_scope_hops",
+    "after_model",
+    factory=lambda ctx: _enforce_pipeline_scope_hops(),
+)
+_cb(
+    "mark_pipeline_scope_lane",
+    "after_tool",
+    factory=lambda ctx: _mark_pipeline_scope_lane(),
+)
 _cb("hitl_before_tool", "before_tool", factory=lambda ctx: _hitl_before_tool())
 # Limit web search calls per agent turn.
-_cb("WebSearchLimiter", "before_tool", factory=lambda ctx: _web_search_limiter())
+_cb("WebSearchLimiter", "before_tool", factory=_web_search_limiter, limit=SEARCH_LIMIT)
+_cb("count_research_searches", "after_tool", factory=lambda ctx: _count_research_searches())
+_cb("reset_research_searches", "before_agent", factory=lambda ctx: _reset_research_searches())
+# A separate per-agent quota for EconomicsAgent / ReactorAgent Tavily fallback.
+_cb("TavilySearchLimiter", "before_tool", factory=_tavily_search_limiter, limit=SEARCH_LIMIT)
+# Clamp OpenAlex result sets before the request reaches the remote papers MCP.
+_cb("PaperSearchGuard", "before_tool", factory=lambda ctx: _paper_search_guard())
+# Forbid ResearchAgent from calling explore_my_papers (reserved for PaperRetriever).
+_cb("ForbidExploreMyPapers", "before_tool", factory=lambda ctx: _forbid_explore_my_papers())
 # Catch hallucinated tool calls (e.g. `find`) and correct instead of crashing.
 _cb("guard_unknown_tools", "after_model", factory=_guard_unknown_tools)
 from CoScientist.agents.callbacks.pilot_delegation import (
@@ -1149,10 +1419,99 @@ _cb("finish_after_plan_registered", "after_model",
 # Trim prose/fences/trailing text around a JSON answer BEFORE strict
 # output_schema validation (providers don't always honour response_format).
 _cb("sanitize_json_output", "after_model", factory=lambda ctx: _sanitize_json_output())
-# Render the approved ТЗ into the reference Markdown document (state + file).
-_cb("save_tz_document", "after_agent", factory=lambda ctx: _save_tz_document())
-# Save the ТЗ + literature queries as shareable Markdown & HTML for hand-off.
-_cb("export_tz_and_queries", "after_agent", factory=lambda ctx: _export_tz_and_queries())
+def _stage_tz_draft():
+    from CoScientist.context_init.tz_agent import stage_tz_draft
+    return stage_tz_draft
+
+
+# The assembled ТЗ, staged where `{tz_draft?}` can reach it.
+_cb("stage_tz_draft", "before_agent", factory=lambda ctx: _stage_tz_draft())
+# The same answer given through set_model_response (agents with tools AND an
+# output_schema): lift it out of a wrapper key the model invented, so schema
+# validation does not silently turn it into an empty object.
+_cb("unwrap_model_response_args", "before_tool",
+    factory=lambda ctx: _unwrap_model_response_args())
+
+
+def _brief_hypotheses_regime():
+    from CoScientist.agents.callbacks.hypothesis_brief import brief_hypotheses_regime
+    return brief_hypotheses_regime
+
+
+# What the run can already measure, staged where `{hypothesis_brief?}` reaches
+# the hypothesis generator: with tools in hand it aims the claim at them, with
+# none it spends the effort on judging the candidates instead.
+_cb("brief_hypotheses_regime", "before_agent",
+    factory=lambda ctx: _brief_hypotheses_regime())
+
+
+def _guard_report_without_execution():
+    from CoScientist.agents.callbacks.report_guard import (
+        guard_report_without_execution,
+    )
+    return guard_report_without_execution
+
+
+# The aggregator is a `pipeline.post` stage, so it runs whether or not anything
+# was executed — and the experiment module has a branch that stops quietly. This
+# is what stops a full scientific report being written over a plan that never
+# ran, and what stages `{report_unexecuted_note?}` when only part of it did.
+_cb("guard_report_without_execution", "before_agent",
+    factory=lambda ctx: _guard_report_without_execution())
+# ── Experiment Module callbacks ──────────────────────────────────────────────
+# Every EM callback is a plain (context-independent) function, so they are
+# registered table-driven: (registry key, hook, "package:attr"), one lazy
+# import per resolve. Keys and hooks must stay in sync with experiments.yaml.
+_EM = "CoScientist.experiments"
+_EM_CALLBACKS: tuple[tuple[str, str, str], ...] = (
+    ("prepare_experiment_user_turn", "before_agent", f"{_EM}.runtime:prepare_experiment_user_turn"),
+    # Bounded planner context plus hard AgentTool route guard.
+    ("build_experiment_context", "before_agent", f"{_EM}.context:build_experiment_context"),
+    ("check_experiment_plan_capacity", "before_agent", f"{_EM}.plan_policy:check_experiment_plan_capacity"),
+    ("commit_experiment_hypotheses", "after_agent", f"{_EM}.hypotheses:commit_experiment_hypotheses"),
+    ("persist_experiment_em_request", "before_agent", f"{_EM}.hypotheses:persist_experiment_em_request"),
+    ("bootstrap_research_question_if_empty", "before_agent", f"{_EM}.hypotheses:bootstrap_research_question_if_empty"),
+    ("seed_hypotheses_from_em_request", "before_model", f"{_EM}.hypotheses:seed_hypotheses_from_em_request"),
+    ("enforce_hypothesis_research_commit", "after_model", f"{_EM}.hypotheses:enforce_hypothesis_research_commit"),
+    ("normalize_em_hypothesis_commit", "after_model", f"{_EM}.hypotheses:normalize_em_hypothesis_commit"),
+    ("capture_hypotheses_after_research_commit", "after_tool", f"{_EM}.hypotheses:capture_hypotheses_after_research_commit"),
+    ("reset_experiment_retrieval_budget", "before_agent", f"{_EM}.context:reset_experiment_retrieval_budget"),
+    ("enforce_experiment_retrieval_budget", "after_model", f"{_EM}.context:enforce_experiment_retrieval_budget"),
+    ("snapshot_experiment_discovered_capabilities", "after_agent", f"{_EM}.context:snapshot_experiment_discovered_capabilities"),
+    ("stash_experiment_retrieved_capabilities", "before_agent", f"{_EM}.context:stash_experiment_retrieved_capabilities"),
+    # Same snapshot, after ToolRetriever finishes (reranker clears accumulated_tools).
+    ("persist_experiment_retrieved_capabilities", "after_agent", f"{_EM}.context:stash_experiment_retrieved_capabilities"),
+    ("skip_executor_without_runtime", "before_agent", f"{_EM}.context:skip_executor_without_runtime"),
+    ("skip_literature_only_experiment", "before_agent", f"{_EM}.scope:skip_literature_only_experiment"),
+    # After ToolPreparer: lit/knowledge asks with no compute signal → NO_MATCHING_TOOL
+    # before Hypotheses/Plan/Coder burn budget on unrelated inventory.
+    ("assess_experiment_inventory_feasibility", "after_agent", f"{_EM}.runtime:assess_experiment_inventory_feasibility"),
+    ("skip_when_experiment_not_feasible", "before_agent", f"{_EM}.runtime:skip_when_experiment_not_feasible"),
+    ("skip_when_experiment_stage_complete", "before_agent", f"{_EM}.runtime:skip_when_experiment_stage_complete"),
+    ("guard_experiment_route", "before_tool", f"{_EM}.runtime:guard_route_agent_tool"),
+    ("pin_alembic_build_args", "before_tool", f"{_EM}.runtime:pin_alembic_build_args"),
+    ("pin_fedot_alembic_task", "before_tool", f"{_EM}.runtime:pin_fedot_alembic_task"),
+    ("await_alembic_job_if_experiment", "after_tool", f"{_EM}.runtime:await_alembic_job_if_experiment"),
+    ("force_schema_s3_upload", "before_tool", f"{_EM}.runtime:force_schema_s3_upload"),
+    ("force_molecule_generator_s3_upload", "before_tool", f"{_EM}.runtime:force_molecule_generator_s3_upload"),
+    ("mark_experiment_route_returned", "after_tool", f"{_EM}.runtime:on_route_agent_returned"),
+    ("enforce_pending_record_result", "after_model", f"{_EM}.runtime:enforce_pending_record_result"),
+    ("enforce_continue_until_reporting", "after_model", f"{_EM}.runtime:enforce_continue_until_reporting"),
+    ("rewrite_mismatched_control_action", "after_model", f"{_EM}.runtime:rewrite_mismatched_control_action"),
+    # Collapse parallel ExperimentModuleAgent fan-out into one merged request.
+    ("coalesce_experiment_module_calls", "after_model", f"{_EM}.runtime:coalesce_experiment_module_calls"),
+    ("suppress_experiment_module_after_completed", "after_model", f"{_EM}.runtime:suppress_experiment_module_after_completed"),
+)
+
+
+def _em_lazy_factory(path: str):
+    module_name, attr = path.split(":", 1)
+    return lambda ctx: getattr(import_module(module_name), attr)
+
+
+for _key, _hook, _path in _EM_CALLBACKS:
+    _cb(_key, _hook, factory=_em_lazy_factory(_path))
+
 # Critic callbacks: their LLM prompts embed the orchestrator's current roster.
 _cb("pre_action_critique", "after_model", factory=_pre_action_critique)
 _cb("post_action_critique", "after_tool", factory=_post_action_critique)
@@ -1166,33 +1525,44 @@ def _register_classes() -> None:
         WebToolsDeployerAgent,
     )
     from CoScientist.hitl.session_agent import SessionAgent
-    from CoScientist.microfluidics.tz_agent import TZSessionAgent
     from CoScientist.context_init.agent import ContextInitSessionAgent
+    from CoScientist.context_init.tz_agent import TZSpecSessionAgent
+    from CoScientist.experiments.review import ExperimentReviewSessionAgent
 
     REGISTRY.register_agent_class("session", SessionAgent)
     REGISTRY.register_agent_class("web_tools_deployer", WebToolsDeployerAgent)
     # Runs ONE of its children: the normal executor, or the reranker fallback.
     REGISTRY.register_agent_class("executor_switch", ExecutorSwitchAgent)
-    # Microfluidics ТЗ stage: the review loop shows the RENDERED ТЗ document.
-    REGISTRY.register_agent_class("tz_session", TZSessionAgent)
     # Context-init pre-stage: the review shows a STRUCTURED FORM (research frame)
     # and seeds the confirmed frame into the research graph.
     REGISTRY.register_agent_class("context_init_session", ContextInitSessionAgent)
+    # The ТЗ stage of the general profile: issues the document from the
+    # frame the stage above confirmed. No review of its own — the frame was
+    # the review, and this is that frame written out to GOST 19.201-78.
+    REGISTRY.register_agent_class("tz_spec_session", TZSpecSessionAgent)
+    REGISTRY.register_agent_class("experiment_review", ExperimentReviewSessionAgent)
 
 
 def _register_schemas() -> None:
     from CoScientist.storage import MCPRanking, ToolRanking
-    from CoScientist.microfluidics.models import LiteratureQueries, StructuredTZ
     from CoScientist.context_init.models import ResearchFrame
+    from CoScientist.context_init.tz_agent import TZProse
+    from CoScientist.experiments.schemas import (
+        ExperimentPlan,
+        ExperimentTask,
+        PlanCritique,
+        TaskResult,
+    )
 
     REGISTRY.register_output_schema("tool_ranking", ToolRanking)
     REGISTRY.register_output_schema("mcp_ranking", MCPRanking)
-    # Microfluidics profile: structured ТЗ and the literature queries derived
-    # from it (see CoScientist/agents/microfluidics.yaml).
-    REGISTRY.register_output_schema("structured_tz", StructuredTZ)
-    REGISTRY.register_output_schema("tz_literature_queries", LiteratureQueries)
     # Framing entities of the meta-model, filled per run (context_init pre-stage).
     REGISTRY.register_output_schema("research_frame", ResearchFrame)
+    REGISTRY.register_output_schema("tz_prose", TZProse)
+    REGISTRY.register_output_schema("experiment_plan", ExperimentPlan)
+    REGISTRY.register_output_schema("experiment_task", ExperimentTask)
+    REGISTRY.register_output_schema("task_result", TaskResult)
+    REGISTRY.register_output_schema("plan_critique", PlanCritique)
 
 
 def _register_planners() -> None:

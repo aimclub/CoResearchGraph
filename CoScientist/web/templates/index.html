@@ -5,11 +5,11 @@
   <meta charset="utf-8" />
   <meta content="width=device-width, initial-scale=1.0" name="viewport" />
   <title>CoScientist — Orchestrator</title>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
-    rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/fonts.css" />
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
     rel="stylesheet" />
+  <!-- Theme, accent colour and UI font: applied before the first paint. -->
+  <script src="/static/js/appearance.js"></script>
   <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
@@ -22,24 +22,43 @@
       darkMode: "class",
       theme: {
         extend: {
+          // Every colour is a CSS variable (channels in main.css) so the
+          // light theme only swaps the variables, not the markup.
           colors: {
-            "primary": "#00daf3", "surface-dim": "#101319",
-            "surface-container-high": "#272a31", "outline": "#cbd5e1",
-            "surface-variant": "#32353c", "secondary": "#40e56c",
-            "secondary-container": "#02c953", "tertiary": "#eac400",
-            "outline-variant": "#94a3b8", "surface-container-low": "#191c22",
-            "on-surface": "#e1e2eb", "primary-container": "#007e8c",
-            "surface-container": "#1d2026", "surface-container-lowest": "#0b0e14",
-            "on-surface-variant": "#c2c6d8", "surface-container-highest": "#32353c",
-            "error": "#ffb4ab", "on-primary": "#00363d",
-            "surface": "#101319", "on-error": "#690005",
-            "background": "#101319", "on-background": "#e1e2eb",
-            "surface-bright": "#363940", "on-primary-container": "#e9fbff",
-            "on-error-container": "#ffdad6", "error-container": "#93000a",
+            "primary": "rgb(var(--c-primary) / <alpha-value>)",
+            "surface-dim": "rgb(var(--c-surface-dim) / <alpha-value>)",
+            "surface-container-high": "rgb(var(--c-surface-container-high) / <alpha-value>)",
+            "outline": "rgb(var(--c-outline) / <alpha-value>)",
+            "surface-variant": "rgb(var(--c-surface-variant) / <alpha-value>)",
+            "secondary": "rgb(var(--c-secondary) / <alpha-value>)",
+            "secondary-container": "rgb(var(--c-secondary-container) / <alpha-value>)",
+            "tertiary": "rgb(var(--c-tertiary) / <alpha-value>)",
+            "outline-variant": "rgb(var(--c-outline-variant) / <alpha-value>)",
+            "surface-container-low": "rgb(var(--c-surface-container-low) / <alpha-value>)",
+            "on-surface": "rgb(var(--c-on-surface) / <alpha-value>)",
+            "primary-container": "rgb(var(--c-primary-container) / <alpha-value>)",
+            "surface-container": "rgb(var(--c-surface-container) / <alpha-value>)",
+            "surface-container-lowest": "rgb(var(--c-surface-container-lowest) / <alpha-value>)",
+            "on-surface-variant": "rgb(var(--c-on-surface-variant) / <alpha-value>)",
+            "surface-container-highest": "rgb(var(--c-surface-container-highest) / <alpha-value>)",
+            "error": "rgb(var(--c-error) / <alpha-value>)",
+            "on-primary": "rgb(var(--c-on-primary) / <alpha-value>)",
+            "surface": "rgb(var(--c-surface) / <alpha-value>)",
+            "on-error": "rgb(var(--c-on-error) / <alpha-value>)",
+            "background": "rgb(var(--c-background) / <alpha-value>)",
+            "on-background": "rgb(var(--c-on-background) / <alpha-value>)",
+            "surface-bright": "rgb(var(--c-surface-bright) / <alpha-value>)",
+            "on-primary-container": "rgb(var(--c-on-primary-container) / <alpha-value>)",
+            "on-error-container": "rgb(var(--c-on-error-container) / <alpha-value>)",
+            "error-container": "rgb(var(--c-error-container) / <alpha-value>)",
           },
+          // Cyan fill reads fine on white, cyan text does not: the light
+          // theme gives text-primary a deeper shade of the same hue.
+          textColor: { "primary": "rgb(var(--c-primary-text) / <alpha-value>)" },
           fontFamily: {
-            headline: ["Space Grotesk"], body: ["Inter"],
-            label: ["Space Grotesk"], mono: ["JetBrains Mono"]
+            // --font-ui: Interface → Font in the settings (appearance.js).
+            headline: ["var(--font-ui)"], body: ["var(--font-ui)"],
+            label: ["var(--font-ui)"], mono: ["UI Mono", "IBM Plex Mono", "monospace"]
           }
         },
       },
@@ -50,172 +69,245 @@
 
 <body class="bg-background text-on-surface overflow-hidden">
 
-  <!-- SideNavBar -->
+  <!-- SideNavBar: brand, the session being viewed, where to go, who is here. -->
   <aside id="side-nav"
-    class="w-64 h-full fixed left-0 top-0 border-r border-outline-variant/10 bg-[#191c22] flex flex-col h-screen py-6 font-['Space_Grotesk'] tracking-tight z-50">
-    <div class="px-6 mb-8">
-      <h1 class="text-xl font-bold tracking-widest text-[#00daf3] uppercase">CoScientist</h1>
-      <p class="text-[10px] text-outline-variant tracking-widest mt-1" id="version-label">MAS v1.0.0</p>
+    class="h-full fixed left-0 top-0 border-r border-outline-variant/10 bg-surface-container-lowest flex flex-col h-screen pt-4 pb-3 font-body z-50">
+    <div class="px-5 mb-4 flex items-center gap-2.5">
+      <span class="w-7 h-7 rounded-md bg-primary text-on-primary flex items-center justify-center text-[14px] font-semibold"
+        aria-hidden="true">C</span>
+      <h1 class="text-[16px] font-semibold text-on-surface">CoScientist</h1>
+      <span class="text-[10px] text-outline-variant tabular-nums" id="version-label">MAS v1.0.0</span>
     </div>
-    <div class="px-6 mb-4">
-      <h3 data-i18n="nav.agents" class="text-[10px] font-bold text-outline-variant uppercase tracking-widest">Agents
-      </h3>
+
+    <!-- The session: picked here, acted on through the menu beside it. -->
+    <div class="px-3 mb-3">
+      <label for="session-select" data-i18n="nav.sessionPicker" class="sr-only">Session</label>
+      <div class="flex items-center gap-1">
+        <select id="session-select" onchange="onSessionSelected(this.value)"
+          class="flex-1 min-w-0 truncate bg-surface-container-low text-on-surface border border-outline-variant/15 rounded-md text-[12px] py-1.5 pl-2.5 pr-8 focus:ring-0 focus:border-primary/50"></select>
+        <div class="relative shrink-0">
+          <button type="button" id="session-menu-btn" onclick="toggleSessionMenu()" aria-haspopup="menu"
+            aria-expanded="false" aria-controls="session-menu" data-i18n-aria="nav.sessionMenu"
+            data-i18n-title="nav.sessionMenu" aria-label="Session actions" title="Session actions"
+            class="w-8 h-8 rounded-md flex items-center justify-center text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors">
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">more_horiz</span>
+          </button>
+          <div id="session-menu" role="menu"
+            class="hidden absolute left-0 top-full mt-1 w-60 z-[60] bg-surface-container border border-outline-variant/20 rounded-lg shadow-xl py-1 text-[12px]">
+            <button type="button" role="menuitem" onclick="runSessionMenu(createNewSession)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">add</span><span data-i18n="nav.sessionNew">New session</span></button>
+            <button type="button" role="menuitem" onclick="runSessionMenu(renameCurrentSession)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">edit</span><span data-i18n="nav.sessionRename">Rename…</span></button>
+            <div class="my-1 border-t border-outline-variant/15" role="separator"></div>
+            <button type="button" role="menuitem" onclick="runSessionMenu(hideOldSessions)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">visibility_off</span><span data-i18n="nav.sessionHideOld">Hide old sessions</span></button>
+            <button type="button" role="menuitemcheckbox" id="session-show-hidden-btn" aria-checked="false" onclick="runSessionMenu(toggleShowHiddenSessions)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">check_box_outline_blank</span><span data-i18n="nav.sessionShowHidden">Show hidden sessions</span><span id="session-hidden-count" class="ml-auto text-outline-variant tabular-nums"></span></button>
+            <button type="button" role="menuitem" id="session-unhide-all-btn" onclick="runSessionMenu(unhideAllSessions)" class="session-menu-item hidden">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">visibility</span><span data-i18n="nav.sessionUnhideAll">Unhide all</span></button>
+            <div class="my-1 border-t border-outline-variant/15" role="separator"></div>
+            <button type="button" role="menuitem" onclick="runSessionMenu(saveCurrentSession)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">save</span><span data-i18n="nav.sessionSave">Save to disk</span></button>
+            <button type="button" role="menuitem" onclick="runSessionMenu(openSavedSessionsModal)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">restore</span><span data-i18n="nav.sessionRestore">Restore saved…</span></button>
+            <div class="my-1 border-t border-outline-variant/15" role="separator"></div>
+            <button type="button" role="menuitem" onclick="runSessionMenu(exportCurrentSession)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">download</span><span data-i18n="nav.sessionExport">Export (.zip)</span></button>
+            <button type="button" role="menuitem" onclick="runSessionMenu(triggerImportSession)" class="session-menu-item">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">upload</span><span data-i18n="nav.sessionImport">Import…</span></button>
+          </div>
+        </div>
+        <input type="file" id="import-session-input" accept=".cossession.zip,.zip" class="hidden"
+          onchange="handleImportFile(this)">
+      </div>
     </div>
-    <nav id="agent-nav" class="flex-1 space-y-1 px-3 overflow-y-auto no-scrollbar">
+
+    <nav id="agent-nav" class="shrink min-h-0 px-2 overflow-y-auto no-scrollbar">
       <!-- Populated by JS -->
     </nav>
-    <div class="px-4 mt-auto space-y-4">
-      <div class="space-y-2 pt-4 border-t border-outline-variant/10">
-        <div class="flex items-center justify-between">
-          <label data-i18n="nav.user"
-            class="text-[8px] text-outline-variant uppercase font-bold tracking-widest">User</label>
-          <button onclick="openIdentityModal()" title="Register user" class="text-primary hover:brightness-125"><span
-              class="material-symbols-outlined text-sm">person_add</span></button>
-        </div>
-        <select id="user-select" onchange="onUserSelected(this.value)"
-          class="w-full bg-surface-container-high border-outline-variant/20 rounded text-[10px] text-on-surface py-1.5"></select>
-        <div class="flex items-center justify-between">
-          <label data-i18n="nav.session"
-            class="text-[8px] text-outline-variant uppercase font-bold tracking-widest">Session</label>
-          <div class="flex gap-2">
-            <button onclick="renameCurrentSession()" title="Rename session"
-              class="text-outline-variant hover:text-primary"><span
-                class="material-symbols-outlined text-sm">edit</span></button>
-            <button onclick="saveCurrentSession()" title="Save session to disk"
-              class="text-outline-variant hover:text-primary"><span
-                class="material-symbols-outlined text-sm">save</span></button>
-            <button onclick="exportCurrentSession()" title="Export session (.zip)"
-              class="text-outline-variant hover:text-primary"><span
-                class="material-symbols-outlined text-sm">download</span></button>
-            <button onclick="triggerImportSession()" title="Import session"
-              class="text-outline-variant hover:text-primary"><span
-                class="material-symbols-outlined text-sm">upload</span></button>
-            <button onclick="openSavedSessionsModal()" title="Restore saved session"
-              class="text-outline-variant hover:text-primary"><span
-                class="material-symbols-outlined text-sm">restore</span></button>
-            <button onclick="createNewSession()" title="New session" class="text-primary hover:brightness-125"><span
-                class="material-symbols-outlined text-sm">add_circle</span></button>
-          </div>
-          <input type="file" id="import-session-input" accept=".cossession.zip,.zip" class="hidden"
-            onchange="handleImportFile(this)">
-        </div>
-        <select id="session-select" onchange="onSessionSelected(this.value)"
-          class="w-full bg-surface-container-high border-outline-variant/20 rounded text-[10px] text-on-surface py-1.5"></select>
-      </div>
-      <div class="flex items-center gap-3 pt-4 border-t border-outline-variant/10">
-        <div class="w-8 h-8 rounded bg-surface-container-high flex items-center justify-center">
-          <span class="material-symbols-outlined text-primary text-sm">science</span>
-        </div>
-        <div>
-          <p id="active-nickname" class="text-[10px] font-bold text-on-surface">No user selected
-          </p>
-          <p id="conn-status" class="text-[8px] text-error uppercase font-bold tracking-widest">Disconnected</p>
+
+    <!-- Live call graph: which agents the run has called, in order. -->
+    <section id="side-nav-panel" aria-labelledby="call-graph-title"
+      class="mx-2 mt-3 flex-1 min-h-[14rem] flex flex-col rounded-md bg-surface-container-high overflow-hidden">
+      <div class="relative flex items-center gap-1.5 px-3 pt-2 pb-1">
+        <span class="material-symbols-outlined text-[16px] text-outline-variant" aria-hidden="true">account_tree</span>
+        <h3 id="call-graph-title" class="text-[11px] font-medium text-on-surface-variant" data-i18n="nav.callGraph">Call graph</h3>
+        <span id="call-graph-count" class="ml-auto text-[10px] text-outline-variant tabular-nums"></span>
+        <button type="button" id="call-graph-opts" onclick="CallGraph.toggleOptions()" aria-haspopup="true" aria-expanded="false"
+          aria-controls="call-graph-opts-menu" title="Что показывать" aria-label="Что показывать"
+          class="w-6 h-6 rounded flex items-center justify-center text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors">
+          <span class="material-symbols-outlined text-[16px]" aria-hidden="true">tune</span>
+        </button>
+        <button type="button" id="call-graph-full" onclick="CallGraph.toggleFullscreen()"
+          data-i18n-title="nav.callGraphFull" data-i18n-aria="nav.callGraphFull" title="Full screen" aria-label="Full screen"
+          class="w-6 h-6 -mr-1 rounded flex items-center justify-center text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors">
+          <span id="call-graph-full-icon" class="material-symbols-outlined text-[16px]" aria-hidden="true">open_in_full</span>
+        </button>
+        <div id="call-graph-opts-menu" class="cg-opts hidden" role="group" aria-label="Что показывать на графе">
+          <label><input type="checkbox" data-opt="legend"> Легенда статусов</label>
+          <label><input type="checkbox" data-opt="stats"> Счётчики</label>
+          <label><input type="checkbox" data-opt="activity"> «В работе сейчас» <small>(на весь экран)</small></label>
         </div>
       </div>
+      <nav id="call-graph-crumbs" class="cg-crumbs hidden" aria-label="Уровень графа"></nav>
+      <div id="call-graph-stats" class="cg-stats hidden"></div>
+      <div id="call-graph-legend" class="cg-legend hidden" aria-label="Обозначения">
+        <span><i class="cg-sw cg-sw-idle"></i>Не запускался</span>
+        <span><i class="cg-sw cg-sw-done"></i>Завершён</span>
+        <span><i class="cg-sw cg-sw-wait"></i>Ожидает</span>
+        <span><i class="cg-sw cg-sw-work"></i>Работает</span>
+        <span class="cg-legend-note">×N — число запусков</span>
+      </div>
+      <div class="flex-1 min-h-0 flex">
+        <div id="call-graph-scroll" class="flex-1 min-w-0 min-h-0 overflow-hidden"
+          data-i18n-title="nav.callGraphHint" title="Drag to move · wheel to zoom · double-click to fit">
+          <p id="call-graph-empty" class="px-3 py-4 text-[11px] text-outline-variant" data-i18n="nav.callGraphEmpty">Agents appear here as they are called</p>
+          <svg id="call-graph-svg" class="hidden block w-full h-full" role="img" aria-labelledby="call-graph-title"></svg>
+        </div>
+        <aside id="call-graph-activity" class="cg-activity hidden" aria-live="polite"></aside>
+      </div>
+    </section>
+
+    <!-- Drag to resize the column, double-click to put it back. -->
+    <div id="nav-grip" data-i18n-title="rail.resize" title="Drag to resize · double-click to reset"></div>
+
+    <div class="px-3 pt-3 mt-2 border-t border-outline-variant/10 flex items-center gap-1">
+      <button type="button" onclick="openIdentityModal()" data-i18n-title="nav.switchUser" title="Switch or add a user"
+        class="flex-1 min-w-0 flex items-center gap-2.5 px-2 py-1.5 rounded-md text-left hover:bg-surface-container transition-colors">
+        <span id="active-avatar"
+          class="w-8 h-8 rounded-full bg-surface-container-highest text-on-surface flex items-center justify-center text-[13px] font-semibold shrink-0"
+          aria-hidden="true">?</span>
+        <span class="min-w-0">
+          <span id="active-nickname" class="block text-[13px] font-medium text-on-surface truncate">No user selected</span>
+          <span class="flex items-center gap-1.5 text-[10px] text-outline-variant">
+            <span id="conn-dot" class="w-1.5 h-1.5 rounded-full bg-error shrink-0" aria-hidden="true"></span>
+            <span id="conn-status">Disconnected</span>
+          </span>
+        </span>
+      </button>
+      <button type="button" onclick="openSettings()" data-i18n-aria="nav.settings" data-i18n-title="nav.settings"
+        aria-label="Settings" title="Settings"
+        class="w-9 h-9 rounded-md flex items-center justify-center text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors shrink-0">
+        <span class="material-symbols-outlined text-[20px]" aria-hidden="true">settings</span>
+      </button>
     </div>
   </aside>
 
-  <!-- TopNavBar -->
+  <!-- TopNavBar: where you are, what the run is doing, the view toggles. -->
   <header id="top-nav"
-    class="flex items-center justify-between px-8 py-4 ml-64 w-[calc(100%-16rem)] top-0 sticky z-50 bg-[#101319]/70 backdrop-blur-xl border-b border-outline-variant/15 shadow-[0_24px_48px_-12px_rgba(0,218,243,0.08)]">
-    <div class="flex items-center gap-8">
-      <button type="button" id="side-nav-toggle" onclick="toggleSideNav()" title="Show/hide sidebar"
-        class="text-outline-variant hover:text-primary transition-colors flex items-center">
-        <span id="side-nav-toggle-icon" class="material-symbols-outlined">left_panel_open</span>
-      </button>
-      <div data-i18n="nav.orchestrator" class="font-black text-[#00daf3] font-headline tracking-tighter">ORCHESTRATOR
-      </div>
-      <div
-        class="hidden md:flex items-center gap-6 font-['Space_Grotesk'] text-[10px] uppercase tracking-widest font-bold">
-        <span id="status-badge" class="text-outline-variant">Status: Idle</span>
-        <span id="event-count" class="text-outline-variant">Events: 0</span>
-      </div>
+    class="flex items-center gap-4 px-5 h-14 top-0 sticky z-50 bg-background border-b border-outline-variant/10">
+    <button type="button" id="side-nav-toggle" onclick="toggleSideNav()" data-i18n-aria="nav.toggleSidebar"
+      aria-label="Show or hide the sidebar" title="Show/hide sidebar"
+      class="w-8 h-8 -ml-1.5 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center justify-center shrink-0">
+      <span id="side-nav-toggle-icon" class="material-symbols-outlined text-[20px]" aria-hidden="true">left_panel_open</span>
+    </button>
+    <div class="flex items-center gap-2 min-w-0 text-[15px]">
+      <span data-i18n="nav.orchestrator" class="text-on-surface-variant shrink-0">Orchestrator</span>
+      <span class="hidden flex items-center gap-2 min-w-0">
+        <span class="text-outline-variant/60" aria-hidden="true">/</span>
+        <span id="session-title" class="font-medium text-on-surface truncate max-w-[40rem]"></span>
+      </span>
     </div>
-    <div class="flex items-center gap-4 text-outline-variant">
-      <button onclick="clearChat()" title="Clear current view (history is preserved)">
-        <span
-          class="material-symbols-outlined cursor-pointer hover:text-primary transition-colors">delete_sweep</span>
+    <span id="status-badge" class="status-pill bg-surface-container-high text-on-surface-variant" role="status"
+      aria-live="polite"><span class="status-pill-dot" aria-hidden="true"></span>No active run</span>
+    <span class="flex-1"></span>
+    <div class="hidden lg:flex items-center gap-4 text-[11px] text-outline-variant whitespace-nowrap tabular-nums">
+      <span id="topbar-step" class="hidden"></span>
+      <span id="topbar-elapsed" class="hidden"></span>
+      <span id="event-count"></span>
+    </div>
+    <div class="flex items-center gap-0.5 shrink-0">
+      <button type="button" id="activity-toggle" onclick="toggleActivityRail()" data-i18n-aria="rail.toggle"
+        data-i18n-title="rail.toggle" aria-label="Show/hide agent activity" title="Show/hide agent activity"
+        class="w-8 h-8 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center justify-center">
+        <span class="material-symbols-outlined text-[20px]" aria-hidden="true">groups</span>
+      </button>
+      <!-- Hidden until checkpoint restore is finished; the modal and its script stay wired. -->
+      <button type="button" id="checkpoints-btn" hidden onclick="openCheckpointsModal()" data-i18n-aria="topbar.checkpoints"
+        data-i18n-title="topbar.checkpoints" aria-label="Checkpoints" title="Checkpoints"
+        class="hidden relative w-8 h-8 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors items-center justify-center">
+        <span class="material-symbols-outlined text-[20px]" aria-hidden="true">history</span>
+        <span id="checkpoints-count"
+          class="hidden absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-primary text-on-primary text-[8px] font-bold items-center justify-center">0</span>
+      </button>
+      <button type="button" onclick="clearChat()" data-i18n-aria="topbar.clear" data-i18n-title="topbar.clear"
+        aria-label="Clear the view" title="Clear current view (history is preserved)"
+        class="w-8 h-8 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center justify-center">
+        <span class="material-symbols-outlined text-[20px]" aria-hidden="true">delete_sweep</span>
+      </button>
+      <button type="button" id="side-rail-toggle" onclick="toggleSideRail()" title="Hide the plan column"
+        class="w-8 h-8 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center justify-center">
+        <span id="side-rail-toggle-icon" class="material-symbols-outlined text-[20px]" aria-hidden="true">right_panel_close</span>
       </button>
     </div>
   </header>
 
   <!-- Main Content -->
-  <main id="main-content" class="ml-64 p-8 flex gap-8 h-[calc(100vh-72px)] overflow-hidden">
+  <main id="main-content" class="flex h-[calc(100vh-56px)] overflow-hidden">
 
     <!-- Central Chat Area -->
-    <section
-      class="flex-1 min-w-0 flex flex-col bg-surface-container-low rounded-xl relative border border-outline-variant/10 shadow-inner">
-      <div class="p-4 border-b border-outline-variant/10 flex justify-between items-center bg-surface-container-low/50">
-        <div class="flex items-center gap-3">
-          <span id="live-dot" class="w-2 h-2 bg-outline-variant/60 rounded-full"></span>
-          <h2 data-i18n="chat.missionControl"
-            class="font-headline text-xs font-bold tracking-wider text-on-surface-variant uppercase">Mission Control
-          </h2>
-        </div>
-        <div class="flex items-center gap-3">
-          <button id="activity-toggle" onclick="toggleActivityRail()" title="Show/hide agent activity"
-            class="text-outline-variant hover:text-primary transition-colors">
-            <span class="material-symbols-outlined text-base">timeline</span>
+    <section class="flex-1 min-w-0 flex flex-col relative">
+
+      <!-- Activity Rail: one summary line (how many agents, who is working,
+           what failed); the per-agent chips and tool pills fold under it. -->
+      <div id="activity-rail" class="hidden w-full min-w-0 border-b border-outline-variant/10 px-5 py-2">
+        <div class="flex items-center gap-2 min-w-0 text-[11px] text-on-surface-variant">
+          <button type="button" id="activity-summary-agents" onclick="toggleActivityDetails()" aria-expanded="false"
+            aria-controls="activity-details" class="rail-summary-chip hover:border-outline-variant/40">
+            <span class="material-symbols-outlined text-[16px] text-outline-variant" aria-hidden="true">groups</span>
+            <span id="activity-agents-count" class="tabular-nums">0</span>
+            <span id="activity-agents-label"></span>
+            <span id="activity-details-chevron" class="material-symbols-outlined text-[16px] text-outline-variant transition-transform" aria-hidden="true">expand_more</span>
           </button>
-          <div id="active-badge"
-            class="text-[10px] bg-surface-container-highest px-3 py-1 rounded text-outline-variant border border-outline-variant/20 uppercase font-bold tracking-widest">
-            Offline</div>
-        </div>
-      </div>
-
-      <!-- Activity Rail: Executive Fleet & Tool Execution HUD -->
-      <div id="activity-rail"
-        class="hidden w-full max-w-full min-w-0 border-b border-outline-variant/15 bg-gradient-to-b from-[#11141b]/95 via-[#0d1016]/95 to-[#0b0d13]/95 backdrop-blur-xl px-4 py-2.5 space-y-2 shadow-[inset_0_1px_0_0_rgba(0,218,243,0.12),0_8px_24px_-4px_rgba(0,0,0,0.5)]">
-
-        <!-- Row 1: Agent Fleet -->
-        <div class="flex items-center gap-2.5 w-full min-w-0">
-          <div class="flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-md bg-[#161a23] border border-outline-variant/15 shadow-sm">
-            <span class="material-symbols-outlined text-primary text-[14px]">hub</span>
-            <span data-i18n="rail.agents" class="text-[9px] font-bold font-mono tracking-widest uppercase text-on-surface-variant">Agents</span>
-            <span id="activity-agents-count" class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-primary/15 text-primary border border-primary/25">0</span>
-          </div>
-
-          <div class="relative flex-1 min-w-0 flex items-center group/rail">
-            <button type="button" id="rail-agents-left" onclick="scrollActivityRail('activity-agents', -240)"
-              class="hidden absolute left-0 z-10 w-6 h-6 rounded-full bg-surface-container-high/95 border border-outline-variant/25 text-on-surface shadow-lg hover:text-primary hover:border-primary/50 transition-all items-center justify-center -ml-1 cursor-pointer">
-              <span class="material-symbols-outlined text-[14px]">chevron_left</span>
-            </button>
-            <div id="activity-agents" class="flex items-center gap-2 overflow-x-auto no-scrollbar flex-1 min-w-0 py-0.5 scroll-smooth"></div>
-            <button type="button" id="rail-agents-right" onclick="scrollActivityRail('activity-agents', 240)"
-              class="hidden absolute right-0 z-10 w-6 h-6 rounded-full bg-surface-container-high/95 border border-outline-variant/25 text-on-surface shadow-lg hover:text-primary hover:border-primary/50 transition-all items-center justify-center -mr-1 cursor-pointer">
-              <span class="material-symbols-outlined text-[14px]">chevron_right</span>
-            </button>
-          </div>
+          <span id="activity-summary-current" class="rail-summary-chip hidden min-w-0"></span>
+          <span class="flex-1"></span>
+          <button type="button" onclick="openToolsViewer()" data-i18n="rail.allCalls"
+            class="text-primary hover:underline shrink-0 whitespace-nowrap">All tool calls</button>
         </div>
 
-        <!-- Row 2: Tool Calls -->
-        <div class="flex items-center gap-2.5 w-full min-w-0 pt-1.5 border-t border-outline-variant/10">
-          <div class="flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-md bg-[#161a23] border border-outline-variant/15 shadow-sm">
-            <span class="material-symbols-outlined text-outline-variant text-[14px]">handyman</span>
-            <span data-i18n="rail.tools" class="text-[9px] font-bold font-mono tracking-widest uppercase text-on-surface-variant">Tools</span>
-            <span id="activity-selected-agent-label" class="text-[8px] font-mono text-primary/80 font-medium truncate max-w-[100px]"></span>
+        <div id="activity-details" class="hidden pt-2 space-y-1.5">
+          <!-- Row 1: Agent Fleet -->
+          <div class="flex items-center gap-2.5 w-full min-w-0">
+            <span data-i18n="rail.agents" class="w-24 shrink-0 text-[10px] text-outline-variant">Agents</span>
+            <div class="relative flex-1 min-w-0 flex items-center group/rail">
+              <button type="button" id="rail-agents-left" onclick="scrollActivityRail('activity-agents', -240)" aria-label="Scroll left"
+                class="hidden absolute left-0 z-10 w-6 h-6 rounded-full bg-surface-container-high border border-outline-variant/25 text-on-surface hover:text-primary transition-colors items-center justify-center -ml-1 cursor-pointer">
+                <span class="material-symbols-outlined text-[14px]" aria-hidden="true">chevron_left</span>
+              </button>
+              <div id="activity-agents" class="flex items-center gap-1.5 overflow-x-auto no-scrollbar flex-1 min-w-0 py-0.5 scroll-smooth"></div>
+              <button type="button" id="rail-agents-right" onclick="scrollActivityRail('activity-agents', 240)" aria-label="Scroll right"
+                class="hidden absolute right-0 z-10 w-6 h-6 rounded-full bg-surface-container-high border border-outline-variant/25 text-on-surface hover:text-primary transition-colors items-center justify-center -mr-1 cursor-pointer">
+                <span class="material-symbols-outlined text-[14px]" aria-hidden="true">chevron_right</span>
+              </button>
+            </div>
           </div>
 
-          <div class="relative flex-1 min-w-0 flex items-center group/rail">
-            <button type="button" id="rail-tools-left" onclick="scrollActivityRail('activity-tools', -240)"
-              class="hidden absolute left-0 z-10 w-6 h-6 rounded-full bg-surface-container-high/95 border border-outline-variant/25 text-on-surface shadow-lg hover:text-primary hover:border-primary/50 transition-all items-center justify-center -ml-1 cursor-pointer">
-              <span class="material-symbols-outlined text-[14px]">chevron_left</span>
-            </button>
-            <div id="activity-tools" class="flex items-center gap-2 overflow-x-auto no-scrollbar flex-1 min-w-0 py-0.5 scroll-smooth"></div>
-            <button type="button" id="rail-tools-right" onclick="scrollActivityRail('activity-tools', 240)"
-              class="hidden absolute right-0 z-10 w-6 h-6 rounded-full bg-surface-container-high/95 border border-outline-variant/25 text-on-surface shadow-lg hover:text-primary hover:border-primary/50 transition-all items-center justify-center -mr-1 cursor-pointer">
-              <span class="material-symbols-outlined text-[14px]">chevron_right</span>
-            </button>
+          <!-- Row 2: Tool Calls of the selected agent -->
+          <div class="flex items-center gap-2.5 w-full min-w-0">
+            <span class="w-24 shrink-0 text-[10px] text-outline-variant truncate">
+              <span data-i18n="rail.tools">Tools</span>
+              <span id="activity-selected-agent-label" class="sr-only"></span>
+            </span>
+            <div class="relative flex-1 min-w-0 flex items-center group/rail">
+              <button type="button" id="rail-tools-left" onclick="scrollActivityRail('activity-tools', -240)" aria-label="Scroll left"
+                class="hidden absolute left-0 z-10 w-6 h-6 rounded-full bg-surface-container-high border border-outline-variant/25 text-on-surface hover:text-primary transition-colors items-center justify-center -ml-1 cursor-pointer">
+                <span class="material-symbols-outlined text-[14px]" aria-hidden="true">chevron_left</span>
+              </button>
+              <div id="activity-tools" class="flex items-center gap-1.5 overflow-x-auto no-scrollbar flex-1 min-w-0 py-0.5 scroll-smooth"></div>
+              <button type="button" id="rail-tools-right" onclick="scrollActivityRail('activity-tools', 240)" aria-label="Scroll right"
+                class="hidden absolute right-0 z-10 w-6 h-6 rounded-full bg-surface-container-high border border-outline-variant/25 text-on-surface hover:text-primary transition-colors items-center justify-center -mr-1 cursor-pointer">
+                <span class="material-symbols-outlined text-[14px]" aria-hidden="true">chevron_right</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
       <!-- Chat Feed -->
-      <div id="chat-feed"
-        class="flex-1 overflow-y-auto p-6 space-y-6 no-scrollbar bg-gradient-to-b from-transparent to-surface-container-lowest/20">
-        <div class="flex flex-col items-center justify-center h-full opacity-50">
-          <span class="material-symbols-outlined text-4xl text-primary/30 mb-3">hub</span>
-          <p data-i18n="chat.sendQuery" class="text-sm text-outline-variant font-medium">Send a query to begin
+      <div id="chat-feed" class="flex-1 overflow-y-auto px-6 py-6 space-y-5 no-scrollbar">
+        <div data-feed-empty class="flex flex-col items-center justify-center h-full">
+          <span class="material-symbols-outlined text-4xl text-outline-variant/50 mb-3" aria-hidden="true">forum</span>
+          <p data-i18n="chat.sendQuery" class="text-sm text-on-surface-variant">Send a query to begin
             orchestration</p>
         </div>
       </div>
@@ -226,21 +318,21 @@
       <div id="status-indicator" class="hidden px-6 pt-1 pb-0" role="status" aria-live="polite"></div>
 
       <!-- Chat Input -->
-      <div class="p-6 pt-4 bg-surface-container-lowest/50 backdrop-blur-md border-t border-outline-variant/5">
+      <div class="px-6 pt-3 pb-5">
         <!-- Context attached to this session (dataset archive, …) -->
         <div id="attachment-chips" class="hidden flex flex-wrap items-center gap-2 mb-2"></div>
 
         <!-- Dataset Sandbox Upload Widget (Circular Progress) -->
         <div id="dataset-upload-widget"
-          class="hidden mb-3 bg-[#13151b] border border-outline-variant/15 border-l-[3px] border-l-[#00d2d3] rounded-xl p-3.5 shadow-xl transition-all">
+          class="hidden mb-3 bg-background border border-outline-variant/15 border-l-[3px] border-l-primary rounded-xl p-3.5 shadow-xl transition-all">
           <div class="flex items-center gap-3.5">
             <!-- Circular Progress Ring (Donut Chart) -->
             <div class="relative shrink-0 w-12 h-12 flex items-center justify-center">
               <svg class="w-12 h-12 transform -rotate-90" viewBox="0 0 44 44">
                 <!-- Background Ring Track -->
-                <circle cx="22" cy="22" r="18" fill="none" stroke="#252a36" stroke-width="4"></circle>
+                <circle cx="22" cy="22" r="18" fill="none" style="stroke: rgb(var(--c-surface-container-highest))" stroke-width="4"></circle>
                 <!-- Cyan Progress Arc -->
-                <circle id="dataset-upload-arc" cx="22" cy="22" r="18" fill="none" stroke="#00d2d3" stroke-width="4"
+                <circle id="dataset-upload-arc" cx="22" cy="22" r="18" fill="none" style="stroke: rgb(var(--c-primary))" stroke-width="4"
                   stroke-linecap="round" stroke-dasharray="113.097" stroke-dashoffset="62.20"
                   class="transition-all duration-300"></circle>
               </svg>
@@ -253,7 +345,7 @@
                 <span class="text-[10px] font-bold tracking-wider uppercase text-outline-variant font-mono">DATASET
                   UPLOAD</span>
                 <button type="button" id="dataset-upload-cancel-btn" onclick="cancelDatasetUpload()"
-                  class="px-2.5 py-0.5 text-[11px] font-medium bg-[#222631] hover:bg-[#2c3140] border border-outline-variant/20 rounded-md text-on-surface-variant hover:text-on-surface transition-colors">
+                  class="px-2.5 py-0.5 text-[11px] font-medium bg-surface-container-high hover:bg-surface-container-highest border border-outline-variant/20 rounded-md text-on-surface-variant hover:text-on-surface transition-colors">
                   Cancel
                 </button>
               </div>
@@ -262,7 +354,7 @@
                   Uploading: 1.2 GB / 2.5 GB
                 </span>
                 <button type="button" id="dataset-upload-details-btn" onclick="toggleDatasetUploadDetails()"
-                  class="text-xs font-medium text-[#00d2d3] hover:underline hover:text-cyan-300 transition-colors shrink-0">
+                  class="text-xs font-medium text-primary hover:underline transition-colors shrink-0">
                   Details
                 </button>
               </div>
@@ -273,7 +365,7 @@
           <div id="dataset-upload-details"
             class="hidden mt-3 pt-2.5 border-t border-outline-variant/10 text-[11px] font-mono text-outline-variant space-y-1">
             <div class="flex justify-between"><span class="text-outline-variant/70">Filename:</span><span
-                id="dataset-upload-filename" class="text-on-surface truncate max-w-[220px]">—</span></div>
+                id="dataset-upload-filename" class="text-on-surface truncate max-w-[260px]">—</span></div>
             <div class="flex justify-between"><span class="text-outline-variant/70">Speed:</span><span
                 id="dataset-upload-speed" class="text-on-surface">—</span></div>
             <div class="flex justify-between"><span class="text-outline-variant/70">ETA:</span><span
@@ -284,46 +376,109 @@
         </div>
 
         <form id="chat-form"
-          class="flex items-end gap-4 bg-surface-container-high/40 p-2 rounded-lg border border-outline-variant/10 focus-within:border-primary/40 transition-colors">
-          <!-- "+" menu: extra context for the agents, not a chat message -->
-          <div class="relative shrink-0">
-            <button type="button" id="attach-btn" onclick="toggleAttachMenu()" title="Add context"
-              class="p-2 bg-surface-container-highest border border-outline-variant/20 text-on-surface-variant rounded-md hover:text-primary hover:border-primary/40 transition-all flex items-center">
-              <span class="material-symbols-outlined text-sm">add</span>
-            </button>
-            <div id="attach-menu"
-              class="hidden absolute bottom-full left-0 mb-2 w-64 z-30 bg-surface-container border border-outline-variant/20 rounded-lg shadow-2xl overflow-hidden py-1">
-              <button type="button" onclick="openDatasetModal()"
-                class="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[11px] font-medium text-on-surface hover:bg-surface-container-high transition-colors">
-                <span class="material-symbols-outlined text-base text-primary">folder_zip</span>
-                Dataset link (.zip)
+          class="flex flex-col gap-1.5 bg-surface-container-low px-3 pt-2.5 pb-2 rounded-xl border border-outline-variant/20 focus-within:border-primary/50 transition-colors">
+          <label for="chat-input" data-i18n="chat.inputLabel" class="sr-only">Message to the orchestrator</label>
+          <textarea id="chat-input" name="message" rows="2" wrap="soft" spellcheck="false" autocomplete="off"
+            class="bg-transparent border-none focus:ring-0 focus-visible:outline-none text-sm w-full px-1 py-1 text-on-surface no-scrollbar"
+            placeholder="Message the orchestrator…" data-i18n-placeholder="chat.placeholder"></textarea>
+          <div class="flex items-center gap-2">
+            <!-- "+" menu: extra context for the agents, not a chat message -->
+            <div class="relative shrink-0">
+              <button type="button" id="attach-btn" onclick="toggleAttachMenu()" data-i18n-aria="chat.attach"
+                data-i18n-title="chat.attach" aria-label="Add context" title="Add context"
+                class="w-8 h-8 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container-high transition-colors flex items-center justify-center">
+                <span class="material-symbols-outlined text-[20px]" aria-hidden="true">attach_file</span>
               </button>
+              <div id="attach-menu"
+                class="hidden absolute bottom-full left-0 mb-2 w-64 z-30 bg-surface-container border border-outline-variant/20 rounded-lg shadow-xl overflow-hidden py-1">
+                <button type="button" onclick="openDatasetModal()"
+                  class="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] text-on-surface hover:bg-surface-container-high transition-colors">
+                  <span class="material-symbols-outlined text-base text-outline-variant" aria-hidden="true">folder_zip</span>
+                  Dataset link (.zip)
+                </button>
+              </div>
             </div>
+            <span class="hidden md:flex items-center gap-1.5 text-[10px] text-outline-variant select-none">
+              <kbd>Enter</kbd><span data-i18n="chat.hintSend">send</span>
+              <span class="w-1"></span>
+              <kbd>Shift</kbd><kbd>Enter</kbd><span data-i18n="chat.hintNewline">new line</span>
+            </span>
+            <span class="flex-1"></span>
+            <button type="button" id="pause-run-btn" onclick="RunControl.pause()" class="hidden h-8 px-3 rounded-md border border-outline-variant/25 text-[11px]">Пауза</button>
+            <button type="button" id="resume-run-btn" onclick="RunControl.resume()" class="hidden h-8 px-3 rounded-md border border-primary/40 text-primary text-[11px]">Продолжить</button>
+            <button type="button" id="stop-btn" onclick="stopChat()" data-i18n-title="chat.stopTitle" title="Stop agents"
+              class="hidden h-8 px-3 rounded-md border border-outline-variant/25 text-on-surface-variant hover:text-error hover:border-error/40 transition-colors flex items-center gap-1.5 text-[11px]">
+              <span class="w-2.5 h-2.5 rounded-sm bg-current" aria-hidden="true"></span>
+              <span data-i18n="chat.stopShort">Stop</span>
+            </button>
+            <button type="submit" id="send-btn" data-i18n-aria="chat.send" aria-label="Send"
+              class="w-8 h-8 rounded-md bg-primary text-on-primary hover:brightness-110 disabled:bg-surface-container-high disabled:text-outline-variant disabled:cursor-not-allowed transition-colors flex items-center justify-center">
+              <span class="material-symbols-outlined text-[20px]" aria-hidden="true">arrow_upward</span>
+            </button>
           </div>
-          <textarea id="chat-input" rows="3" wrap="soft" spellcheck="false" autocomplete="off"
-            class="bg-transparent border-none focus:ring-0 text-sm flex-1 py-1.5 text-on-surface placeholder:text-outline-variant/50 font-medium no-scrollbar"
-            placeholder="Send system command…  (Enter — send, Shift+Enter — new line)"
-            data-i18n-placeholder="chat.placeholder"></textarea>
-          <button type="button" id="stop-btn" onclick="stopChat()"
-            class="hidden p-2 bg-error/20 text-error border border-error/30 rounded-md hover:bg-error/30 transition-all shadow-md"
-            title="Stop agents">
-            <span class="material-symbols-outlined text-sm">stop_circle</span>
-          </button>
-          <button type="submit" id="send-btn"
-            class="p-2 bg-primary text-on-primary rounded-md hover:brightness-110 transition-all shadow-md">
-            <span class="material-symbols-outlined text-sm">send</span>
-          </button>
         </form>
       </div>
     </section>
 
-    <!-- Right Sidebar: status panels, then the plan tracker sized to its content -->
-    <aside class="w-80 shrink-0 flex flex-col gap-4 min-h-0 overflow-y-auto no-scrollbar pb-8">
-      <!-- Top panels are capped and scroll on their own, so a long usage list
-           doesn't push the plan tracker below the fold. -->
-      <div class="shrink-0 max-h-[50vh] flex flex-col gap-4 overflow-y-auto no-scrollbar">
+    <!-- Right Sidebar. Order is by how often it is read: the plan (what the run
+         is doing) first, the pending question next, and the spend — an
+         occasional check, not a running concern — folded away at the bottom. -->
+    <!-- Drag to resize the column, double-click to put it back. -->
+    <div id="rail-grip" data-i18n-title="rail.resize" title="Drag to resize · double-click to reset"></div>
+
+    <aside id="side-rail" class="shrink-0 flex flex-col gap-5 min-h-0 overflow-y-auto no-scrollbar border-l border-outline-variant/10 px-4 py-4">
+      <!-- Document panel. There is one, deliberately: a message's "Open" button
+           puts its document here, and the next message's button replaces it.
+           Filled by doc_viewer.js; hidden until something is opened. -->
+      <section id="doc-viewer"
+        class="hidden shrink-0 flex flex-col bg-surface-container-low rounded-xl border border-outline-variant/15 overflow-hidden">
+        <header class="flex items-start gap-2 px-3.5 py-2.5 border-b border-outline-variant/15">
+          <span class="material-symbols-outlined text-[18px] text-primary shrink-0 mt-0.5">description</span>
+          <h4 id="doc-viewer-title" class="text-sm font-bold text-on-surface leading-snug min-w-0 flex-1 break-words">
+          </h4>
+          <button type="button" onclick="closeDocument()" data-i18n-title="doc.close" title="Close document"
+            class="text-outline-variant hover:text-on-surface transition-colors shrink-0">
+            <span class="material-symbols-outlined text-base">close</span>
+          </button>
+        </header>
+        <div id="doc-viewer-body" class="md-body px-3.5 py-3 overflow-y-auto max-h-[62vh]"></div>
+        <details id="doc-viewer-list" class="group border-t border-outline-variant/15">
+          <summary
+            class="flex items-center gap-2 px-3.5 py-2 cursor-pointer list-none select-none hover:bg-surface-container/60 transition-colors">
+            <span
+              class="material-symbols-outlined text-base text-outline-variant transition-transform group-open:rotate-90">chevron_right</span>
+            <span data-i18n="doc.sessionDocs"
+              class="text-xs font-bold text-on-surface-variant uppercase tracking-wider">Session documents</span>
+            <span id="doc-viewer-count" class="text-xs font-mono text-outline-variant"></span>
+          </summary>
+          <ol id="doc-viewer-items" class="px-3.5 pb-3 space-y-0.5"></ol>
+        </details>
+      </section>
+
+      <!-- Plan Tracker — task titles, their state and their sub-steps, filled
+           by plan_tracker.js. Starts hidden: it only appears once a plan exists
+           (see render() in plan_tracker.js), and sizes to its own content
+           rather than stretching to fill the column. -->
+      <section id="plan-tracker" aria-labelledby="plan-tracker-title" class="hidden shrink-0 flex flex-col">
+        <div class="flex items-center justify-between gap-2 mb-2">
+          <h2 id="plan-tracker-title" data-i18n="plan.header" class="text-[13px] font-semibold text-on-surface">Plan</h2>
+          <div class="flex items-center gap-1">
+            <span id="plan-tracker-count" class="text-[11px] text-outline-variant tabular-nums">0/0</span>
+            <button type="button" onclick="openRoadmapEditor()" data-i18n-title="plan.open" data-i18n-aria="plan.open"
+              title="Open roadmap" aria-label="Open roadmap"
+              class="w-7 h-7 rounded-md text-outline-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center justify-center">
+              <span class="material-symbols-outlined text-[18px]" aria-hidden="true">open_in_full</span>
+            </button>
+          </div>
+        </div>
+        <div class="h-1 w-full rounded-full bg-surface-container-high overflow-hidden mb-2 shrink-0">
+          <div id="plan-tracker-bar" class="h-full bg-primary transition-[width] duration-500" style="width:0%"></div>
+        </div>
+        <ol id="plan-tracker-list" class="relative max-h-[45vh] overflow-y-auto space-y-px -mr-2 pr-1"></ol>
+      </section>
+
       <!-- Telemetry — a few recent lines only; kept compact, hidden by default -->
-      <div class="hidden bg-surface-container-lowest px-4 py-3 rounded-xl border border-outline-variant/10 overflow-hidden relative">
+      <div class="hidden shrink-0 bg-surface-container-lowest px-4 py-3 rounded-xl border border-outline-variant/10 overflow-hidden relative">
         <div class="absolute top-3 right-3">
           <span id="telemetry-live"
             class="text-[8px] font-bold text-outline-variant font-mono tracking-tighter uppercase flex items-center gap-1">
@@ -338,69 +493,36 @@
         </div>
       </div>
 
-      <!-- Usage & Cost — what this session has spent, by agent -->
-      <div class="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10 overflow-hidden">
-        <div class="flex items-baseline justify-between mb-2">
-          <h4 data-i18n="usage.header" class="text-[10px] font-bold text-outline-variant uppercase tracking-widest">
-            Usage &amp; Cost</h4>
-          <span id="metrics-total" class="text-sm font-mono font-bold text-primary">$0.0000</span>
+      <!-- Usage & Cost — what this session has spent, by agent. Folded by
+           default: the two numbers worth watching (total and elapsed) stay on
+           the summary row, so folding costs nothing and the breakdown is one
+           click away. <details> carries the disclosure semantics itself, so
+           the state is keyboard- and screen-reader-correct for free; the JS
+           only remembers the choice across reloads. -->
+      <details id="usage-panel" class="group shrink-0 mt-auto pt-4 border-t border-outline-variant/10">
+        <summary
+          class="flex items-center gap-2 -mx-2 px-2 py-1.5 rounded-md cursor-pointer list-none select-none hover:bg-surface-container transition-colors">
+          <span class="material-symbols-outlined text-[18px] text-outline-variant transition-transform group-open:rotate-90"
+            aria-hidden="true">chevron_right</span>
+          <h2 data-i18n="usage.header" class="text-[13px] font-semibold text-on-surface">Usage &amp; Cost</h2>
+          <span class="flex-1"></span>
+          <span id="metrics-duration-wrap" class="flex items-center gap-1.5 text-[11px] text-outline-variant shrink-0"
+            data-i18n-title="usage.duration" title="Run duration">
+            <span id="metrics-duration-dot" class="hidden w-1.5 h-1.5 rounded-full bg-secondary"></span>
+            <span id="metrics-duration">00:00</span>
+          </span>
+          <span id="metrics-total" class="text-[14px] font-semibold text-on-surface shrink-0">$0.0000</span>
+        </summary>
+        <div class="pt-2">
+          <section id="run-control-panel" aria-live="polite" class="hidden mb-3 px-3 py-2 rounded-lg border border-outline-variant/25 bg-surface-container-low text-[12px] leading-relaxed break-words"></section>
+          <div id="metrics-summary" class="text-[11px] text-outline-variant mb-3 tabular-nums">no model calls yet</div>
+          <div id="metrics-agents" class="space-y-2.5 text-[11px]"></div>
+          <div id="metrics-note" class="hidden text-[11px] text-error mt-3 leading-relaxed"></div>
         </div>
-        <div class="flex items-center justify-between flex-wrap gap-x-2 gap-y-1 text-[9px] font-mono text-outline-variant mb-2">
-          <div id="metrics-summary">no model calls yet</div>
-          <div id="metrics-duration-wrap" class="flex items-center gap-1 font-mono text-outline-variant shrink-0" title="Execution time">
-            <span id="metrics-duration-dot" class="hidden w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span class="material-symbols-outlined text-[11px] text-outline-variant">schedule</span>
-            <span id="metrics-duration" class="font-bold">00:00</span>
-          </div>
-        </div>
-        <div id="metrics-agents" class="space-y-1 font-mono text-[9px] max-h-64 overflow-y-auto no-scrollbar"></div>
-        <div id="metrics-note" class="hidden text-[8px] font-mono text-error/70 mt-2 leading-relaxed"></div>
-      </div>
-
-      <!-- Checkpoints -->
-      <div class="bg-surface-container-lowest p-4 rounded-xl border border-outline-variant/10 overflow-hidden relative">
-        <div class="absolute top-3 right-3">
-          <button onclick="refreshCheckpoints()" title="Refresh"
-            class="text-[#424656] hover:text-primary transition-colors">
-            <span class="material-symbols-outlined text-sm">refresh</span>
-          </button>
-        </div>
-        <h4 class="text-[10px] font-bold text-outline-variant uppercase mb-3 tracking-widest">Checkpoints</h4>
-        <div id="checkpoint-list" class="space-y-2 max-h-96 overflow-y-auto no-scrollbar">
-          <div class="text-outline-variant text-[9px] font-mono">No snapshots yet</div>
-        </div>
-      </div>
-
-      <!-- HITL Pending -->
-      <div id="hitl-panel" class="hidden">
-        <!-- Filled dynamically -->
-      </div>
-      </div>
-
-      <!-- Plan Tracker — task titles and their state, filled by plan_tracker.js.
-           Starts hidden: it only appears once a plan exists (see render() in
-           plan_tracker.js), and sizes to its own content rather than
-           stretching to fill the column. -->
-      <div id="plan-tracker"
-        class="hidden shrink-0 flex flex-col bg-surface-container-lowest px-4 py-3 rounded-xl border border-outline-variant/10">
-        <div class="flex items-center justify-between gap-2 mb-2">
-          <h4 data-i18n="plan.header" class="text-[10px] font-bold text-outline-variant uppercase tracking-widest">Plan
-          </h4>
-          <div class="flex items-center gap-2">
-            <span id="plan-tracker-count" class="text-[10px] font-mono font-bold text-primary">0/0</span>
-            <button type="button" onclick="openRoadmapEditor()" data-i18n-title="plan.open" title="Open roadmap"
-              class="text-outline-variant hover:text-primary transition-colors flex items-center">
-              <span class="material-symbols-outlined text-sm">open_in_full</span>
-            </button>
-          </div>
-        </div>
-        <div class="h-1 w-full rounded-full bg-surface-container-high overflow-hidden mb-2 shrink-0">
-          <div id="plan-tracker-bar" class="h-full bg-secondary transition-all duration-500" style="width:0%"></div>
-        </div>
-        <ol id="plan-tracker-list" class="relative max-h-72 overflow-y-auto space-y-0.5 -mr-2 pr-1"></ol>
-      </div>
+      </details>
     </aside>
   </main>
+
 
   <!-- Local user picker (in-memory development mode) -->
   <div id="identity-modal"
@@ -440,6 +562,53 @@
   </div>
 
   <!-- Dataset Link Modal — attaches a .zip archive to the session context -->
+  <div id="artifacts-modal"
+    class="hidden fixed inset-0 z-[120] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div class="bg-surface-container border border-outline-variant/20 rounded-xl w-full max-w-3xl shadow-2xl p-6 mx-4">
+      <div class="flex items-start justify-between mb-4">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
+            <span class="material-symbols-outlined text-primary text-sm">inventory_2</span>
+          </div>
+          <div>
+            <h3 class="font-headline font-bold text-on-surface text-sm uppercase tracking-wider">Артефакты песочницы</h3>
+          </div>
+        </div>
+        <button onclick="closeArtifactsModal()" class="text-outline-variant hover:text-on-surface transition-colors">
+          <span class="material-symbols-outlined text-lg">close</span>
+        </button>
+      </div>
+      <div class="flex items-center gap-2 mb-2 min-w-0">
+        <span class="material-symbols-outlined text-sm text-outline-variant shrink-0">deployed_code</span>
+        <select id="artifacts-workspace" onchange="pickWorkspace(this.value)"
+          class="flex-1 min-w-0 max-w-full truncate bg-surface-container-high border-outline-variant/20 rounded text-[10px] text-on-surface py-1.5"></select>
+      </div>
+      <div id="artifacts-browse">
+        <div class="flex items-center gap-2 mb-2 min-w-0">
+          <span class="material-symbols-outlined text-sm text-outline-variant shrink-0">folder_open</span>
+          <code id="artifacts-path" class="text-[11px] text-on-surface/80 truncate">/workspace</code>
+          <button onclick="loadArtifacts(artifactsPath)"
+            class="ml-auto shrink-0 text-[11px] text-primary hover:underline">обновить</button>
+        </div>
+        <div id="artifacts-body"
+          class="border border-outline-variant/20 rounded-lg divide-y divide-outline-variant/10 max-h-[52vh] overflow-y-auto"></div>
+        <div id="artifacts-note" class="hidden text-[11px] mt-3 text-outline-variant"></div>
+      </div>
+      <div id="artifacts-view" class="hidden">
+        <div class="flex items-center gap-2 mb-2 min-w-0">
+          <button onclick="closeArtifactFile()"
+            class="shrink-0 text-[11px] text-primary hover:underline flex items-center gap-1">
+            <span class="material-symbols-outlined text-sm">arrow_back</span>к списку</button>
+          <code id="artifacts-view-name" class="text-[11px] text-on-surface/80 truncate"></code>
+          <a id="artifacts-view-save" href="#" download
+            class="ml-auto shrink-0 text-[11px] text-primary hover:underline">скачать</a>
+        </div>
+        <div id="artifacts-view-body"
+          class="border border-outline-variant/20 rounded-lg p-3 max-h-[60vh] overflow-auto"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="dataset-modal"
     class="hidden fixed inset-0 z-[120] flex items-center justify-center bg-black/70 backdrop-blur-sm">
     <div class="bg-surface-container border border-outline-variant/20 rounded-xl w-full max-w-lg shadow-2xl p-6 mx-4">
@@ -645,6 +814,82 @@
     </div>
   </div>
 
+  <!-- ТЗ Panel (microfluidics): the structured ТЗ section by section + operator form -->
+  <div id="tz-modal"
+    class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div
+      class="bg-surface-container border border-outline-variant/20 rounded-xl w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh] mx-4">
+      <div class="px-6 py-4 border-b border-outline-variant/10 flex flex-col gap-3 bg-surface-container-low/60">
+        <div class="flex justify-between items-center">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
+              <span class="material-symbols-outlined text-primary text-sm">assignment</span>
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <h3 class="font-headline font-bold text-on-surface text-sm uppercase tracking-wider">Техническое задание</h3>
+                <span id="tz-phase-badge" class="text-[9px] font-mono font-semibold px-2 py-0.5 rounded-full bg-surface-container-highest text-primary border border-primary/20">нет данных</span>
+              </div>
+              <p class="text-[9px] text-outline-variant/70 font-mono tracking-wide">Разделы ТЗ: сверху — ожидающие заполнения человеком, ниже — заполненные</p>
+            </div>
+          </div>
+          <button onclick="closeTzPanel()"
+            class="text-outline-variant hover:text-on-surface p-1 rounded-md hover:bg-surface-container-high transition-colors flex items-center">
+            <span class="material-symbols-outlined text-lg">close</span>
+          </button>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="flex-1 h-1.5 bg-surface-container-highest rounded-full overflow-hidden">
+            <div id="tz-progress-bar" class="h-full bg-gradient-to-r from-primary via-primary to-secondary transition-all duration-500 rounded-full" style="width: 0%;"></div>
+          </div>
+          <span id="tz-progress-text" class="text-[10px] font-mono text-outline-variant shrink-0 tabular-nums"></span>
+        </div>
+        <div id="tz-intro" class="hidden flex items-start gap-2 text-[11px] text-on-surface bg-error/5 border border-error/20 rounded-lg px-3 py-2"></div>
+        <div class="flex flex-wrap items-center gap-3 text-[9px] text-outline-variant">
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-error/60"></span> ожидает заполнения человеком</span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-tertiary"></span> заполнено агентом — проверьте</span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-sm border border-dashed border-outline-variant"></span> не требуется — без ограничения</span>
+          <span class="flex items-center gap-1">Пустое поле при отправке заполнит агент; <span class="material-symbols-outlined text-[12px]">block</span> справа от поля — оставить его пустым</span>
+        </div>
+      </div>
+
+      <div id="tz-modal-body" class="p-6 flex-1 overflow-y-auto flex flex-col gap-5">
+        <div id="tz-empty-state" class="flex flex-col items-center justify-center py-16 opacity-75">
+          <span class="material-symbols-outlined text-4xl text-primary/40 mb-3">assignment</span>
+          <p class="text-sm font-medium text-on-surface">ТЗ ещё не сформировано</p>
+          <p class="text-xs text-outline-variant mt-1">Разделы появятся здесь по мере того, как агент постановки ТЗ их заполняет.</p>
+        </div>
+        <div id="tz-awaiting-wrap" class="hidden flex flex-col gap-2">
+          <p class="text-[10px] font-bold text-error uppercase tracking-widest">Ожидают заполнения человеком (<span id="tz-awaiting-count">0</span>)</p>
+          <div id="tz-group-awaiting" class="flex flex-col gap-3"></div>
+        </div>
+        <div id="tz-filled-wrap" class="hidden flex flex-col gap-2">
+          <p class="text-[10px] font-bold text-secondary uppercase tracking-widest">Заполненные разделы (<span id="tz-filled-count">0</span>)</p>
+          <div id="tz-group-filled" class="flex flex-col gap-3"></div>
+        </div>
+      </div>
+
+      <div class="px-6 py-3.5 border-t border-outline-variant/10 flex justify-between items-center gap-3 bg-surface-container-low/60">
+        <span id="tz-stats" class="text-[10px] font-mono text-outline-variant/70"></span>
+        <div class="flex items-center gap-3">
+          <button onclick="closeTzPanel()"
+            class="px-4 py-2 bg-surface-container-high border border-outline-variant/20 text-on-surface hover:bg-surface-variant/40 rounded-md font-bold text-[10px] uppercase tracking-wider transition-all">
+            Закрыть
+          </button>
+          <button id="tz-leave-empty-btn" onclick="tzLeaveEmptyUnset()"
+            title="Оставить все пустые поля пустыми (без ограничения): агент не будет их заполнять"
+            class="hidden px-4 py-2 bg-surface-container-high border border-outline-variant/30 text-on-surface hover:bg-surface-variant/40 rounded-md font-bold text-[10px] uppercase tracking-wider whitespace-nowrap transition-all flex items-center gap-2">
+            <span class="material-symbols-outlined text-sm">block</span> <span id="tz-leave-empty-label">Не заполнять пустые</span>
+          </button>
+          <button id="tz-submit-btn" onclick="submitTzForm()"
+            class="hidden px-4 py-2 bg-primary text-on-primary hover:brightness-110 active:scale-95 rounded-md font-bold text-[10px] uppercase tracking-wider shadow-lg shadow-primary/20 transition-all flex items-center gap-2">
+            <span class="material-symbols-outlined text-sm">send</span> <span id="tz-submit-label">Отправить</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Experiment Viewer Modal -->
   <div id="experiment-modal"
     class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -665,6 +910,13 @@
           </div>
         </div>
         <div class="flex items-center gap-2">
+          <div class="flex items-center rounded border border-outline-variant/20 overflow-hidden" role="group"
+            title="Args / output format">
+            <button type="button" data-tv-format="yaml" onclick="setToolsViewerFormat('yaml')"
+              class="text-[9px] font-bold uppercase tracking-wider text-outline-variant hover:text-primary px-2 py-1 transition-colors">YAML</button>
+            <button type="button" data-tv-format="json" onclick="setToolsViewerFormat('json')"
+              class="text-[9px] font-bold uppercase tracking-wider text-outline-variant hover:text-primary px-2 py-1 transition-colors">JSON</button>
+          </div>
           <button id="experiment-expand-all" onclick="toggleExperimentExpandAll()"
             class="text-[9px] font-bold uppercase tracking-wider text-outline-variant hover:text-primary px-2 py-1 rounded hover:bg-primary/10 transition-colors">Expand
             all</button>
@@ -705,6 +957,33 @@
       </div>
     </div>
   </div>
+  <!-- Checkpoints Modal — rendered by static/js/modals/checkpoints.js -->
+  <div id="checkpoints-modal"
+    class="hidden fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div role="dialog" aria-modal="true" aria-labelledby="checkpoints-title"
+      class="w-full max-w-2xl max-h-[82vh] flex flex-col bg-surface-container border border-outline-variant/20 rounded-xl shadow-2xl overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-outline-variant/15">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary text-lg">history</span>
+            <h3 id="checkpoints-title" class="font-headline font-bold text-sm uppercase tracking-wider">Контрольные точки</h3>
+          </div>
+          <p class="mt-1 text-[10px] text-outline-variant">Автоматические снимки перед каждой стадией конвейера</p>
+        </div>
+        <button type="button" onclick="closeCheckpointsModal()" class="text-outline-variant hover:text-primary">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <div id="checkpoints-status" class="hidden mx-5 mt-4 rounded-md border px-3 py-2 text-[11px]"></div>
+      <div id="checkpoints-list" class="flex-1 overflow-y-auto p-5 space-y-3 min-h-[180px]">
+        <div class="text-xs text-outline-variant">Загрузка…</div>
+      </div>
+      <div class="px-5 py-3 border-t border-outline-variant/15 text-[10px] text-outline-variant leading-relaxed">
+        Откат восстанавливает состояние и графы выбранной стадии. Поздние сообщения остаются в журнале как история, но исключаются из контекста агентов.
+      </div>
+    </div>
+  </div>
+
   <!-- Settings Modal — sections and fields are rendered by static/js/modals/settings.js -->
   <div id="settings-modal"
     class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -825,17 +1104,22 @@
   <script src="/static/js/state.js"></script>
   <script src="/static/js/i18n.js"></script>
   <script src="/static/js/activity_rail.js"></script>
+  <script src="/static/js/call_graph.js"></script>
   <script src="/static/js/chat.js"></script>
+  <script src="/static/js/doc_viewer.js"></script>
   <script src="/static/js/hitl.js"></script>
   <script src="/static/js/telemetry.js"></script>
   <script src="/static/js/sessions.js"></script>
   <script src="/static/js/modals/settings.js"></script>
   <script src="/static/js/modals/dataset.js"></script>
+  <script src="/static/js/modals/artifacts.js"></script>
   <script src="/static/js/modals/roadmap.js"></script>
+  <script src="/static/js/modals/checkpoints.js"></script>
   <script src="/static/js/plan_tracker.js"></script>
-  <script src="/static/js/checkpoints.js"></script>
+  <script src="/static/js/modals/tz.js"></script>
   <script src="/static/js/modals/experiments.js"></script>
-  <script src="/static/js/ws.js"></script>
+    <script src="/static/js/run_control.js"></script>
+    <script src="/static/js/ws.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 

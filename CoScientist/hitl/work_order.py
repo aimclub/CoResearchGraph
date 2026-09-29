@@ -25,10 +25,25 @@ ReportStatus = Literal["pending", "accepted", "revise", "rejected"]
 DoneVerdict = Literal["met", "partial", "not_met"]
 Confidence = Literal["high", "medium", "low"]
 ArtifactKind = Literal["file", "dataset", "graph_node", "link", "other"]
+StepReviewStatus = Literal["pending", "accepted", "revise", "rejected"]
+
+# How much of a tool answer the step journal keeps: enough to judge the step,
+# small enough that the flat per-agent state key stays cheap to rewrite whole.
+STEP_CALL_ARGS_CHARS = 500
+STEP_CALL_RESULT_CHARS = 2000
 
 
 def order_key(agent_name: str) -> str:
     return f"work_order:{agent_name}"
+
+
+class StepReview(BaseModel):
+    """The human's verdict on one finished step (step-review mode only)."""
+    status: StepReviewStatus = "pending"
+    round: int = 1
+    notes: str = ""
+    # Earlier rounds the human sent back: what was claimed and called then.
+    history: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkStep(BaseModel):
@@ -38,9 +53,18 @@ class WorkStep(BaseModel):
     # Internal tools the agent named for this step: allowed anyway, kept out of
     # `tools` (and so out of the tier), shown only when the viewer asks for them.
     internal_tools: List[str] = Field(default_factory=list)
+    # What the agent will SEND to its tools in this step (queries, names,
+    # SMILES, parameters) — the human sees it before anything leaves.
+    inputs: str = ""
     expected_outcome: str = ""
     status: StepStatus = "pending"
     note: str = ""
+    # What the agent says the step produced (concrete values, ids).
+    result: str = ""
+    # Recorded by the system, not claimed by the agent: every tool call made
+    # while this step was in progress — {tool, args, result_excerpt, is_error}.
+    calls: List[Dict[str, Any]] = Field(default_factory=list)
+    review: Optional[StepReview] = None
 
 
 class Assumption(BaseModel):
@@ -91,6 +115,10 @@ class WorkReport(BaseModel):
 class WorkOrder(BaseModel):
     agent: str
     goal: str
+    # The outer plan's step this order carries out (TASK-n), claimed when the
+    # order is approved. Empty when the run has no plan, or when every step of
+    # this agent's is already finished.
+    plan_task_id: str = ""
     done_criteria: str = ""
     assumptions: List[Assumption] = Field(default_factory=list)
     steps: List[WorkStep] = Field(default_factory=list)
@@ -100,6 +128,8 @@ class WorkOrder(BaseModel):
     side_effects: List[SideEffect] = Field(default_factory=list)
     expected_outcome: str = ""
     fallback: str = ""
+    # Every finished step goes before the human (sent / expected / found).
+    step_review: bool = False
     tier: Tier = Tier.READ
     status: OrderStatus = "pending"
     revision: int = 1
@@ -122,6 +152,18 @@ class WorkOrder(BaseModel):
     def step(self, step_id: str) -> Optional[WorkStep]:
         return next((s for s in self.steps if s.id == step_id), None)
 
+    def step_for_call(self, tool_name: str) -> Optional[WorkStep]:
+        """The in-progress step a call of ``tool_name`` belongs to.
+
+        The in-progress step that declares the tool wins; otherwise the only
+        in-progress step; with several and none declaring it — no step.
+        """
+        active = [s for s in self.steps if s.status == "in_progress"]
+        declaring = [s for s in active if tool_name in s.tools]
+        if declaring:
+            return declaring[0]
+        return active[0] if len(active) == 1 else None
+
 
 def load_order(state: Any, agent_name: str) -> Optional[WorkOrder]:
     raw = state.get(order_key(agent_name)) if state is not None else None
@@ -140,37 +182,125 @@ def save_order(state: Any, order: WorkOrder) -> None:
 _STEP_MARK = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "skipped": "[-]"}
 
 
-def render_work_order(order: WorkOrder) -> str:
-    """Plain-text rendering for the console handler, logs and the card fallback."""
+# The frame around an agent's own words. The agent writes its goal and its
+# steps in the session's language; these labels used to be English regardless,
+# so a Russian study read "Goal: Сформировать…". One table, two columns, kept
+# parallel line for line.
+_WO_WORDS = {
+    "en": {
+        "order": "Work Order", "report": "Work Report", "rev": "rev", "round": "round",
+        "tier": "tier", "goal": "Goal", "done": "Done when", "assumptions": "Assumptions",
+        "steps": "Steps", "expect": "expected", "send": "send", "tools": "Tools",
+        "effects": "Side effects", "outcome": "Expected outcome", "fallback": "If it fails",
+        "rejected": "rejected", "summary": "Summary", "expected": "Expected",
+        "actual": "Actual", "findings": "Findings", "evidence": "evidence",
+        "artifacts": "Artifacts", "calls": "Tool calls",
+        "performed": "Side effects performed", "amendments": "Amendments",
+        "blocked": "Blocked calls",
+    },
+    "ru": {
+        "order": "План работы агента", "report": "Отчёт о работе", "rev": "Ревизия",
+        "round": "раунд", "tier": "Уровень", "goal": "Цель",
+        "done": "Критерий готовности", "assumptions": "Условия и ограничения",
+        "steps": "Шаги", "expect": "Ожидается", "send": "Передать", "tools": "Инструменты",
+        "effects": "Побочные эффекты", "outcome": "Ожидаемый результат",
+        "fallback": "Если не получится", "rejected": "Отклонено",
+        "summary": "Итог", "expected": "Ожидалось", "actual": "Получено",
+        "findings": "Находки", "evidence": "Подтверждение",
+        "artifacts": "Артефакты", "calls": "Вызовы инструментов",
+        "performed": "Выполненные побочные эффекты", "amendments": "Дополнения",
+        "blocked": "Заблокированные вызовы",
+    },
+}
+
+
+def _words(lang) -> dict:
+    from CoScientist.agents.callbacks.report_language import normalize_report_language
+
+    return _WO_WORDS[normalize_report_language(lang)]
+
+
+def render_work_order(order: WorkOrder, lang: str = "en") -> str:
+    """The contract as Markdown, in the session's language.
+
+    Markdown rather than plain text because this is what the chat writes into a
+    document and renders in a panel; the console handler shows the same source,
+    which reads no worse for the headings.
+    """
+    w = _words(lang)
     lines = [
-        f"Work Order: {order.agent} (rev {order.revision}, tier {order.tier.value})",
-        f"Goal: {order.goal}",
+        f"# {w['order']} — {order.agent}",
+        "",
+        f"*{w['rev']} {order.revision} · {w['tier']} {order.tier.value}*",
+        "",
+        f"## {w['goal']}", "", order.goal or "—",
     ]
     if order.done_criteria:
-        lines.append(f"Done when: {order.done_criteria}")
+        lines += ["", f"## {w['done']}", "", order.done_criteria]
     if order.assumptions:
-        lines.append("\nAssumptions:")
+        lines += ["", f"## {w['assumptions']}", ""]
         for a in order.assumptions:
-            mark = " (rejected)" if a.rejected else ""
-            lines.append(f"  {a.id}. {a.text}{mark}")
+            mark = f" _({w['rejected']})_" if a.rejected else ""
+            lines.append(f"- **{a.id}** {a.text}{mark}")
     if order.steps:
-        lines.append("\nSteps:")
+        lines += ["", f"## {w['steps']}", ""]
         for s in order.steps:
-            tools = f" — {', '.join(s.tools)}" if s.tools else ""
-            lines.append(f"  {_STEP_MARK.get(s.status, '[ ]')} {s.id}. {s.title}{tools}")
+            tools = f" — `{'`, `'.join(s.tools)}`" if s.tools else ""
+            lines.append(f"- {_STEP_MARK.get(s.status, '[ ]')} **{s.id}** {s.title}{tools}")
+            if s.inputs:
+                lines.append(f"  - {w['send']}: {s.inputs}")
             if s.expected_outcome:
-                lines.append(f"      expect: {s.expected_outcome}")
+                lines.append(f"  - {w['expect']}: {s.expected_outcome}")
     if order.planned_tools:
-        lines.append(f"\nTools: {', '.join(order.planned_tools)}")
+        lines += ["", f"## {w['tools']}", "", "`" + "`, `".join(order.planned_tools) + "`"]
     if order.side_effects:
-        lines.append("Side effects: " + "; ".join(
-            f"{s.kind.value}" + (f" ({s.detail})" if s.detail else "") for s in order.side_effects
-        ))
+        lines += ["", f"## {w['effects']}", ""]
+        lines += [f"- {s.kind.value}" + (f" ({s.detail})" if s.detail else "")
+                  for s in order.side_effects]
     if order.expected_outcome:
-        lines.append(f"Expected outcome: {order.expected_outcome}")
+        lines += ["", f"## {w['outcome']}", "", order.expected_outcome]
     if order.fallback:
-        lines.append(f"If it fails: {order.fallback}")
+        lines += ["", f"## {w['fallback']}", "", order.fallback]
     return "\n".join(lines)
+
+
+def render_work_step_review(order: WorkOrder, step: WorkStep) -> str:
+    """Plain-text step review (sent / expected / found) for the console and logs."""
+    review = step.review or StepReview()
+    lines = [
+        f"Work Step: {order.agent} {step.id} (rev {order.revision}, round {review.round}, "
+        f"tier {order.tier.value})",
+        f"Step: {step.title} [{step.status}]",
+    ]
+    if step.tools:
+        lines.append(f"Tools: {', '.join(step.tools)}")
+    lines.append(f"Sent: {step.inputs or '-'}")
+    lines.append(f"Expected: {step.expected_outcome or '-'}")
+    lines.append(f"Found: {step.result or '-'}")
+    if step.note:
+        lines.append(f"Note: {step.note}")
+    if step.calls:
+        lines.append("\nCalls:")
+        for call in step.calls:
+            mark = " [ERROR]" if call.get("is_error") else ""
+            lines.append(f"  {call.get('tool', '?')}{mark}({call.get('args', '')})")
+            excerpt = str(call.get("result_excerpt") or "")
+            if excerpt:
+                lines.append(f"      -> {excerpt[:300]}")
+    else:
+        lines.append("Calls: none recorded")
+    return "\n".join(lines)
+
+
+def unreviewed_steps(order: WorkOrder) -> List[str]:
+    """Finished steps that used tools but were never accepted by the human."""
+    if not order.step_review:
+        return []
+    return [
+        s.id for s in order.steps
+        if s.status == "done" and (s.tools or s.calls)
+        and (s.review is None or s.review.status != "accepted")
+    ]
 
 
 def performed_side_effects(order: WorkOrder) -> List[str]:
@@ -202,50 +332,94 @@ def report_warnings(order: WorkOrder) -> List[Dict[str, Any]]:
             warnings.append({"code": "findings_without_evidence", "findings": unsupported})
     if order.deviations:
         warnings.append({"code": "deviations", "count": len(order.deviations)})
+    unreviewed = unreviewed_steps(order)
+    if unreviewed:
+        warnings.append({"code": "unreviewed_steps", "steps": unreviewed})
     return warnings
 
 
-def render_work_report(order: WorkOrder) -> str:
-    """Plain-text rendering of the report for the console handler and logs."""
+def _artifact_line(artifact: Any, scope: Any = None) -> str:
+    """One artifact as a reader can use it: a link when we hold the bytes.
+
+    The rule `_href` and `resolve_ref` already follow — a link that opens
+    nothing is worse than a name — so the reference is printed as written
+    whenever this session does not hold the file. The agent writes `ref` in its
+    own words, and it is as often a workspace path as an artifact id.
+    """
+    desc = f" — {artifact.description}" if artifact.description else ""
+    citation = None
+    if scope:
+        try:
+            from CoScientist.utils.report_links import artifact_citation
+
+            citation = artifact_citation(scope, artifact.ref)
+        except Exception:  # noqa: BLE001 — a link is not worth a failed render
+            citation = None
+    if citation:
+        return f"- `{artifact.kind}` [{citation['name']}]({citation['ref']}){desc}"
+    return f"- `{artifact.kind}` {artifact.ref}{desc}"
+
+
+def render_work_report(order: WorkOrder, lang: str = "en",
+                       scope: Any = None) -> str:
+    """What the agent says it did, against the contract it signed.
+
+    `scope` is the session, and only with it can an artifact reference become a
+    link. Without one the output is byte-identical to what it was — which is
+    what the console HITL and every existing caller still get.
+    """
+    w = _words(lang)
     report = order.report or WorkReport()
     lines = [
-        f"Work Report: {order.agent} (rev {order.revision}, round {report.round}, tier {order.tier.value})",
-        f"Goal: {order.goal}",
+        f"# {w['report']} — {order.agent}",
+        "",
+        f"*{w['rev']} {order.revision} · {w['round']} {report.round} · {w['tier']} {order.tier.value}*",
+        "",
+        f"## {w['goal']}", "", order.goal or "—",
     ]
     if report.summary:
-        lines.append(f"Summary: {report.summary}")
+        lines += ["", f"## {w['summary']}", "", report.summary]
     if order.done_criteria:
-        lines.append(f"Done when: {order.done_criteria} -> {report.done_verdict}"
-                     + (f" ({report.done_evidence})" if report.done_evidence else ""))
+        lines += ["", f"## {w['done']}", "",
+                  f"{order.done_criteria} → **{report.done_verdict}**"
+                  + (f"\n\n{report.done_evidence}" if report.done_evidence else "")]
     if order.expected_outcome or report.actual_outcome:
-        lines.append(f"Expected: {order.expected_outcome or '-'}")
-        lines.append(f"Actual: {report.actual_outcome or '-'}")
+        lines += ["", f"## {w['outcome']}", "",
+                  f"| | |", "|---|---|",
+                  f"| {w['expected']} | {_cell(order.expected_outcome)} |",
+                  f"| {w['actual']} | {_cell(report.actual_outcome)} |"]
     if report.findings:
-        lines.append("\nFindings:")
+        lines += ["", f"## {w['findings']}", ""]
         for f in report.findings:
-            lines.append(f"  {f.id}. {f.text} [{f.confidence}]")
+            lines.append(f"- **{f.id}** {f.text} _[{f.confidence}]_")
             if f.evidence:
-                lines.append(f"      evidence: {f.evidence}")
+                lines.append(f"  - {w['evidence']}: {f.evidence}")
     if order.steps:
-        lines.append("\nSteps:")
+        lines += ["", f"## {w['steps']}", ""]
         for s in order.steps:
             note = f" — {s.note}" if s.note else ""
-            lines.append(f"  {_STEP_MARK.get(s.status, '[ ]')} {s.id}. {s.title}{note}")
+            lines.append(f"- {_STEP_MARK.get(s.status, '[ ]')} **{s.id}** {s.title}{note}")
     if report.artifacts:
-        lines.append("\nArtifacts:")
+        lines += ["", f"## {w['artifacts']}", ""]
         for a in report.artifacts:
-            desc = f" — {a.description}" if a.description else ""
-            lines.append(f"  [{a.kind}] {a.ref}{desc}")
+            lines.append(_artifact_line(a, scope))
     if order.tool_calls:
-        lines.append("\nTool calls: " + ", ".join(f"{t}×{n}" for t, n in order.tool_calls.items()))
+        lines += ["", f"## {w['calls']}", "",
+                  ", ".join(f"`{t}` ×{n}" for t, n in order.tool_calls.items())]
     effects = performed_side_effects(order)
     if effects:
-        lines.append("Side effects performed: " + ", ".join(effects))
+        lines += ["", f"## {w['performed']}", "", ", ".join(effects)]
     if order.amendments:
-        lines.append(f"Amendments: {len(order.amendments)}")
+        lines += ["", f"## {w['amendments']}", "", str(len(order.amendments))]
     if order.deviations:
-        lines.append("Blocked calls: " + ", ".join(d.get("tool", "?") for d in order.deviations))
+        lines += ["", f"## {w['blocked']}", "",
+                  ", ".join(f"`{d.get('tool', '?')}`" for d in order.deviations)]
     return "\n".join(lines)
+
+
+def _cell(value) -> str:
+    """One table cell: no pipe may survive into it, no newline may break the row."""
+    return str(value or "—").replace("|", "\\|").replace("\n", " ")
 
 
 def diff_work_orders(old: WorkOrder, new: WorkOrder) -> Dict[str, Any]:

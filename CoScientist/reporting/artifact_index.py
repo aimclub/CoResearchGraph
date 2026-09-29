@@ -42,10 +42,39 @@ def index_path(key: SessionKey) -> Path:
     return storage_dir(_root(), key) / INDEX_FILENAME
 
 
+def _clean(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """The entry with the prose stripped off its URL.
+
+    Applied on read as well as on write. The indexes already on disk hold URLs
+    that end in ``)``, ``` ` ```, ``.`` or ``**`` — the punctuation that framed
+    the link in the agent's markdown. Cleaning at both ends means those entries
+    collapse onto their clean twin the first time the file is loaded again,
+    without a migration pass over anyone's sessions.
+    """
+    from CoScientist.reporting.collect import clean_url
+
+    url = entry.get("url")
+    if not url:
+        return entry
+    cleaned = clean_url(url)
+    if cleaned == url:
+        return entry
+    # A truncated URL cleans to "" — keep the entry, drop the dead link. The
+    # bucket/key beside it may still resolve, and a record with a reason beats
+    # a record that quietly vanished.
+    return {**entry, "url": cleaned or None}
+
+
 def _entry_id(entry: Dict[str, Any]) -> str:
-    """What makes two entries the same artifact. The durable reference when the
-    entry has one, so re-capturing the same object under a fresh presigned URL
-    updates that entry instead of adding a duplicate."""
+    """What makes two entries the same artifact.
+
+    Order: the mirrored copy in our own store, then the durable S3 reference,
+    then the URL — so re-capturing one object under a fresh presigned URL
+    updates that entry instead of adding a duplicate.
+    """
+    artifact_id = entry.get("artifact_id")
+    if artifact_id:
+        return f"cos-artifact:{artifact_id}"
     bucket, key = entry.get("bucket"), entry.get("s3_key")
     if bucket and key:
         return f"s3://{bucket}/{key}"
@@ -75,8 +104,29 @@ def load(session_id: str, user_id: Optional[str] = None) -> List[Dict[str, Any]]
             continue
         entries = data.get("artifacts") if isinstance(data, dict) else data
         if isinstance(entries, list):
-            return [e for e in entries if isinstance(e, dict)]
+            return _dedupe(_clean(e) for e in entries if isinstance(e, dict))
     return []
+
+
+def _dedupe(entries: Any) -> List[Dict[str, Any]]:
+    """One entry per artifact, first occurrence wins, order preserved.
+
+    Cleaning turns several differently-punctuated captures of one figure into
+    the same id, so the collapse happens here rather than leaving the caller to
+    download the same file five times.
+    """
+    seen: Dict[str, Dict[str, Any]] = {}
+    out: List[Dict[str, Any]] = []
+    for entry in entries:
+        eid = _entry_id(entry)
+        if not eid:
+            out.append(entry)
+            continue
+        if eid in seen:
+            continue
+        seen[eid] = entry
+        out.append(entry)
+    return out
 
 
 def record(entries: List[Dict[str, Any]], context: Any = None, *,
@@ -99,6 +149,7 @@ def record(entries: List[Dict[str, Any]], context: Any = None, *,
         known = {_entry_id(e): e for e in merged if _entry_id(e)}
         added = changed = 0
         for entry in entries:
+            entry = _clean(entry)
             eid = _entry_id(entry)
             if not eid:
                 continue

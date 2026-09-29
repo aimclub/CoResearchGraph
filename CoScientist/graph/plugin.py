@@ -167,6 +167,12 @@ def _is_error(result: Any) -> bool:
             return True
         if result.get("error"):
             return True
+        # A refused transactional write answers {"ok": false, "errors": [...]}
+        # and carries neither `status` nor `error`, so a commit that saved
+        # NOTHING was drawn in the log as a successful call. `is False` and not
+        # `not ok`: a tool that simply has no `ok` key is not a failure.
+        if result.get("ok") is False:
+            return True
     return False
 
 

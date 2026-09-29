@@ -14,6 +14,7 @@
 
   const KNOWN_AGENTS = [
     'ResearchAgent',
+    'PaperRetriever',
     'PlannerAgent',
     'CoderAgent',
     'TaskExecutorAgent',
@@ -26,6 +27,10 @@
     'ResultAggregatorAgent',
     'FedotAgent',
     'OrchestratorAgent',
+    'PlanningPipelineAgent',
+    'ToolPipelineAgent',
+    'ToolPreparerAgent',
+    'system',
   ];
 
   const AGENT_ICONS = {
@@ -34,14 +39,23 @@
     ContextInitAgent: 'assignment',
     HypothesesAgent: 'lightbulb',
     ResearchAgent: 'travel_explore',
+    PaperRetriever: 'travel_explore',
     TaskExecutorAgent: 'alt_route',
     CoderAgent: 'terminal',
     DatasetCollectorAgent: 'dataset',
     MedicalAgent: 'medical_services',
     McpBuilderAgent: 'construction',
     ExperimentAgent: 'science',
+    ExperimentModuleAgent: 'experiment',
+    ExperimentPlannerAgent: 'checklist',
+    ExperimentExecutorAgent: 'play_circle',
+    ExperimentResultReviewAgent: 'fact_check',
     ResultAggregatorAgent: 'summarize',
     FedotAgent: 'auto_graph',
+    PlanningPipelineAgent: 'map',
+    ToolPipelineAgent: 'checklist',
+    ToolPreparerAgent: 'precision_manufacturing',
+    system: 'settings_suggest',
   };
 
   const STATUS_CONFIG = {
@@ -364,7 +378,7 @@
               <div class="flex items-center justify-end gap-2 pt-1 border-t border-outline-variant/10">
                 <button type="button" onclick="cancelEditTask('${escHtml(taskId)}')"
                   class="px-3 py-1 rounded-md text-[11px] font-medium text-outline-variant hover:text-on-surface hover:bg-surface-container-high transition-colors">
-                  ${t('settings.cancel')}
+                  ${t('common.cancel')}
                 </button>
                 <button type="button" onclick="saveEditTask('${escHtml(taskId)}')"
                   class="flex items-center gap-1 px-3.5 py-1 rounded-md text-[11px] font-semibold bg-primary text-on-primary shadow-sm hover:brightness-110 active:scale-95 transition-all">
@@ -835,8 +849,6 @@
           StatusIndicator.feed({ type: 'tasks_updated', tasks: tasks });
         }
 
-        const hitlPanel = document.getElementById('hitl-panel');
-        if (hitlPanel) hitlPanel.classList.add('hidden');
         addSystemMsg(t('roadmap.sentForRevision') + (feedback ? ': ' + feedback : ''));
 
         window.currentPlannerHitlRequest = null;

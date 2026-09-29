@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Маршрут к бромацетофенону</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#F1F4EF;
+    --surface:#FFFFFF;
+    --ink:#161F19;
+    --ink-muted:#586459;
+    --ink-faint:#8B968C;
+    --line:#D9DFD5;
+    --line-soft:#E7EBE3;
+    --teal:#1E6F62;
+    --teal-deep:#12463D;
+    --teal-soft:#E2EFEA;
+    --mark-bg:#F4CE7B;
+    --mark-bg-strong:#EDB94E;
+    --mark-text:#241905;
+    --reject:#B3453A;
+    --shadow: 0 1px 2px rgba(22,31,25,0.06), 0 6px 20px -10px rgba(22,31,25,0.18);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#10140F;
+      --surface:#161C15;
+      --ink:#E7EDE4;
+      --ink-muted:#9CAA98;
+      --ink-faint:#6C7A6A;
+      --line:#2A332A;
+      --line-soft:#232B22;
+      --teal:#4FB39E;
+      --teal-deep:#8FD2C1;
+      --teal-soft:#17251F;
+      --mark-bg:#B98A2C;
+      --mark-bg-strong:#D6A23A;
+      --mark-text:#1B1204;
+      --reject:#E28379;
+      --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 10px 28px -12px rgba(0,0,0,0.55);
+    }
+    :root:not([data-theme="light"]) .pipeline .step.here{ color:#0C1310; }
+  }
+  :root[data-theme="dark"]{
+    --paper:#10140F;
+    --surface:#161C15;
+    --ink:#E7EDE4;
+    --ink-muted:#9CAA98;
+    --ink-faint:#6C7A6A;
+    --line:#2A332A;
+    --line-soft:#232B22;
+    --teal:#4FB39E;
+    --teal-deep:#8FD2C1;
+    --teal-soft:#17251F;
+    --mark-bg:#B98A2C;
+    --mark-bg-strong:#D6A23A;
+    --mark-text:#1B1204;
+    --reject:#E28379;
+    --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 10px 28px -12px rgba(0,0,0,0.55);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+    line-height:1.55;
+  }
+  ::selection{ background:var(--mark-bg-strong); color:var(--mark-text); }
+
+  .page{
+    max-width:760px;
+    margin:0 auto;
+    padding:56px 24px 96px;
+  }
+
+  h1,h2,h3{
+    font-family:"IBM Plex Serif", Georgia, serif;
+    text-wrap:balance;
+    margin:0;
+    color:var(--ink);
+  }
+  .mono{ font-family:"IBM Plex Mono", "SF Mono", monospace; }
+  .eyebrow{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+    letter-spacing:.09em;
+    text-transform:uppercase;
+    color:var(--teal);
+    font-weight:500;
+  }
+
+  /* ── header ─────────────────────────────────────────────────────── */
+  header{ margin-bottom:40px; }
+  header h1{ font-size:34px; font-weight:600; margin-top:10px; letter-spacing:-.01em; }
+  header .sub{
+    margin-top:10px;
+    font-size:16.5px;
+    color:var(--ink-muted);
+    max-width:58ch;
+  }
+  .meta-row{
+    display:flex; flex-wrap:wrap; gap:8px 10px;
+    margin-top:20px;
+  }
+  .chip{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+    padding:5px 10px;
+    border-radius:5px;
+    border:1px solid var(--line);
+    color:var(--ink-muted);
+    background:var(--surface);
+  }
+  .chip.warn{
+    color:var(--reject);
+    border-color:color-mix(in srgb, var(--reject) 35%, var(--line));
+  }
+
+  /* ── pipeline strip ─────────────────────────────────────────────── */
+  .pipeline{
+    display:flex;
+    align-items:stretch;
+    gap:0;
+    margin:0 0 44px;
+    border:1px solid var(--line);
+    border-radius:10px;
+    overflow:hidden;
+    background:var(--surface);
+    box-shadow:var(--shadow);
+  }
+  .pipeline .step{
+    flex:1 1 0;
+    padding:14px 12px;
+    font-size:12.5px;
+    text-align:center;
+    color:var(--ink-muted);
+    border-right:1px solid var(--line-soft);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .pipeline .step:last-child{ border-right:none; }
+  .pipeline .step.here{
+    background:var(--teal);
+    color:#fff;
+    font-weight:500;
+    position:relative;
+  }
+  :root[data-theme="dark"] .pipeline .step.here{ color:#0C1310; }
+
+  section.intro{ margin-bottom:44px; }
+  section.intro p{ margin:0 0 12px; color:var(--ink-muted); font-size:15.5px; max-width:64ch; }
+  section.intro p:last-child{ margin-bottom:0; }
+  section.intro strong{ color:var(--ink); font-weight:600; }
+
+  /* ── case cards ─────────────────────────────────────────────────── */
+  .case{
+    border:1px solid var(--line);
+    border-radius:12px;
+    background:var(--surface);
+    box-shadow:var(--shadow);
+    margin-bottom:32px;
+    overflow:hidden;
+  }
+  .case-head{
+    padding:20px 24px 16px;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .case-head .tag{ display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .case-head .lit{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12px; font-weight:600;
+    color:var(--teal-deep);
+    background:var(--teal-soft);
+    padding:3px 8px;
+    border-radius:5px;
+  }
+  .case-head .req{ font-size:12.5px; color:var(--ink-faint); font-family:"IBM Plex Mono", monospace; }
+  .case-head h3{ font-size:18px; font-weight:600; margin-top:10px; line-height:1.35; }
+  .case-head .query-en{
+    margin-top:8px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12px;
+    color:var(--ink-muted);
+    line-height:1.6;
+  }
+
+  .case-body{ padding:20px 24px; }
+  .block-label{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--ink-faint);
+    margin-bottom:10px;
+  }
+  .answer{
+    font-size:14.5px;
+    line-height:1.75;
+    color:var(--ink-muted);
+    background:var(--paper);
+    border:1px solid var(--line-soft);
+    border-radius:8px;
+    padding:16px 18px;
+  }
+  .answer mark{
+    background:var(--mark-bg);
+    color:var(--mark-text);
+    font-family:"IBM Plex Mono", monospace;
+    font-size:13px;
+    font-weight:500;
+    padding:1px 3px;
+    border-radius:3px;
+    box-decoration-break:clone;
+    -webkit-box-decoration-break:clone;
+  }
+  .reject-note{
+    margin-top:10px;
+    font-size:12.5px;
+    color:var(--ink-faint);
+  }
+  .reject-note .mono{ color:var(--reject); }
+
+  .extracted{ margin-top:20px; }
+  .mol-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));
+    gap:14px;
+    margin-top:10px;
+  }
+  .mol-card{
+    border:1px solid var(--line);
+    border-radius:10px;
+    overflow:hidden;
+    background:var(--surface);
+  }
+  .mol-img{
+    background:#FDFDFB;
+    display:flex; align-items:center; justify-content:center;
+    padding:6px;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .mol-img img{ display:block; width:100%; height:auto; }
+  .mol-meta{ padding:10px 12px 12px; }
+  .mol-meta .name{ font-size:12px; color:var(--ink-muted); line-height:1.4; min-height:2.6em; }
+  .mol-meta .smi{
+    display:block;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    color:var(--teal-deep);
+    margin-top:8px;
+    word-break:break-all;
+    line-height:1.5;
+  }
+  .mol-meta .formula{
+    margin-top:6px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    color:var(--ink-faint);
+  }
+  .canon-note{
+    grid-column:1/-1;
+    font-size:12px;
+    color:var(--ink-faint);
+    margin-top:2px;
+  }
+
+  /* ── reaction scheme card ──────────────────────────────────────── */
+  .rxn-card{
+    border:1px solid var(--line);
+    border-radius:10px;
+    overflow:hidden;
+    background:var(--surface);
+    margin-top:10px;
+  }
+  .rxn-img{
+    background:#FDFDFB;
+    padding:10px 6px;
+    border-bottom:1px solid var(--line-soft);
+    overflow-x:auto;
+  }
+  .rxn-img img{ display:block; margin:0 auto; max-width:100%; height:auto; }
+  .rxn-meta{ padding:12px 16px 16px; }
+  .rxn-meta .full{
+    display:block;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    color:var(--ink-faint);
+    word-break:break-all;
+    line-height:1.6;
+    margin-bottom:10px;
+  }
+  .rxn-parts{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px 8px;
+    align-items:center;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+  }
+  .rxn-parts .part{
+    padding:3px 8px;
+    border-radius:5px;
+    background:var(--paper);
+    border:1px solid var(--line-soft);
+    color:var(--ink-muted);
+  }
+  .rxn-parts .part.product{
+    background:var(--teal-soft);
+    color:var(--teal-deep);
+    border-color:transparent;
+    font-weight:500;
+  }
+  .rxn-parts .op{ color:var(--ink-faint); font-size:13px; }
+
+  .robust{
+    margin-top:44px;
+    border:1px dashed var(--line);
+    border-radius:10px;
+    padding:18px 22px;
+  }
+  .robust h3{ font-size:15px; font-weight:600; margin-bottom:10px; }
+  .robust ul{ margin:0; padding-left:18px; }
+  .robust li{ font-size:13.5px; color:var(--ink-muted); margin-bottom:8px; line-height:1.6; }
+  .robust code{ font-family:"IBM Plex Mono", monospace; font-size:12px; color:var(--reject); }
+  .robust .ok{ color:var(--teal-deep); }
+
+  /* ── state panel ────────────────────────────────────────────────── */
+  .state{
+    margin-top:48px;
+    border:1px solid var(--line);
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow:var(--shadow);
+  }
+  .state-head{
+    padding:16px 24px;
+    background:var(--teal-deep);
+    color:#EFF6F2;
+  }
+  .state-head .eyebrow{ color:#B9E0D3; }
+  .state-head h3{ color:#fff; font-size:17px; margin-top:6px; }
+  .state-body{
+    background:#0F1712;
+    color:#CFEBDD;
+    padding:20px 24px 24px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12.5px;
+    line-height:1.85;
+    overflow-x:auto;
+  }
+  .state-body .k{ color:#7FCBB2; }
+  .state-body .s{ color:#F4CE7B; }
+  .state-body .c{ color:#5C7A6E; }
+
+  footer{
+    margin-top:56px;
+    padding-top:20px;
+    border-top:1px solid var(--line);
+    font-size:12.5px;
+    color:var(--ink-faint);
+  }
+  footer p{ margin:0 0 8px; max-width:64ch; }
+  footer code{ font-family:"IBM Plex Mono", monospace; font-size:11.5px; }
+
+  @media (max-width:600px){
+    header h1{ font-size:27px; }
+    .pipeline{ flex-wrap:wrap; }
+    .pipeline .step{ flex:1 1 33%; border-bottom:1px solid var(--line-soft); }
+  }
+
+  /* ── hero target molecule ──────────────────────────────────────── */
+  .hero{
+    display:flex; gap:20px; align-items:center;
+    border:1px solid var(--line); border-radius:12px;
+    background:var(--surface); box-shadow:var(--shadow);
+    padding:18px 22px; margin-bottom:40px;
+  }
+  .hero-img{
+    flex:0 0 auto; background:#FDFDFB; border:1px solid var(--line-soft);
+    border-radius:8px; padding:6px;
+  }
+  .hero-img img{ display:block; width:220px; height:auto; }
+  .hero-info{ flex:1; min-width:0; }
+  .hero-info .name{ font-size:15px; color:var(--ink); line-height:1.5; margin-bottom:8px; }
+  .hero-info .smi{
+    display:block; font-family:"IBM Plex Mono", monospace; font-size:12px;
+    color:var(--teal-deep); word-break:break-all; margin-bottom:8px;
+  }
+  .hero-info .facts{ display:flex; flex-wrap:wrap; gap:8px; font-family:"IBM Plex Mono", monospace; font-size:11.5px; color:var(--ink-faint); }
+  .hero-info .facts span{ padding:2px 8px; background:var(--paper); border-radius:5px; border:1px solid var(--line-soft); }
+
+  /* ── methodology / constraint callout ──────────────────────────── */
+  .method{
+    border:1px solid var(--line); border-radius:12px;
+    background:var(--surface); box-shadow:var(--shadow);
+    padding:20px 24px; margin-bottom:40px;
+  }
+  .method h3{ font-size:16px; font-weight:600; margin-bottom:12px; }
+  .method ol{ margin:0; padding-left:20px; }
+  .method li{ font-size:13.5px; color:var(--ink-muted); line-height:1.7; margin-bottom:10px; }
+  .method li:last-child{ margin-bottom:0; }
+  .method .found{ color:var(--reject); font-weight:500; }
+  .method .fixed{ color:var(--teal-deep); font-weight:500; }
+
+  /* ── curated data table inside a case ──────────────────────────── */
+  .dt{ width:100%; border-collapse:collapse; font-size:12.5px; margin:10px 0 4px; }
+  .dt th{ text-align:left; font-family:"IBM Plex Mono", monospace; font-size:10.5px;
+    letter-spacing:.04em; text-transform:uppercase; color:var(--ink-faint); font-weight:500;
+    padding:5px 10px; border-bottom:1px solid var(--line); background:var(--paper); }
+  .dt td{ padding:6px 10px; border-bottom:1px solid var(--line-soft); color:var(--ink); vertical-align:top; }
+  .dt tr:last-child td{ border-bottom:none; }
+  .dt .num{ font-family:"IBM Plex Mono", monospace; color:var(--teal-deep); font-weight:500; white-space:nowrap; }
+  .cite{ font-size:12px; color:var(--ink-faint); margin-top:8px; }
+  .cite .t{ font-style:italic; }
+  .case-sub{ font-size:13px; font-weight:600; color:var(--ink); margin:16px 0 4px; }
+  .case-sub:first-child{ margin-top:0; }
+  .no-extract{
+    margin-top:16px; font-size:12px; color:var(--ink-faint);
+    border-top:1px dashed var(--line); padding-top:10px;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="eyebrow">CoScientist · профиль «микрофлюидика» · Module A · реальный прогон</div>
+    <h1>От запроса заказчика до пяти отчётов по литературе</h1>
+    <p class="sub">Живой прогон (не иллюстрация): ТЗ-агент → генератор LIT-запросов → RAG-поиск
+      (только <code class="mono">explore_scientific_database</code>) → попытка извлечения SMILES/реакций,
+      на кейсе антиокислительной присадки с заранее известной целевой молекулой.</p>
+    <div class="meta-row">
+      <span class="chip">02.09.2026 · живой прогон, не демо</span>
+      <span class="chip">RAG-источник: только explore_scientific_database</span>
+      <span class="chip warn">⚠ извлечение SMILES/реакций — пусто по всем 5 задачам, см. разбор в конце</span>
+    </div>
+  </header>
+
+  <div class="pipeline">
+    <div class="step">TZ-агент</div>
+    <div class="step">генератор LIT-запросов</div>
+    <div class="step here">⟶ RAG-поиск (explore_scientific)</div>
+    <div class="step">попытка извлечения SMILES/реакций</div>
+  </div>
+
+  <div class="hero">
+    <div class="hero-img"><img src="data:image/png;base64,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" alt="целевая молекула"></div>
+    <div class="hero-info">
+      <div class="name">Целевая молекула из запроса заказчика: <strong>2-бром-1-(3,5-ди-трет-бутил-4-гидроксифенил)этан-1-он</strong> — SMILES сгенерирован <code class="mono">TZSpecAgent</code> из IUPAC-названия, до какого-либо RAG-поиска.</div>
+      <span class="smi">BrCC(=O)c1cc(C(C)(C)C)cc(O)c1C(C)(C)C</span>
+      <div class="facts">
+        <span>C₁₆H₂₃BrO₂</span>
+        <span>M 327.3</span>
+        <span>независимо подтверждено формулой из LIT-01 (RAG)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="method">
+    <h3>Как устроен этот конкретный прогон</h3>
+    <ol>
+      <li>Структурированное ТЗ и 5 LIT-запросов уже были получены в предыдущей попытке
+        (<code class="mono">custom_case_02_explore_only.json</code>) — переиспользованы как есть,
+        TZ-агент и планировщик заново не запускались.</li>
+      <li><span class="found">Первая попытка (все 5 LIT через LiteratureOrchestrator в одной сессии)
+        упала</span> с переполнением контекста на ~1.29 млн токенов — без запасных лёгких инструментов
+        оркестратор аккумулировал полные сырые ответы всех пяти делегирований в одном разговоре.
+        <span class="fixed">Исправление: каждый LIT-запрос выполняется изолированным вызовом
+        ResearchAgent</span>, в своей сессии, без накопления контекста между задачами.</li>
+      <li>Ограничение «только explore_scientific_database» задавалось временной правкой
+        <code class="mono">microfluidics.yaml</code> (набор тулов ResearchAgent → только
+        <code class="mono">paper_analysis</code>) с откатом файла сразу после сборки графа.
+        <span class="found">Первая попытка отката гонялась с отдельной командой и не сработала</span> —
+        офф-лимитные тулы (<code class="mono">tavily_search</code>, <code class="mono">search_papers</code>,
+        <code class="mono">download_papers_from_search</code>) всё же попали в вызовы.
+        <span class="fixed">Исправление: откат yaml перенесён внутрь самого скрипта, синхронно сразу после
+        сборки системы</span> — подтверждено проверкой <code class="mono">ResearchAgent.tools</code>
+        перед запуском.</li>
+      <li><span class="found">LIT-05 всё равно упал</span> — уже не из-за внешних тулов, а из-за эскалации
+        <em>внутри того же MCP-сервера</em> на <code class="mono">find_relevant_data_in_db</code> (тяжёлый
+        тул, тянущий полный текст/картинки) — ограничение на уровне yaml контролирует набор серверов, а не
+        отдельные тулы внутри одного сервера. <span class="fixed">Исправление: явный запрет на этот тул в
+        тексте задачи</span> — повтор прошёл чисто, единственным вызовом
+        <code class="mono">explore_scientific_database</code>.</li>
+    </ol>
+  </div>
+
+  <!-- ═══════════════ LIT-01 ═══════════════ -->
+  <div class="case">
+    <div class="case-head">
+      <div class="tag"><span class="lit">LIT-01</span><span class="req">известные маршруты синтеза</span></div>
+      <h3>Маршрут к целевой молекуле и её предшественнику</h3>
+      <div class="query-en">synthesis of 2-bromo-1-(3,5-di-tert-butyl-4-hydroxyphenyl)ethan-1-one OR
+        3,5-di-tert-butyl-4-hydroxyacetophenone bromination</div>
+    </div>
+    <div class="case-body">
+      <p style="font-size:13.5px;color:var(--ink-muted);margin:0 0 8px;">Найден двухстадийный маршрут: (1)
+        Friedel–Crafts ацилирование 2,6-ди-трет-бутилфенола → предшественник, (2) α-бромирование →
+        целевая молекула.</p>
+
+      <div class="case-sub">Стадия 1 — ацилирование (предшественник)</div>
+      <table class="dt"><tbody>
+        <tr><th>Реагенты</th><td>AcCl, AlCl₃ (кат. Фриделя–Крафтса), CCl₄</td></tr>
+        <tr><th>Условия</th><td>0–5 °C (1 ч) → 25 °C (1 ч), гашение HCl(конц.)/H₂O, экстракция CCl₄</td></tr>
+        <tr><th>Выход</th><td class="num">87%</td></tr>
+        <tr><th>Т.пл.</th><td>146–147 °C (лит. 146–148 °C)</td></tr>
+      </tbody></table>
+
+      <div class="case-sub">Стадия 2 — α-бромирование (целевая молекула)</div>
+      <table class="dt"><tbody>
+        <tr><th>Классический</th><td>Br₂ (1.1 экв.), EtOH, 50 °C, N₂, 5 ч → <span class="num">65%</span>, т.пл. 108–109 °C</td></tr>
+        <tr><th>Более безопасный</th><td>NBS + БКИЖ-катализатор, УЗ, 80 °C, 10 мин → <span class="num">84%</span> (побочный продукт: дибромкетон, 11%)</td></tr>
+      </tbody></table>
+      <div class="cite">Источники: <span class="t">Synthesis, Redox Properties and Antibacterial Activity of Hindered Phenols Linked to Heterocycles</span>;
+        <span class="t">Synthesis of 3-hydroxy-1H-pyrroles and pyridazines with a sterically hindered phenol moiety</span></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ LIT-02 ═══════════════ -->
+  <div class="case">
+    <div class="case-head">
+      <div class="tag"><span class="lit">LIT-02</span><span class="req">проточный синтез</span></div>
+      <h3>Проточный/микрофлюидный синтез α-бромацетофенонов</h3>
+      <div class="query-en">continuous flow synthesis alpha-bromoacetophenone OR microreactor bromination of ketones</div>
+    </div>
+    <div class="case-body">
+      <p style="font-size:13.5px;color:var(--ink-muted);margin:0 0 8px;">Ключевая находка — DoE-оптимизированный
+        проточный процесс NBS/pTsOH, применимый к этому классу кетонов напрямую.</p>
+      <table class="dt"><tbody>
+        <tr><th>Реагенты</th><td>NBS (1.0–1.2 экв.) + pTsOH (50–70 мол.%), 1,4-диоксан</td></tr>
+        <tr><th>Реактор</th><td>Flow coil, 2 мл, 1 мм внутр. диаметр; два шприцевых насоса, Y-смеситель</td></tr>
+        <tr><th>Время пребывания</th><td><span class="num">40 мин</span> — оптимум (скрининг: 20 мин → 53%, 60 мин → 86%)</td></tr>
+        <tr><th>Температура</th><td class="num">60 °C</td></tr>
+        <tr><th>Лучший результат DoE</th><td><span class="num">96%</span> конверсии</td></tr>
+        <tr><th>Масштаб</th><td><span class="num">95%</span> изолированный выход, 13 ммоль (~3 г)</td></tr>
+      </tbody></table>
+      <div class="cite">Источник: <span class="t">Sancineto et al., «Flow synthesis of aromatic alpha-bromo ketones: a DoE aided approach», 2026</span></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ LIT-03 ═══════════════ -->
+  <div class="case">
+    <div class="case-head">
+      <div class="tag"><span class="lit">LIT-03</span><span class="req">антиокислительная активность</span></div>
+      <h3>Активность и совместимость с моторными маслами</h3>
+      <div class="query-en">hindered phenol bromoacetophenone derivative antioxidant lubricant oil OR DSC oxidation induction time</div>
+    </div>
+    <div class="case-body">
+      <p style="font-size:13.5px;color:var(--ink-muted);margin:0 0 8px;">Прямых DSC-данных именно для
+        бромацетофенонового производного нет — но активность несёт сохраняющийся в целевой молекуле ПЗФ-фрагмент
+        (3,5-ди-трет-бутил-4-гидроксифенил), и по нему данные есть в изобилии.</p>
+      <table class="dt"><tbody>
+        <tr><th>Метод</th><td>PDSC — Pressurised DSC, OIT/OOT в PAO (Durasyn 164), 125 °C, O₂ 2 бар</td></tr>
+        <tr><th>ПЗФ-аминные гибриды</th><td>OIT <span class="num">≈24 мин</span> @0.5 wt% в PAO — выше Irganox L135/L57 (1:1, ~16 мин)</td></tr>
+        <tr><th>BHT-производные (семикарбазиды)</th><td><span class="num">2×</span> стабильность vs BHT @0.25 wt% в TMPTO, 125 °C</td></tr>
+        <tr><th>Термостабильность</th><td>стабильны до <span class="num">155 °C</span> (TGA, принудительное окисление, 36 ч)</td></tr>
+        <tr><th>Растворимость</th><td>улучшается разветвлёнными алкильными группами; бис(дифениламины) — плохая растворимость</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+
+  <!-- ═══════════════ LIT-04 ═══════════════ -->
+  <div class="case">
+    <div class="case-head">
+      <div class="tag"><span class="lit">LIT-04</span><span class="req">сравнение реагентов</span></div>
+      <h3>NBS vs Br₂ vs CuBr₂ для α-бромирования</h3>
+      <div class="query-en">comparison of brominating agents NBS Br2 CuBr2 alpha-bromination of acetophenones</div>
+    </div>
+    <div class="case-body">
+      <table class="dt"><tbody>
+        <tr><th>NBS</th><td><span class="num">84%</span> выход, ~€6/г, безопасен, HBr не выделяет, сукцинимид рециклируем (до 7 циклов в ИЖ)</td></tr>
+        <tr><th>Br₂</th><td>классически высокий выход, но токсичен, коррозионен, выделяет HBr на каждом цикле</td></tr>
+        <tr><th>CuBr₂</th><td>прямых данных по выходу нет в базе; стехиометрический расход, медьсодержащие отходы</td></tr>
+      </tbody></table>
+      <div class="cite">Вывод базы: NBS — оптимальный баланс безопасности/стоимости/выхода для этой реакции.</div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ LIT-05 ═══════════════ -->
+  <div class="case">
+    <div class="case-head">
+      <div class="tag"><span class="lit">LIT-05</span><span class="req">материалы микрореактора</span></div>
+      <h3>Совместимость материалов с бромирующими агентами</h3>
+      <div class="query-en">microreactor materials compatibility bromine OR brominating agents corrosion continuous flow</div>
+    </div>
+    <div class="case-body">
+      <table class="dt"><tbody>
+        <tr><th>Стекло / кварц / кремний</th><td>✅ инертны к Br₂/HBr/NBS — стандарт для чип-реакторов</td></tr>
+        <tr><th>PTFE / PFA / FEP</th><td>✅ отличная стойкость к галогенам и HBr</td></tr>
+        <tr><th>Hastelloy C-276</th><td>✅ сухой Br₂ ок; влажный — агрессивнее (данные общие, не из статей конкретно)</td></tr>
+        <tr><th>HDPE</th><td>✅ с ароматич. бромидами; с элементным Br₂ напрямую не проверялось</td></tr>
+        <tr><th>PDMS</th><td>❌ не рекомендуется — высокая газопроницаемость, утечка HBr, набухание</td></tr>
+      </tbody></table>
+      <div class="cite">Побочный эффект NBS-маршрута: осадок сукцинимида может забивать каналы — нужна проточная
+        фильтрация или периодическая промывка.</div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ EXTRACTION RESULT ═══════════════ -->
+  <div class="state">
+    <div class="state-head">
+      <div class="eyebrow">capture_literature_smiles / capture_literature_reactions</div>
+      <h3>Почему извлечение пустое — при том что данные реальные</h3>
+    </div>
+    <div class="state-body"><span class="c">// после 5 изолированных вызовов explore_scientific_database:</span><br>
+<span class="k">state["literature_smiles"]</span> = <span class="s">None</span><br>
+<span class="k">state["literature_reactions"]</span> = <span class="s">None</span><br>
+<br>
+<span class="c">// и это не баг экстрактора — все 5 ответов реально описывают химию:</span><br>
+<span class="c">// точные реагенты, выходы (87%, 65%, 84%, 95%...), условия, температуры,</span><br>
+<span class="c">// т.пл., даже брутто-формулу целевой молекулы (C16H23BrO2) — совпавшую</span><br>
+<span class="c">// с SMILES от TZSpecAgent.</span><br>
+<br>
+<span class="c">// но выражено это через IUPAC-имена и прозу ("2,6-ди-трет-бутилфенол",</span><br>
+<span class="c">// "3,5-ди-трет-бутил-4-гидроксиацетофенон"), а не через SMILES-нотацию.</span><br>
+<span class="c">// extract_smiles/extract_reactions ищут именно литеральные SMILES-строки</span><br>
+<span class="c">// в тексте — их там просто нет, хотя химия полностью реальна и извлекаема</span><br>
+<span class="c">// человеком (или отдельным name→structure шагом, которого пока нет).</span></div>
+  </div>
+
+  <footer>
+    <p>Единственный найденный SMILES в этом прогоне — тот, что <code>TZSpecAgent</code> сгенерировал из
+      IUPAC-названия заказчика ещё до литературного поиска (см. врезку сверху) — не результат RAG-экстракции.</p>
+    <p>Сырые результаты: <code>evaluation/microfluidics/runs/custom_case_02_explore_isolated_v2.json</code>,
+      <code>evaluation/microfluidics/runs/custom_case_02_LIT05_retry.json</code>. Раннеры:
+      <code>scripts/run_case2_explore_isolated.py</code>. RAG-источник — живой
+      <code>explore_scientific_database</code> (10.32.11.45:7334), результаты не постобработаны и не отфильтрованы
+      вручную — только сведены в таблицы для читаемости.</p>
+  </footer>
+
+</div>
+</body>
+</html>

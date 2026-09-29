@@ -1,11 +1,12 @@
 """Human-in-the-Loop (HITL) module for CoScientist agents."""
 
-from CoScientist.hitl.models import HITLAction, HITLRequest, HITLResponse
+from CoScientist.hitl.models import HITLAction, HITLDecisionSource, HITLRequest, HITLResponse
 from CoScientist.hitl.handler import AbstractHITLHandler, ConsoleHITLHandler
 from CoScientist.hitl.tool import HITLToolset
 
 __all__ = [
     "HITLAction",
+    "HITLDecisionSource",
     "HITLRequest",
     "HITLResponse",
     "AbstractHITLHandler",

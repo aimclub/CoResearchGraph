@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from CoScientist.config import get_settings
 from CoScientist.agents.callbacks.tool_callbacks import (
     RERANK_EMPTY_RANKING,
     RERANK_NO_CANDIDATES,
@@ -26,6 +27,11 @@ ACC = [
     {"tool_index": 1, "tool": "run_transformer", "server_id": "s1"},
     {"tool_index": 2, "tool": "dock_ligand", "server_id": "s2"},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _enable_fedot_fallback_for_routing_tests(monkeypatch):
+    monkeypatch.setattr(get_settings().web, "fedot_fallback_enabled", True)
 
 
 def _ctx(state):
@@ -261,6 +267,8 @@ def _stub_fedot(monkeypatch):
 
     monkeypatch.setattr(ft, "PostgresClient", _PG)
     monkeypatch.setattr(ft, "MAS", _MAS)
+    monkeypatch.setattr(ft, "PatchedMAS", _MAS)
+    monkeypatch.setattr(ft, "PatchedMAW", _MAS)
     monkeypatch.setattr(ft, "HttpMCPServer", lambda **kw: kw)
 
     def call(state):

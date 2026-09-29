@@ -47,6 +47,7 @@ def _disable_adk_mcp_mtls_probe() -> None:
 _disable_adk_mcp_mtls_probe()
 
 _SSE_READ_TIMEOUT = 60 * 5.0
+_MCP_REQUEST_TIMEOUT = float(os.getenv("MCP__REQUEST_TIMEOUT", "60"))
 
 
 class DynamicMCPToolset(BaseToolset):
@@ -63,11 +64,27 @@ class DynamicMCPToolset(BaseToolset):
 
         # Web MCPs deployed by WebToolsDeployerAgent (dicts already carry a url).
         for s in (state.get("deployed_mcps") or []):
-            if s.get("url"):
+            if isinstance(s, dict) and s.get("url"):
                 urls[s["url"]] = s.get("name", s["url"])
 
-        # Retrieved/filtered local tools reference a server_id -> resolve to a url.
-        server_ids = {t["server_id"] for t in (state.get("filtered_tools") or []) if t.get("server_id")}
+        # Filtered tools from plan already carry url.
+        for t in (state.get("filtered_tools") or []):
+            if isinstance(t, dict) and t.get("url"):
+                urls[t["url"]] = t.get("server_name") or t.get("name") or t["url"]
+
+        # Active task envelope mcp_servers.
+        envelope = state.get("experiment_active_envelope") or {}
+        task = envelope.get("task") or {}
+        for srv in task.get("mcp_servers") or []:
+            if isinstance(srv, dict) and srv.get("url"):
+                urls[srv["url"]] = srv.get("name") or srv["url"]
+
+        # If all URLs were resolved from the plan/deployed MCPs, do not query Postgres.
+        if urls:
+            return urls
+
+        # Fallback only when URL is missing: resolve server_id via Postgres.
+        server_ids = {t["server_id"] for t in (state.get("filtered_tools") or []) if isinstance(t, dict) and t.get("server_id")}
         if server_ids:
             try:
                 from rag_tools.storage import PostgresClient
@@ -99,7 +116,11 @@ class DynamicMCPToolset(BaseToolset):
             ts = self._by_url.get(url)
             if ts is None:
                 ts = McpToolset(
-                    connection_params=StreamableHTTPConnectionParams(url=url, sse_read_timeout=_SSE_READ_TIMEOUT)
+                    connection_params=StreamableHTTPConnectionParams(
+                        url=url,
+                        timeout=_MCP_REQUEST_TIMEOUT,
+                        sse_read_timeout=_SSE_READ_TIMEOUT,
+                    )
                 )
                 self._by_url[url] = ts
             try:

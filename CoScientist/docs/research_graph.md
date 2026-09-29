@@ -41,13 +41,14 @@ auto-assigned per type: `Q1`, `H2`, `E3`, `VM1`, `CC1`, `T1`, …
 | Hypothesis | H | formulated → under_verification → confirmed / refuted / postponed |
 | Evidence | E | obtained → validated / rejected (requires `attrs.subtype`: literature/experimental/computational/expert/meta) |
 | Conclusion | CL | draft → approved |
-| VerificationMethod | VM | planned → running → done / failed |
+| VerificationMethod | VM | proposed → used / not_used; not_used → used |
 | ConfirmationCriteria | CC | not_met ↔ met |
 | Tool | T | available / needs_adaptation → being_created → available / creation_failed |
 | Resource | R | available ↔ exhausted |
 | EmpiricalBase | EB | created |
 | Constraint | C | active (requires `attrs.subtype`: profile/methodological_norms/theoretical_framework/domain_standards/ethics/expert_knowledge/roles) |
 | CodeArtifact / GeneratedData / Report / Publication / Spec / EfficiencyJustification | CA/GD/RP/PB/SP/EJ | created |
+| Framing / Outcome (**derived** — projected by `to_view`, `creatable=()`, no agent may write one) | F/OC | derived |
 | CostModel / EfficiencyMetric | CM/EM | created |
 
 Layer 5 of the meta-model (transition triggers, completion criteria, AI
@@ -56,7 +57,9 @@ implemented in `queries.py` and in each node's `status_history`.
 
 ### Edge types (allowed `from → to`)
 
-`motivates` (Q→H), `tested_by` (H→VM), `requires` (H→T), `uses` (VM→T),
+`motivates` (Q→H), `tested_by` (H→VM, **Q→VM** — a plan arrives before its
+hypotheses do), `supersedes` (H→H, with `attrs.verdict`/`attrs.reason` — the
+iteration chain: which hypothesis replaced which, and why), `requires` (H→T), `uses` (VM→T),
 `consumes` (VM→R), `produces` (VM→E, CL→Q), `supports`/`refutes`/`refines`
 (E→H), `based_on` (CL→E), `determines_sufficiency` (CC→CL), `formulated_for`
 (CC→H), `regulates` (C→VM/CC), `constrains` (C→H/VM), `derived_from`
@@ -80,12 +83,13 @@ write of a disallowed type/edge/transition is rejected before anything is saved.
 | Agent | Creates | Status changes | Edges |
 |---|---|---|---|
 | OrchestratorAgent | ResearchQuestion, Tool, Resource, EmpiricalBase, Constraint, Conclusion, artifacts, CostModel, EfficiencyMetric | Question, Hypothesis, Resource, Conclusion, Criteria, Evidence(validate/reject) | contextualizes, defines_scope, based_on, determines_sufficiency, produces(CL→Q), derived_from, applies_to, motivates |
-| HypothesesAgent | Hypothesis, VerificationMethod, ConfirmationCriteria | Hypothesis formulated→postponed | motivates, tested_by, requires, formulated_for, uses, consumes |
+| HypothesesAgent | Hypothesis, VerificationMethod, ConfirmationCriteria | Hypothesis formulated→postponed | motivates, tested_by, requires, formulated_for, uses, consumes, supersedes |
 | ResearchAgent | Evidence, EmpiricalBase (+enrich EB) | Evidence | relates_to, supports, refutes, refines, defines_scope |
 | MedicalAgent | Evidence | Evidence | relates_to, supports, refutes, refines |
-| CoderAgent | Tool, CodeArtifact, GeneratedData, Evidence (+enrich Tool) | Tool, VerificationMethod | uses, consumes, produces(VM→E), derived_from, supports/refutes/refines, relates_to |
+| CoderAgent | Tool, CodeArtifact, GeneratedData, Evidence, VerificationMethod | Tool, VerificationMethod | uses, consumes, produces(VM→E), derived_from, supports/refutes/refines, relates_to, tested_by |
 | DatasetCollectorAgent | GeneratedData, EmpiricalBase (+enrich EB) | — | derived_from, defines_scope, relates_to |
-| ExperimentAgent | Evidence, GeneratedData | VerificationMethod | produces(VM→E), uses, consumes, supports/refutes/refines, relates_to, derived_from |
+| ExperimentAgent | Evidence, GeneratedData, VerificationMethod | VerificationMethod | produces(VM→E), uses, consumes, supports/refutes/refines, relates_to, derived_from, tested_by |
+| plan-mirror (**not an agent** — deterministic code mirroring the registered plan) | VerificationMethod | — | tested_by |
 | human (HITL bridge) | Constraint | Conclusion draft→approved | — |
 
 The `human` row is written through the HITL approval flow, not an LLM toolset.
@@ -103,10 +107,10 @@ it doesn't have.)
 
 ```jsonc
 nodes: [
-  {"type": "Evidence", "attrs": {"subtype": "computational", "content": "AUC=0.91"}, "ref": "e1"},
+  {"type": "Evidence", "attrs": {"subtype": "computational", "content": "AUC=0.91"}, "ref": "e_new"},
   {"id": "EB1", "attrs": {"volume": "20k"}}          // enrich an existing node (no "type")
 ]
-edges: [ {"type": "supports", "from": "#e1", "to": "H2"} ]   // "#ref" points at a node made in this call
+edges: [ {"type": "supports", "from": "#e_new", "to": "H2"} ] // "#ref" points at a node made in this call
 status_updates: [ {"id": "H2", "status": "under_verification", "reason": "..."} ]
 ```
 
@@ -166,12 +170,67 @@ accumulates across all prompts in one session, so a session can contain one
 complete research. `research_init` archives the previous graph inside the same
 session directory. Nodes are never deleted.
 
+### The root and the middle layer are guaranteed by code
+
+Two things a readable graph cannot do without used to depend on a model
+remembering to write them, and a run where nobody did produced a record that
+could not be read as research at all:
+
+* **The root question.** `store.ensure_root(question)` is idempotent and
+  NON-destructive (unlike `init_research`, which wipes and archives), and runs
+  at the start of every message from `CoScientistManager.seed_research_context`
+  — web and CLI alike. It deliberately leaves `_research_id` alone, because the
+  background validator keys its dedup on that id. It is skipped when the
+  context-init pre-stage is enabled, since that stage seeds a richer frame and
+  would archive a study one second old.
+* **The plan.** `sync_plan_to_research_graph` mirrors each registered plan task
+  into a `PlanStep` attributed to `plan-mirror`, so a reader can see at a glance
+  that no model chose them. (It used to write them as VerificationMethods, which
+  is the confusion the `PlanStep` type exists to undo: a step is an intention, a
+  method is the means.) It is idempotent per task
+  title and runs from two hooks — `after_tool` on `create_plan` and
+  `before_agent` on the orchestrator (reading `_master_active_tasks`) — because
+  `create_plan` belongs to an agent that ships disabled, and an operator can
+  register a roadmap straight from the web UI.
+
+A refused commit is no longer silent: the store logs it, counts it into the
+view's `rejected_commits` gap, and `_is_error` now treats `{"ok": false}` as a
+failed call, so the execution log stops drawing a write that saved nothing as a
+success.
+
 ## Web viewer
 
 The active session opens `/graph?user_id=...&session_id=...`; the view selector
 loads its **research graph (blackboard)** from
-`/api/users/{user_id}/sessions/{session_id}/graph?view=research`. Nodes are
-colored by type and shaped by kind; click a node for its attributes.
+`/api/users/{user_id}/sessions/{session_id}/graph?view=research`.
+
+**The server decides what is drawn.** `to_view` is a projection, not a dump:
+
+* **Folding.** The engineering record travels on the card it belongs to instead
+  of competing with it — datasets and code become `attachments` on the Evidence
+  they were `derived_from`, tools become `chips` on the method that `uses` them,
+  a criterion becomes the method's `criterion` line, and the context star
+  becomes one **Framing** card beside the question. Edges are *re-pointed* at
+  the absorbing card, never dropped. (The client used to filter by node kind and
+  discard every edge touching a hidden one — in a real session that was 100% of
+  the edges, and the canvas drew unconnected cards.)
+* **Connectedness is an invariant.** Anything still unattached after folding is
+  tied to the root with a faint synthetic `context` edge, computed over the
+  projection rather than over the store.
+* **Why, not just what.** Every node carries `status_history` (each move, its
+  author and its `reason`) plus a derived `why`, and `why_missing` when an
+  outcome like `failed`/`refuted`/`postponed` has no reason recorded.
+* **Honest holes.** `gaps` lists what the record is missing as *codes*
+  (`no_root`, `no_frame`, `no_hypotheses`, `no_methods`, `no_evidence`,
+  `unreasoned_failures`, `rejected_commits`) which the page renders through its
+  own dictionary; `counters` and `headline` drive the tally above the canvas.
+
+The page lays the columns out left to right — Framing/Question → Hypotheses →
+Methods → Evidence → Conclusions → Outcome — and a click opens the full text,
+the status trail with reasons, the attachments and the tool-call provenance.
+Canvas labels go through `visSafe`: vis-network compiles a `multi:"html"` label
+as a regular expression as soon as it contains `&`, which threw out of the
+render loop and left the canvas blank.
 
 ## Settings (`RESEARCH_GRAPH__*`)
 

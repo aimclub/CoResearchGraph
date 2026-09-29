@@ -3,6 +3,7 @@ import asyncio
 import types
 
 from CoScientist.agents.loop_guard_plugin import RepeatCallGuardPlugin
+from CoScientist.agents.callbacks.tool_callbacks import TavilySearchLimiter
 
 
 def _call(guard, tool, args, agent="DatasetCollectorAgent"):
@@ -40,3 +41,21 @@ def test_counts_are_per_agent():
     for _ in range(5):
         _call(guard, "tavily_search", args, agent="A")
     assert _call(guard, "tavily_search", args, agent="B") is None
+
+
+def test_tavily_fallback_budget_is_independent_per_agent():
+    limiter = TavilySearchLimiter(max_searches=2)
+    state = {}
+
+    def call(agent, tool="tavily_search"):
+        return limiter.limit_searches(
+            types.SimpleNamespace(name=tool), {},
+            types.SimpleNamespace(agent_name=agent, state=state),
+        )
+
+    assert call("ResearchAgent") is None
+    assert call("ResearchAgent") is None
+    assert call("ResearchAgent") is not None
+    assert call("EconomicsAgent") is None
+    assert call("ReactorAgent") is None
+    assert call("EconomicsAgent", "search_by_structure") is None

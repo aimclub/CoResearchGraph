@@ -1,20 +1,25 @@
 from CoScientist.agents.common import is_proxy_error
 import asyncio
+import copy
 import json
 import logging
+import mimetypes
 import os
+import re
 import time
 from collections import defaultdict, OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, Optional
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
@@ -31,8 +36,10 @@ from CoScientist.agents.callbacks.report_language import (
 from CoScientist.main import CoScientistManager
 from CoScientist.web.handler import WebHITLHandler, hitl_response_event
 from CoScientist.web.session_registry import LocalSessionRegistry
+from CoScientist.web.run_control import ExecutionControlMixin, register_execution_routes
 from CoScientist.agents import agent_system, planner_agent
-from CoScientist.config import ReportConfig
+from CoScientist.config import ReportConfig, settings_scope
+from CoScientist.config.settings import Settings
 from CoScientist.reporting import finalize_report
 from CoScientist.hitl.tool import hitl_toolset
 from CoScientist.config import get_settings
@@ -45,7 +52,7 @@ from CoScientist.utils.text import strip_thinking
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
-from google.adk.sessions import InMemorySessionService
+from CoScientist.web.durable_sessions import DurableSessionService
 from google.genai import types
 from google.adk.agents.run_config import RunConfig
 from google.adk.workflow.utils._workflow_hitl_utils import (
@@ -74,14 +81,61 @@ def _json_safe(value):
         return str(value)
 
 
+_STATIC_REF = re.compile(r'((?:src|href)="/static/)([^"?#]+)(")')
+
+
+def _versioned_static_refs(html: str, static_dir: Path) -> str:
+    """Append ``?v=<mtime>`` to every /static/ asset the page references.
+
+    The page itself is no-store, so a changed asset gets a new URL and is
+    fetched on the next load — even from a browser that cached the old one
+    before the assets were served with Cache-Control."""
+
+    def version(match: re.Match) -> str:
+        try:
+            stamp = (static_dir / match.group(2)).stat().st_mtime_ns
+        except OSError:
+            return match.group(0)
+        return f"{match.group(1)}{match.group(2)}?v={stamp}{match.group(3)}"
+
+    return _STATIC_REF.sub(version, html)
+
+
+def _pipeline_stages(run_settings: Settings | None = None) -> list:
+    """The stages of a linear pipeline (see ``SystemConfig.linear_stages``) —
+    the status indicator counts them; [] when the run is not a linear one."""
+    try:
+        from CoScientist.agents import config_for_mode
+
+        with settings_scope(run_settings):
+            return config_for_mode().linear_stages()
+    except Exception as exc:  # noqa: BLE001 — a status line must not break the socket
+        logging.getLogger(__name__).warning("pipeline stages unavailable: %s", exc)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Runtime types and constants
 # ---------------------------------------------------------------------------
 WEB_DIR = Path(__file__).parent
 TEMPLATE_PATH = WEB_DIR / "templates" / "index.html"
 APP_NAME = "coscientist_app"
+
+
 SessionKey = tuple[str, str]
 SOCKET_SEND_TIMEOUT_SECONDS = 5.0
+
+
+def _web_session_service() -> DurableSessionService:
+    """Create the durable ADK session store used by the web runtime.
+
+    Session files live beside the web registry, so state, ADK events and
+    checkpoint state are kept on the same durable volume.
+    """
+    from CoScientist.web.session_store import state_dir
+    return DurableSessionService(state_dir())
+
+
 # Tool records replayed to a reconnecting tab. Chat messages live in the same
 # log and are never dropped, so only the tool stream is capped.
 MAX_TOOL_ACTIVITY_EVENTS = 600
@@ -102,6 +156,134 @@ ARTIFACT_URL_CACHE_TTL_SECONDS = 50 * 60
 _ARTIFACT_URL_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
 _ARTIFACT_URL_CACHE_MAX = 1000
 
+#: A direct download out of the sandbox is held in memory on the way through,
+#: so it is bounded — beyond this, the transfer through storage is the route.
+_DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _ascii_name(name: str) -> str:
+    """A filename safe to put in a header: no quotes, no newlines, no non-ASCII.
+
+    Non-ASCII is dropped rather than replaced: `отчёт_v2.txt` keeps `_v2.txt`,
+    which is at least a name, where a row of question marks is not.
+    """
+    cleaned = "".join(ch for ch in str(name) if ch.isprintable() and ch not in '"\\')
+    return cleaned.encode("ascii", "ignore").decode("ascii")
+
+
+def _disposition(kind: str, name: str) -> str:
+    """``Content-Disposition`` that keeps the name a Russian-speaking run gives.
+
+    The header is ASCII, so a wholly Cyrillic name has no ASCII form worth
+    offering. RFC 5987's ``filename*`` carries the real one, and the plain
+    ``filename`` stays only for a client that cannot read it — as a fallback
+    that is still a filename. This is the shape the session-file endpoint
+    settled on; the two should not answer differently.
+    """
+    stem = _ascii_name(Path(str(name)).stem).strip(" ._-")
+    suffix = _ascii_name(Path(str(name)).suffix)
+    ascii_name = f"{stem or 'file'}{suffix}"
+    return (f'{kind}; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(str(name))}")
+
+
+def _readable_links(text: str, scope: SessionKey) -> str:
+    """Every link in one piece of agent prose, made openable by the reader.
+
+    The single boundary between what an agent wrote and what a person sees.
+    Both chat paths pass through it, so the live socket and the replayed
+    transcript can never disagree about a link.
+
+    Two rewrites, in order:
+
+    * ``cos-artifact:<id>`` becomes ``/api/users/<u>/sessions/<s>/artifacts/<id>``.
+      The stored form carries no session on purpose — that is what lets an
+      exported bundle open elsewhere — but no browser knows the scheme, and the
+      chat's sanitizer drops an ``src`` it cannot classify. So it is resolved
+      here, from the scope that is asking, and nowhere earlier.
+    * a raw S3 URL becomes ``/api/artifact/<bucket>/<key>``. Report prose used
+      to carry presigned URLs verbatim: four hundred characters of signature
+      that stop working within the hour, which is exactly what a user reported
+      seeing in the chat.
+
+    Never raises, and never shortens: a message must still arrive.
+    """
+    if not text:
+        return text
+    try:
+        from CoScientist.utils.report_links import resolve_artifact_refs
+
+        return remint_report_urls(resolve_artifact_refs(text, scope), scope)
+    except Exception:  # noqa: BLE001 — a link is not worth a lost message
+        logging.getLogger("CoScientist.web").warning(
+            "could not rewrite links for delivery", exc_info=True
+        )
+        return text
+
+
+_MARKDOWN_PAGE = """<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>__TITLE__</title>
+  <link rel="stylesheet" href="/static/css/fonts.css" />
+  <script src="/static/js/appearance.js"></script>
+  <link rel="stylesheet" href="/static/css/main.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+  <style>
+    body { margin: 0; background: rgb(var(--c-background)); color: rgb(var(--c-on-surface));
+           font-family: var(--font-ui); }
+    main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+    .bar { display: flex; justify-content: flex-end; font-size: 12px; margin-bottom: 16px; }
+    .bar a, .md-body a { color: rgb(var(--c-primary-text)); }
+    .md-body img { max-width: 100%; }
+    .md-body pre { overflow-x: auto; }
+    .md-body table { display: block; overflow-x: auto; border-collapse: collapse; }
+    .md-body th, .md-body td { border: 1px solid rgb(var(--c-outline-variant) / .35); padding: 4px 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="bar"><a href="__RAW__">Raw .md</a></div>
+    <article id="doc" class="md-body"></article>
+  </main>
+  <script id="doc-source" type="application/json">__SOURCE__</script>
+  <script>
+    const source = JSON.parse(document.getElementById('doc-source').textContent);
+    const doc = document.getElementById('doc');
+    if (window.marked && window.DOMPurify) {
+      marked.setOptions({ gfm: true });
+      doc.innerHTML = DOMPurify.sanitize(marked.parse(source));
+    } else {
+      // Offline: the CDN is out of reach, and plain text still beats nothing.
+      doc.style.whiteSpace = 'pre-wrap';
+      doc.textContent = source;
+    }
+  </script>
+</body>
+</html>
+"""
+
+
+def _markdown_page(text: str, *, title: str, raw_href: str) -> str:
+    """A markdown artifact as a page a person can read, in the app's theme.
+
+    Rendered in the browser with the same marked + DOMPurify the chat uses, so
+    the server needs no markdown library. The source travels as JSON with every
+    ``<`` escaped, which is what keeps a ``</script>`` in it from closing the tag.
+    """
+    from html import escape
+
+    source = json.dumps(text).replace("<", "\\u003c")
+    return (
+        _MARKDOWN_PAGE
+        .replace("__TITLE__", escape(title))
+        .replace("__RAW__", escape(raw_href))
+        .replace("__SOURCE__", source)
+    )
+
 
 def _mint_artifact_url(bucket: str, key: str) -> str | None:
     """Mint a fresh download URL for one object. Runs in a worker thread.
@@ -120,8 +302,10 @@ def _mint_artifact_url(bucket: str, key: str) -> str | None:
         if payload is None:
             return None
         return payload.get("presigned_url") or payload.get("url")
+    content_type = mimetypes.guess_type(key)[0]
     return s3_service.generate_presigned_url(
-        key, "get_object", expiration=3600, bucket_name=bucket
+        key, "get_object", expiration=3600, bucket_name=bucket,
+        response_content_type=content_type,
     )
 
 
@@ -163,6 +347,28 @@ def _validated_report_language(raw: Any) -> str:
     return lang
 
 
+class _RevalidatingStatic(StaticFiles):
+    """Serve the front end with "ask me every time".
+
+    `index()` below already sends `no-store` for exactly this reason — but the
+    dozen modules the page then pulls in went out with no `Cache-Control` at
+    all, so a browser applied heuristic freshness to them. A restarted server
+    could therefore still be driving yesterday's JavaScript, and that failure
+    is invisible: nothing errors, the new thing simply is not there. Seen on
+    2026-09-21, when two rail rows merged half an hour earlier were reported
+    missing from a page whose server had them.
+
+    `no-cache` is not `no-store`: the browser still keeps the file and still
+    asks, and the ETag turns the answer into a 304 with no body. The 1.6 MB of
+    vendored ELK is downloaded once, not once per page.
+    """
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 def _apply_frontend_settings(frontend: dict) -> None:
     """Map the frontend JS ``appSettings`` object to ``settings.web``.
 
@@ -186,6 +392,16 @@ def _apply_frontend_settings(frontend: dict) -> None:
         val = bool(general["hitlEnabled"])
         web.hitl_enabled = val
         get_settings().hitl.enabled = val
+    # The one knob that decides whether this run asks a human and for how long.
+    # Read at call time everywhere, so it applies to the next card rather than
+    # the next restart — but HITL__MODE in the environment still wins, and the
+    # tab is told so rather than silently losing the change.
+    if "hitlMode" in general:
+        from CoScientist.hitl.mode import MODES
+
+        chosen = str(general["hitlMode"] or "").strip().lower()
+        if chosen in MODES:
+            web.hitl_mode = chosen
     if "hitlAutoApproveTimeout" in general:
         web.hitl_auto_approve_timeout = int(general["hitlAutoApproveTimeout"])
     if "workOrderEnabled" in general:
@@ -218,6 +434,41 @@ def _apply_frontend_settings(frontend: dict) -> None:
         # graph/research/* both go through settings.research_graph.enabled).
         get_settings().research_graph.enabled = bool(general["researchGraphEnabled"])
 
+    # The experiment module's own two reviews. They are in the Approvals tab
+    # but NOT under `hitlEnabled`: ExperimentReviewSessionAgent._should_run_review
+    # ignores the global switch, so these flags are the only way past them.
+    experiment = frontend.get("experimentModule", {})
+    if experiment:
+        exp = get_settings().experiments
+        if "planAutoApprove" in experiment:
+            exp.plan_auto_approve = bool(experiment["planAutoApprove"])
+        if "resultAutoApprove" in experiment:
+            exp.result_auto_approve = bool(experiment["resultAutoApprove"])
+        # FEDOT.MAS route (EXPERIMENTS__ROUTE_FEDOT). The next session's tree
+        # attaches FedotAgent on it and builds the planner prompt with or
+        # without the route. Off also stops a running session at once: the
+        # critique and start_task read this flag on every call. On cannot reach
+        # a running session - its executor was built without FedotAgent.
+        if "routeFedot" in experiment:
+            exp.route_fedot = bool(experiment["routeFedot"])
+        # Alembic is already attached inside ExperimentExecutorAgent; this
+        # switch only makes the reviewed reuse→Coder/Alembic choice available.
+        if "routeAlembic" in experiment:
+            exp.route_alembic = bool(experiment["routeAlembic"])
+        # Both windows fail closed, so a nonsense value must not become
+        # "wait forever" by accident: the model declares gt=0 but a BaseModel
+        # does not validate assignment, and handler.py reads <= 0 as no
+        # deadline at all.
+        for key, attr in (("planReviewTimeoutS", "plan_review_timeout_s"),
+                          ("resultReviewTimeoutS", "result_review_timeout_s")):
+            if key in experiment:
+                try:
+                    val = float(experiment[key])
+                except (TypeError, ValueError):
+                    continue
+                if val > 0:
+                    setattr(exp, attr, val)
+
     planner = frontend.get("plannerAgent", {})
     if "retrievalEnabled" in planner:
         web.planner_retrieval_enabled = bool(planner["retrievalEnabled"])
@@ -234,6 +485,11 @@ def _apply_frontend_settings(frontend: dict) -> None:
     if "mergeTasksEnabled" in planner:
         web.merge_tasks_enabled = bool(planner["mergeTasksEnabled"])
 
+    if "callGraphCollapseSeconds" in general:
+        val = int(general["callGraphCollapseSeconds"])
+        if 1 <= val <= 600:
+            web.call_graph_collapse_seconds = val
+
     research = frontend.get("researchAgent", {})
     if "maxSearches" in research:
         val = int(research["maxSearches"])
@@ -245,12 +501,42 @@ def _apply_frontend_settings(frontend: dict) -> None:
         web.executor_tool_keep_score = float(task_exec["keepScore"])
     if "abstainScore" in task_exec:
         web.executor_tool_abstain_score = float(task_exec["abstainScore"])
+    # EXECUTOR__FEDOT_FALLBACK: FedotAgent's switch in the main profile (Settings →
+    # Agents). Attached when the next tree is built; ExecutorSwitchAgent reads
+    # it on every call, so off also stops the fallback in a running session.
+    if "fedotFallback" in task_exec:
+        web.fedot_fallback_enabled = bool(task_exec["fedotFallback"])
+
+    # MEDICAL__ENABLED. The next session's tree attaches MedicalAgent on it
+    # (orchestrator roster, experiment executor, planner prompt). Off also takes
+    # the medical route out of a running experiment at once: the critique and
+    # start_task ask medical_route_available on every call.
+    medical = frontend.get("medicalAgent", {})
+    if "enabled" in medical:
+        web.medical_agent_enabled = bool(medical["enabled"])
+
+    # NIR__ENABLED. Purely a runtime gate: NirReportAgent is attached whenever
+    # MCP__NORMCONTROL_URL is set, and this decides whether ask_nir_report
+    # offers the GOST 7.32-2017 report at all. It reads settings on every call,
+    # so the switch takes effect on the next aggregator run without a restart.
+    nir = frontend.get("nirReport", {})
+    if "enabled" in nir:
+        get_settings().nir.enabled = bool(nir["enabled"])
 
     hypotheses = frontend.get("hypothesesAgent", {})
     if "maxActiveHypotheses" in hypotheses:
         val = int(hypotheses["maxActiveHypotheses"])
         if 1 <= val <= 5:
             web.max_active_hypotheses = val
+    if "nodeReportAuto" in hypotheses:
+        web.node_report_auto = bool(hypotheses["nodeReportAuto"])
+
+    # Settings → Agents: per-agent on/off, reasoning and model over system.yaml.
+    # Read when the next session's agent tree is assembled.
+    agents = frontend.get("agents")
+    if isinstance(agents, dict):
+        from CoScientist.web.agent_settings import apply_agent_settings
+        apply_agent_settings(agents)
 
     coder = frontend.get("coderAgent", {})
     if "sandboxUrl" in coder:
@@ -286,9 +572,22 @@ def _settings_payload() -> dict:
     return {**_current_settings(), "defaults": _startup_settings()}
 
 
+def _effective_hitl_mode() -> str:
+    """The mode actually in force, so the tab shows what is happening and not
+    what was last saved. `HITL__MODE` in the environment outranks the setting,
+    and a tab that hid that would report a change it did not make."""
+    try:
+        from CoScientist.hitl.mode import hitl_mode
+
+        return hitl_mode()
+    except Exception:  # noqa: BLE001
+        return "basic"
+
+
 def _current_settings() -> dict:
     """The frontend ``appSettings`` shape, read back off the config singleton."""
     from CoScientist.config import get_settings
+    from CoScientist.web.agent_settings import current_agent_settings
     settings = get_settings()
     web = settings.web
     return {
@@ -298,6 +597,8 @@ def _current_settings() -> dict:
             "startMode": web.start_mode,
             "maxRetries": web.max_retries,
             "hitlEnabled": web.hitl_enabled,
+            "hitlMode": _effective_hitl_mode(),
+            "hitlModePinnedByEnv": bool(os.getenv("HITL__MODE", "").strip()),
             "hitlAutoApproveTimeout": web.hitl_auto_approve_timeout,
             "workOrderEnabled": web.work_order_enabled,
             "workOrderVetoSeconds": web.work_order_veto_seconds,
@@ -307,11 +608,20 @@ def _current_settings() -> dict:
             "autoNamingEnabled": web.auto_naming_enabled,
             # Read-only here: the browser stores its own choice over this default.
             "showInternal": web.show_internal_enabled,
+            "callGraphCollapseSeconds": web.call_graph_collapse_seconds,
             "coscientistUsername": web.coscientist_username or "",
             "contextInitEnabled": settings.context_init.enabled,
             "knowledgeGraphEnabled": web.knowledge_graph_enabled,
             "autoClearGraphEnabled": web.auto_clear_graph_enabled,
             "researchGraphEnabled": settings.research_graph.enabled,
+        },
+        "experimentModule": {
+            "planAutoApprove": settings.experiments.plan_auto_approve,
+            "resultAutoApprove": settings.experiments.result_auto_approve,
+            "planReviewTimeoutS": settings.experiments.plan_review_timeout_s,
+            "resultReviewTimeoutS": settings.experiments.result_review_timeout_s,
+            "routeFedot": settings.experiments.route_fedot,
+            "routeAlembic": settings.experiments.route_alembic,
         },
         "plannerAgent": {
             "retrievalEnabled": web.planner_retrieval_enabled,
@@ -321,33 +631,95 @@ def _current_settings() -> dict:
             "mergeTasksEnabled": web.merge_tasks_enabled,
         },
         "researchAgent": {"maxSearches": web.max_searches},
+        "medicalAgent": {"enabled": web.medical_agent_enabled},
+        # The GOST 7.32-2017 report. `available` is not a setting but a fact
+        # about the deployment: with no MCP__NORMCONTROL_URL there is nothing to
+        # submit a document to, and the switch has nothing to switch.
+        "nirReport": {
+            "enabled": settings.nir.enabled,
+            "available": settings.nir_buildable,
+        },
         "hypothesesAgent": {
             "maxActiveHypotheses": web.max_active_hypotheses,
+            "nodeReportAuto": web.node_report_auto,
         },
         "taskExecutorAgent": {
             "keepScore": web.executor_tool_keep_score,
             "abstainScore": web.executor_tool_abstain_score,
+            "fedotFallback": web.fedot_fallback_enabled,
         },
         "coderAgent": {
             "sandboxUrl": web.sandbox_url,
             "workspaceId": web.coder_workspace_id or "",
             "mode": web.coder_mode,
         },
+        "agents": current_agent_settings(),
     }
 
 
+_AGENT_CONFIGURATION_FIELDS = {
+    "general": ("startMode", "contextInitEnabled"),
+    "experimentModule": ("routeFedot", "routeAlembic"),
+    "medicalAgent": ("enabled",),
+    "nirReport": ("enabled",),
+    "taskExecutorAgent": ("fedotFallback",),
+    "agents": ("defaultReasoning", "overrides"),
+}
 
-class WebRuntime:
+
+def _agent_configuration_payload(frontend: dict) -> dict:
+    """Only settings that change which agents are built or can be routed to."""
+    result: dict[str, dict[str, Any]] = {}
+    for group, fields in _AGENT_CONFIGURATION_FIELDS.items():
+        source = frontend.get(group)
+        if not isinstance(source, dict):
+            continue
+        selected = {
+            field: copy.deepcopy(source[field])
+            for field in fields
+            if field in source
+        }
+        if selected:
+            result[group] = selected
+    return result
+
+
+def _without_agent_configuration(frontend: dict) -> dict:
+    """Return the process-wide part of a settings form submission."""
+    result = copy.deepcopy(frontend)
+    for group, fields in _AGENT_CONFIGURATION_FIELDS.items():
+        section = result.get(group)
+        if not isinstance(section, dict):
+            continue
+        for field in fields:
+            section.pop(field, None)
+        if not section:
+            result.pop(group, None)
+    return result
+
+
+
+class WebRuntime(ExecutionControlMixin):
     """Process-local users, ADK sessions, managers, sockets, and event logs."""
 
     def __init__(self) -> None:
-        # Identifies this server process. A tab whose remembered session was
-        # opened under a different boot id is looking at a previous run, and
-        # starts fresh instead of reopening it.
+        # Identifies this server process for diagnostics and frontend cache
+        # compatibility. It no longer controls session selection: sessions are
+        # durable and must reopen after a restart.
         self.boot_id = uuid4().hex
-        self.session_service = InMemorySessionService()
+        # The UI catalogue and graph files are durable, so the ADK session must
+        # be durable as well.  InMemorySessionService made a browser reconnect
+        # look healthy while the next invocation silently received an empty
+        # state/event history after a server restart.
+        self.session_service = _web_session_service()
         self.registry = LocalSessionRegistry()
         self.managers: dict[SessionKey, CoScientistManager] = {}
+        # Each session owns a small overlay containing only settings that alter
+        # the agent topology. A manager holds the immutable snapshot used by its
+        # current invocation; a newer desired revision is applied next time.
+        self.session_settings_cache: dict[SessionKey, tuple[int, Settings]] = {}
+        self.manager_agent_revisions: dict[SessionKey, int] = {}
+        self.stale_manager_trees: set[SessionKey] = set()
         self.manager_lock = asyncio.Lock()
         self.control_locks: dict[SessionKey, asyncio.Lock] = {}
         self.execution_locks: dict[SessionKey, asyncio.Lock] = {}
@@ -364,6 +736,9 @@ class WebRuntime:
         # Latest usage/cost snapshot per session — cumulative, so one entry is
         # the whole history and a reconnecting tab needs nothing older.
         self.metrics: dict[SessionKey, dict[str, Any]] = {}
+        # Latest ТЗ snapshot per session (ТЗ panel) — each one is
+        # the whole ТЗ, so a reconnecting tab needs only the last.
+        self.tz_snapshots: dict[SessionKey, dict[str, Any]] = {}
         # Dataset archive attached to a session from the chat's "+" menu. Kept
         # here as well as in ADK state so a reconnecting tab and a session whose
         # manager has not been built yet both see the same link.
@@ -379,8 +754,63 @@ class WebRuntime:
         self.hitl_handler.set_recorder(self.record_event)
         self.sockets: dict[SessionKey, list[WebSocket]] = defaultdict(list)
         self.active_runs: dict[SessionKey, asyncio.Task] = {}
+        # Metadata for the invocation currently producing automatic stage
+        # checkpoints.  The checkpoint plugin itself is Web-agnostic; its sink
+        # reads this table to attach the original query and event baseline.
+        self.run_contexts: dict[SessionKey, dict[str, Any]] = {}
+        # Installed by _wire_checkpoints; also used for HITL interrupt pauses
+        # which do not pass through the stage checkpoint plugin.
+        self.checkpoint_hitl = None
         # Run execution times (start to finish) per session
         self.run_times: dict[SessionKey, dict[str, Any]] = {}
+        self.init_execution_control()
+
+    def agent_configuration(self, key: SessionKey) -> tuple[int, dict[str, Any]]:
+        try:
+            session = self.registry.require_session(*key) or {}
+        except KeyError:
+            # Internal/unit callers can exercise the runtime before registering
+            # the public session. HTTP and WebSocket entry points validate it.
+            return 0, {}
+        config = session.get("agent_configuration") or {}
+        return int(config.get("revision") or 0), copy.deepcopy(config.get("settings") or {})
+
+    def settings_snapshot(self, key: SessionKey) -> tuple[int, Settings]:
+        """Effective immutable settings for the next invocation of ``key``."""
+        revision, overlay = self.agent_configuration(key)
+        cached = self.session_settings_cache.get(key)
+        if cached is not None and cached[0] == revision:
+            return cached
+        _startup_settings()
+        snapshot = get_settings().model_copy(deep=True)
+        with settings_scope(snapshot):
+            _apply_frontend_settings(overlay)
+        current = (revision, snapshot)
+        self.session_settings_cache[key] = current
+        return current
+
+    def save_agent_configuration(
+        self,
+        key: SessionKey,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        config = self.registry.set_agent_configuration(*key, settings)
+        self.session_settings_cache.pop(key, None)
+        self.stale_manager_trees.add(key)
+        return config
+
+    def agent_configuration_state(self, key: SessionKey) -> dict[str, Any]:
+        desired_revision, _ = self.agent_configuration(key)
+        active_revision = self.manager_agent_revisions.get(key)
+        running = bool(
+            key in self.active_runs and not self.active_runs[key].done()
+        )
+        return {
+            "desiredRevision": desired_revision,
+            "activeRevision": active_revision,
+            "pending": active_revision is not None and active_revision != desired_revision,
+            "running": running,
+        }
 
     def record_event(self, key: SessionKey, event: dict[str, Any]) -> None:
         """Append a UI event to memory and to the session's on-disk transcript,
@@ -434,13 +864,24 @@ class WebRuntime:
                 return False
 
             version = self._next_run_version(key)
-            self.run_times[key] = {
-                "started_at": datetime.now().isoformat(),
-                "finished_at": None,
-            }
             run_data = dict(data)
             run_data["_run_status_version"] = version
-            task = asyncio.create_task(_handle_chat(self, key, run_data))
+            agent_revision, run_settings = self.settings_snapshot(key)
+            # Capture before creating the task: saving settings after the user
+            # pressed Send must not alter this already accepted invocation.
+            run_data["_agent_revision"] = agent_revision
+            run_data["_settings_snapshot"] = run_settings
+            try:
+                handle = self.prepare_execution(key, run_data, run_settings)
+            except ValueError:
+                return False
+            # Continuation is the same durable research run, not a new timer.
+            # Set timing only after acceptance, so a rejected chat cannot reset it.
+            self.run_times[key] = {
+                "started_at": self._public_execution(handle.status())["started_at"],
+                "finished_at": None,
+            }
+            task = asyncio.create_task(self.run_controlled_chat(key, run_data))
             self.active_runs[key] = task
 
             def schedule_discard(finished: asyncio.Task) -> None:
@@ -465,13 +906,18 @@ class WebRuntime:
                 return False
             self.active_runs.pop(key, None)
             version = self._next_run_version(key)
+            control = self.execution_snapshot(key)
+            terminal_status = "paused" if control and control.get("pause_causes") else "idle"
             timing = self.run_times.get(key)
-            if timing and timing.get("finished_at") is None:
-                timing["finished_at"] = datetime.now().isoformat()
+            if timing and terminal_status == "paused":
+                timing["finished_at"] = None
+            elif timing and timing.get("finished_at") is None:
+                timing["finished_at"] = datetime.now().astimezone().isoformat()
         await self.send(key, self.status_payload(
             key,
-            "idle",
-            "Session is ready for the next request.",
+            terminal_status,
+            "Research is paused; its progress is preserved." if terminal_status == "paused"
+            else "Session is ready for the next request.",
             version=version,
         ))
         return True
@@ -479,6 +925,9 @@ class WebRuntime:
     async def stop_run(self, key: SessionKey) -> bool:
         """Cancel and remove the exact run currently owning this session."""
         async with self.control_lock(key):
+            handle = self.execution_handle(key)
+            if handle is not None and not self._closing:
+                self.execution_controller.stop(handle.run_id, "operator_stopped")
             task = self.active_runs.get(key)
             stopped = task is not None
             self.stopping_runs.add(key)
@@ -504,7 +953,7 @@ class WebRuntime:
             version = self._next_run_version(key)
             timing = self.run_times.get(key)
             if timing and timing.get("finished_at") is None:
-                timing["finished_at"] = datetime.now().isoformat()
+                timing["finished_at"] = datetime.now().astimezone().isoformat()
 
         # Network I/O happens outside the ownership lock so a slow browser
         # cannot block future control operations for the session.
@@ -524,27 +973,73 @@ class WebRuntime:
             })
         return stopped
 
-    async def get_manager(self, user_id: str, session_id: str) -> CoScientistManager:
+    async def get_manager(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        settings_snapshot: Settings | None = None,
+        agent_revision: int | None = None,
+    ) -> CoScientistManager:
         self.registry.require_session(user_id, session_id)
         key = (user_id, session_id)
+        if settings_snapshot is None or agent_revision is None:
+            desired_revision, desired_settings = self.settings_snapshot(key)
+            if settings_snapshot is None:
+                settings_snapshot = desired_settings
+            if agent_revision is None:
+                agent_revision = desired_revision
+        desired_revision, _ = self.agent_configuration(key)
         manager = self.managers.get(key)
-        if manager is not None:
+        if (
+            manager is not None
+            and self.manager_agent_revisions.get(key) == agent_revision
+            and (key not in self.stale_manager_trees or agent_revision != desired_revision)
+        ):
             return manager
         async with self.manager_lock:
             manager = self.managers.get(key)
-            if manager is None:
-                if get_settings().web.auto_clear_graph_enabled:
-                    _clear_session_graphs(user_id, session_id, view="all")
+            if (
+                manager is not None
+                and (
+                    self.manager_agent_revisions.get(key) != agent_revision
+                    or (key in self.stale_manager_trees and agent_revision == desired_revision)
+                )
+            ):
+                manager.settings_override = settings_snapshot
+                await manager.rebuild_agent_tree()
+            elif manager is None:
+                # NOT the place to wipe the session's graphs. A missing manager
+                # means "no manager since this process started", which is a very
+                # different thing from "a new session": continuing yesterday's
+                # study after a server restart came through here too, and
+                # archived the whole record before the first message of the day.
+                # A session starts clean where it is CREATED (create_user_session),
+                # and the research graph is explicitly meant to accumulate across
+                # every prompt in one session — that is what makes it readable as
+                # one investigation rather than a pile of single turns.
                 manager = CoScientistManager(
                     app_name=APP_NAME,
                     user_id=user_id,
                     session_id=session_id,
                     session_service=self.session_service,
+                    settings_override=settings_snapshot,
                 )
                 await manager.initialize()
                 self.managers[key] = manager
                 self.execution_locks[key] = asyncio.Lock()
+            self.manager_agent_revisions[key] = agent_revision
+            if desired_revision == agent_revision:
+                self.stale_manager_trees.discard(key)
+            else:
+                self.stale_manager_trees.add(key)
         return manager
+
+    def invalidate_agent_trees(self) -> int:
+        """Apply tree-level settings on each session's next request."""
+        keys = set(self.managers)
+        self.stale_manager_trees.update(keys)
+        return len(keys)
 
     def attach_socket(self, key: SessionKey, ws: WebSocket) -> None:
         if ws not in self.sockets[key]:
@@ -608,6 +1103,9 @@ class WebRuntime:
                     if current_run is not None and not current_run.done()
                     else "idle"
                 )
+                execution = self.execution_snapshot(key)
+                if execution and execution.get("pause_causes"):
+                    status = "paused"
                 version = self.run_versions[key]
                 messages = list(self.agent_events[key])
             try:
@@ -623,11 +1121,16 @@ class WebRuntime:
                     "messages": messages,
                     "active_tasks": _json_safe(active_tasks),
                     "status": status,
+                    "run_control": execution,
                     "run_status_version": version,
                     "metrics": self.metrics.get(key),
+                    "tz": self.tz_snapshots.get(key),
                     "run_times": self.run_times.get(key),
                     "dataset_url": self.dataset_urls.get(key, ""),
                     "report_language": self.report_languages.get(key, ""),
+                    "pipeline_stages": _pipeline_stages(self.settings_snapshot(key)[1]),
+                    "agent_configuration": self.agent_configuration_state(key),
+                    "checkpoints": self.list_checkpoints(key),
                 })
             except Exception:
                 self.detach_socket(key, ws)
@@ -750,6 +1253,12 @@ class WebRuntime:
             *(manager.close() for manager in self.managers.values()),
             return_exceptions=True,
         )
+
+    @staticmethod
+    def list_checkpoints(key: SessionKey) -> list[dict[str, Any]]:
+        from CoScientist.web.checkpoints import list_checkpoints
+
+        return list_checkpoints(*key)
 
 
 def _wire_hitl(runtime: WebRuntime) -> None:
@@ -875,13 +1384,24 @@ def _wire_tool_activity(runtime: WebRuntime) -> None:
     """
     from CoScientist.logging.tool_activity import set_tool_activity_sink
 
+    def is_delegation_record(event: dict[str, Any]) -> bool:
+        """A hand-off between agents, or the start of the run it spawned.
+
+        These few records are what the side-nav call graph is drawn from, so
+        they outlive the trim and the process, unlike the bulk of tool calls.
+        """
+        return bool(event.get("is_delegation")) or (
+            event.get("phase") == "agent_start" and bool(event.get("spawn_call_id"))
+        )
+
     def trim(events: list[dict[str, Any]]) -> None:
-        """Bound replay history: drop the oldest tool records, keep the chat."""
+        """Bound replay history: drop the oldest tool records, keep the chat
+        and the delegations."""
         if len(events) <= MAX_TOOL_ACTIVITY_EVENTS + TOOL_ACTIVITY_TRIM_SLACK:
             return
         indexes = [
             index for index, event in enumerate(events)
-            if event.get("type") == "tool_activity"
+            if event.get("type") == "tool_activity" and not is_delegation_record(event)
         ]
         excess = len(indexes) - MAX_TOOL_ACTIVITY_EVENTS
         if excess <= 0:
@@ -899,8 +1419,8 @@ def _wire_tool_activity(runtime: WebRuntime) -> None:
         call_id = event.get("call_id")
         full_fields = {
             field: event.pop(key_name)
-            for field, key_name in (("args", "args_full"), ("result", "result_full"), ("error", "error_full"))
-            if key_name in event
+            for field in ("args", "result", "error", "effective_args", "state_inputs")
+            if (key_name := f"{field}_full") in event
         }
         if not call_id or not full_fields:
             return
@@ -917,12 +1437,128 @@ def _wire_tool_activity(runtime: WebRuntime) -> None:
             return
         event = {"type": "tool_activity", **_json_safe(payload)}
         stash_full_values(key, event)
-        events = runtime.agent_events[key]
-        events.append(event)
-        trim(events)
+        if is_delegation_record(event):
+            runtime.record_event(key, event)
+        else:
+            runtime.agent_events[key].append(event)
+        trim(runtime.agent_events[key])
         await runtime.send(key, event)
 
     set_tool_activity_sink(deliver)
+
+
+async def _attach_document(
+    payload: dict[str, Any],
+    key: SessionKey,
+    *,
+    markdown: str,
+    kind: str,
+    agent: str = "",
+    summary: str = "",
+) -> None:
+    """Publish one long body as a session document and point the message at it.
+
+    Silent on failure: a message with no document is a message that shows its
+    body the way it always did. Losing the text is not on the table.
+    """
+    try:
+        from CoScientist.reporting.documents import publish_document
+
+        document = await asyncio.to_thread(
+            publish_document, key,
+            markdown=markdown, kind=kind, agent=agent, summary=summary,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("CoScientist.web").warning(
+            "chat document not published (%s): %s", kind, exc
+        )
+        return
+    if document:
+        payload["document"] = document.as_payload()
+        payload["summary"] = document.summary
+
+
+def _wire_checkpoints(runtime: WebRuntime) -> None:
+    """Persist the state emitted before every configured pipeline stage."""
+    from CoScientist.agents.checkpoint_plugin import set_checkpoint_sink
+    from CoScientist.web.checkpoints import save_checkpoint
+
+    async def deliver(key: SessionKey, payload: dict[str, Any]) -> None:
+        # A CLI/A2A runner in the same process has no Web-owned invocation.
+        run = runtime.run_contexts.get(key)
+        if run is None:
+            return
+        payload = dict(payload)
+        if not isinstance(payload.get("state"), dict):
+            session = await runtime.session_service.get_session(
+                app_name=APP_NAME, user_id=key[0], session_id=key[1],
+            )
+            if session is None:
+                return
+            payload["state"] = dict(session.state)
+
+        stages = _pipeline_stages()
+        agent = payload.get("agent") or payload.get("agent_name")
+        if payload.get("stage_index") is None:
+            payload["stage_index"] = next(
+                (i for i, stage in enumerate(stages)
+                 if stage.get("agent") == agent),
+                -1,
+            )
+        payload.setdefault("stage_count", len(stages))
+        payload.setdefault("title", f"HITL: {payload.get('message') or agent or 'decision'}")
+        payload.setdefault("agent", agent)
+        payload.setdefault("created_at", datetime.now().isoformat())
+        record = {
+            **payload,
+            "run_version": run.get("run_version", 0),
+            "ui_event_index": len(runtime.agent_events.get(key, [])),
+            "adk_event_baseline": run.get("adk_event_baseline", 0),
+            "root_query": run.get("root_query", ""),
+        }
+        # State and graph blackboards form one logical stage boundary.  Keeping
+        # only state would let a resumed agent read findings produced after the
+        # selected checkpoint through graph tools.
+        try:
+            from CoScientist.graph.memory import get_knowledge_graph
+            record["execution_graph"] = get_knowledge_graph(
+                user_id=key[0], session_id=key[1],
+            ).full()
+        except Exception:  # noqa: BLE001 - state checkpoint is still useful
+            pass
+        try:
+            from CoScientist.graph.research.store import get_research_graph
+            record["research_graph"] = get_research_graph(
+                user_id=key[0], session_id=key[1],
+            ).full()
+        except Exception:  # noqa: BLE001
+            pass
+        public = await asyncio.to_thread(save_checkpoint, key[0], key[1], record)
+        await runtime.send(key, {"type": "checkpoint_created", **public})
+
+    runtime.checkpoint_hitl = deliver
+    runtime.hitl_handler.set_checkpoint_sink(deliver)
+    set_checkpoint_sink(deliver)
+
+
+def _wire_tz_snapshots(runtime: WebRuntime) -> None:
+    """Stream a ТЗ into the ТЗ panel while it is being built.
+
+    The ТЗ agent (microfluidics profile) runs inside an AgentTool, in a child
+    session this web session cannot read until the whole module returns — so
+    the agent pushes a snapshot after every change and the sink below routes it
+    to the session's tabs.
+    """
+    from CoScientist.hitl.tz_panel import set_tz_sink
+
+    async def deliver(key: SessionKey, payload: dict[str, Any]) -> None:
+        if key not in runtime.sockets and key not in runtime.active_runs:
+            return
+        event = {"type": "tz_snapshot", **_json_safe(payload)}
+        runtime.tz_snapshots[key] = event
+        await runtime.send(key, event)
+
+    set_tz_sink(deliver)
 
 
 def _wire_agent_output(runtime: WebRuntime) -> None:
@@ -941,9 +1577,17 @@ def _wire_agent_output(runtime: WebRuntime) -> None:
             # A key we never served (e.g. the CLI default scope) has nowhere to go.
             return
         if "content" in payload and isinstance(payload["content"], str):
-            payload["content"] = strip_thinking(payload["content"])
+            payload["content"] = _readable_links(strip_thinking(payload["content"]), key)
             if not payload["content"].strip():
                 return
+            # The deliverable is a document; the feed gets its first paragraph
+            # and a button. `content` stays on the event — the transcript and
+            # any tab that predates the panel still read it.
+            await _attach_document(
+                payload, key,
+                markdown=payload["content"], kind="answer",
+                agent=str(payload.get("agent") or ""),
+            )
         event = {"type": "agent_output", **_json_safe(payload)}
         runtime.agent_events[key].append(event)
         await runtime.send(key, event)
@@ -957,8 +1601,18 @@ def _wire_agent_output(runtime: WebRuntime) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[CoScientist Web] Starting up …")
+    try:
+        from CoScientist.agents.common import verify_proxy_reachable
+        await verify_proxy_reachable()
+    except Exception as exc:
+        logging.getLogger("CoScientist.web").warning(
+            "Proxy pre-flight check failed on startup: %s", exc
+        )
     yield
     print("[CoScientist Web] Shutting down …")
+    from CoScientist.tools.mcp_catalog import close_catalog
+
+    await close_catalog()
     await app.state.runtime.close()
 
 
@@ -1035,20 +1689,24 @@ def create_app() -> FastAPI:
     _wire_sandbox_links(runtime)
     _wire_sandbox_plan(runtime)
     _wire_tool_activity(runtime)
+    _wire_checkpoints(runtime)
     _wire_agent_output(runtime)
     _wire_metrics(runtime)
+    _wire_tz_snapshots(runtime)
     app = FastAPI(
         title="CoScientist Web UI",
         version="1.0.0",
         lifespan=lifespan,
     )
     app.state.runtime = runtime
+    register_execution_routes(app, runtime)
 
     # Vendored JS/CSS (e.g. vis-network for the live graph) so the UI works
     # offline / behind a VPN without any CDN.
     _static_dir = WEB_DIR / "static"
     if _static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+        app.mount("/static", _RevalidatingStatic(directory=str(_static_dir)),
+                  name="static")
 
     if get_settings().checkpoints.enabled:
         from CoScientist.checkpoints import make_checkpoint_router
@@ -1065,8 +1723,10 @@ def create_app() -> FastAPI:
     async def index():
         # no-store: a cached index.html silently serves an OLD frontend — HITL
         # review cards then render without controls/content.
+        # The asset URLs carry their file's version, so a changed script is
+        # fetched right away rather than served from the browser's cache.
         return HTMLResponse(
-            TEMPLATE_PATH.read_text(encoding="utf-8"),
+            _versioned_static_refs(TEMPLATE_PATH.read_text(encoding="utf-8"), _static_dir),
             headers={"Cache-Control": "no-store"},
         )
 
@@ -1143,6 +1803,158 @@ def create_app() -> FastAPI:
             return JSONResponse({"status": "cancelled", "detail": str(exc)}, status_code=200)
 
     # --- Artifact delivery (report links) ---
+    @app.get("/api/users/{user_id}/sessions/{session_id}/sandbox/tasks")
+    async def list_session_sandbox_tasks(user_id: str, session_id: str):
+        """Every workspace the sandbox still holds, so the reader can choose one.
+
+        The session's own container is one of many on that machine, and the
+        sandbox addresses each by task id — the same id its console carries in
+        `?task_id=`. Offering the list turns "look at ours" into "look at any".
+        """
+        from CoScientist.tools.coder_tools import openhands_sandbox as sandbox
+
+        result = await asyncio.to_thread(
+            sandbox.list_sandbox_tasks, session_id=session_id,
+        )
+        if result.get("status") != "ok":
+            return JSONResponse(
+                {"status": "error",
+                 "message": result.get("error") or "Песочница не ответила.",
+                 "workspaces": []},
+                status_code=502,
+            )
+        return JSONResponse({"status": "ok",
+                             "sandbox_id": result.get("sandbox_id"),
+                             "workspaces": result.get("workspaces", [])})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/sandbox/files")
+    async def list_session_sandbox_files(user_id: str, session_id: str,
+                                         path: str = "/workspace",
+                                         sandbox_id: Optional[str] = None):
+        """What a sandbox workspace actually holds, for a human to see.
+
+        The agents have had `list_sandbox_files` all along; the person watching
+        the run had no way to look, and no way to reach a file the agent never
+        mentioned. Without ``sandbox_id`` this reads the session's own sandbox.
+        """
+        from CoScientist.tools.coder_tools import openhands_sandbox as sandbox
+
+        result = await asyncio.to_thread(
+            sandbox.list_sandbox_files, path, session_id=session_id,
+            sandbox_id=(sandbox_id or None),
+        )
+        if result.get("status") != "ok":
+            return JSONResponse(
+                {"status": "error",
+                 "message": result.get("error") or "Песочница не ответила.",
+                 "path": path, "entries": []},
+                status_code=502,
+            )
+        from CoScientist.web.preview import kind_of
+
+        entries = []
+        for entry in result.get("entries", []):
+            # The sandbox answers "dir"/"file"; normalise once, here, so the
+            # panel has a single word to test against.
+            directory = str(entry.get("type", "")).lower() in ("dir", "directory")
+            entries.append({
+                **entry,
+                "type": "dir" if directory else "file",
+                "kind": "dir" if directory else kind_of(entry.get("name", "")),
+            })
+        return JSONResponse({"status": "ok", "path": result.get("path", path),
+                             "entries": entries})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/sandbox/view")
+    async def view_session_sandbox_file(user_id: str, session_id: str,
+                                        path: str,
+                                        sandbox_id: Optional[str] = None,
+                                        download: int = 0,
+                                        dir: int = 0):
+        """Serve one workspace file to the browser, for reading rather than keeping.
+
+        The transfer through S3 is for files that must outlive the container —
+        a link in a report. Looking at a log or a plot wants neither a bucket
+        nor durability, so these bytes go straight through: the sandbox is on
+        another network, the browser is same-origin with us, and nothing is
+        stored on the way.
+        """
+        from CoScientist.tools.coder_tools import openhands_sandbox as sandbox
+        from CoScientist.web.preview import cap_for, kind_of, media_type_of
+
+        name = path.rsplit("/", 1)[-1] or "file"
+        # A directory comes back from the sandbox as one ZIP, so that is what
+        # the reader is saving and what it should be called.
+        if dir:
+            name, download = f"{name}.zip", 1
+        kind = kind_of(name)
+        # A checkpoint is not something to look at, and reading one to say so
+        # would move gigabytes. Downloading it, however, is fair.
+        cap = cap_for(name) if not download else _DOWNLOAD_MAX_BYTES
+        if cap <= 0:
+            raise HTTPException(
+                status_code=415,
+                detail="Этот файл можно только забрать — показать его нечем.",
+            )
+
+        result = await asyncio.to_thread(
+            sandbox.read_sandbox_file, path, max_bytes=cap,
+            session_id=session_id, sandbox_id=(sandbox_id or None),
+        )
+        if result.get("status") != "ok":
+            raise HTTPException(
+                status_code=502,
+                detail=result.get("error") or "Песочница не отдала файл.",
+            )
+
+        disposition = "attachment" if download else "inline"
+        headers = {
+            "Content-Disposition": _disposition(disposition, name),
+            # Sent as text, read as text: no sniffing an .html back into
+            # something the browser would run on our origin.
+            "X-Content-Type-Options": "nosniff",
+            "X-Preview-Kind": kind,
+            "X-Preview-Truncated": "1" if result.get("truncated") else "0",
+            "Cache-Control": "no-store",
+        }
+        if kind != "pdf":
+            # A PDF is shown by the browser's own viewer, which a bare `sandbox`
+            # policy stops from loading at all; it gets no DOM of ours either
+            # way. Everything else is locked down.
+            headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+        return Response(
+            content=result["data"],
+            media_type=("application/octet-stream" if download
+                        else media_type_of(name)),
+            headers=headers,
+        )
+
+    @app.post("/api/users/{user_id}/sessions/{session_id}/sandbox/fetch")
+    async def fetch_session_sandbox_file(user_id: str, session_id: str,
+                                         request: Request):
+        """Copy one sandbox path into storage and answer with its durable link.
+
+        The same transfer the agents use, so a file a person pulls across and a
+        file an agent pulls across are the same object with the same link.
+        """
+        from CoScientist.tools.coder_tools.sandbox_artifacts import (
+            transfer_sandbox_artifact,
+        )
+
+        body = await request.json()
+        path = str((body or {}).get("path") or "").strip()
+        if not path:
+            raise HTTPException(status_code=400, detail="path is required")
+        target = str((body or {}).get("sandbox_id") or "").strip() or None
+
+        result = await asyncio.to_thread(
+            transfer_sandbox_artifact, path, session_id=session_id,
+            sandbox_id=target,
+        )
+        return JSONResponse(result,
+                            status_code=200 if result.get("status") == "success" else 502)
+
     @app.get("/api/artifact/{bucket}/{key:path}")
     async def get_artifact(bucket: str, key: str):
         """Redirect the browser to a fresh download URL for one S3 object.
@@ -1175,6 +1987,159 @@ def create_app() -> FastAPI:
             _ARTIFACT_URL_CACHE.clear()
         _ARTIFACT_URL_CACHE[cache_key] = (url, now + ARTIFACT_URL_CACHE_TTL_SECONDS)
         return RedirectResponse(url, status_code=302)
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/artifacts")
+    async def list_session_artifacts(user_id: str, session_id: str):
+        """Everything this run produced, whether or not a node points at it.
+
+        A graph node links an artifact only when something recorded the link,
+        and plenty is captured that nothing ever attaches — a figure an MCP tool
+        rendered mid-task is in the store with its bytes, and reachable from
+        nowhere on the page. This is the flat answer to "what did the run make",
+        including what did NOT survive and why, so a missing figure is a fact
+        the reader can see rather than an absence they have to infer.
+        """
+        from CoScientist.reporting import session_files
+
+        try:
+            runtime.registry.require_session(user_id, session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        from CoScientist.utils.report_links import session_artifact_link
+
+        items = []
+        for artifact_id, record in session_files.load_manifest(session_id, user_id).items():
+            stored = record.get("state") == session_files.STATE_STORED
+            items.append({
+                "artifact_id": artifact_id,
+                "name": record.get("filename") or artifact_id,
+                # `label` titles it, `source_kind` is how the document panel
+                # tells a written document from a captured figure.
+                "label": record.get("label"),
+                "source_kind": record.get("source_kind"),
+                "agent": record.get("agent") or record.get("source_tool"),
+                "media_type": record.get("media_type"),
+                "size_bytes": record.get("size_bytes"),
+                "tool": record.get("source_tool"),
+                "state": record.get("state"),
+                "reason": record.get("reason"),
+                "captured_at": record.get("captured_at"),
+                "href": (
+                    session_artifact_link(user_id, session_id, artifact_id)
+                    if stored else None
+                ),
+            })
+        items.sort(key=lambda i: (i["state"] != session_files.STATE_STORED,
+                                  -(i.get("captured_at") or 0)))
+        return JSONResponse({
+            "artifacts": items,
+            "stored": sum(1 for i in items if i["state"] == session_files.STATE_STORED),
+            "total": len(items),
+        })
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/artifacts/{artifact_id}")
+    async def get_session_artifact(
+        request: Request,
+        user_id: str, session_id: str, artifact_id: str, fallback: str = "",
+        raw: bool = False,
+    ):
+        """Serve one file this session mirrored into its own directory.
+
+        The sibling of ``/api/artifact/<bucket>/<key>``, and deliberately not a
+        replacement for it:
+
+        =================  ============================  ==========================
+        ..                 /api/artifact/<b>/<k>          this route
+        =================  ============================  ==========================
+        storage            S3/MinIO                       this host's disk
+        scope              none                           one session, guarded
+        answers            302 to a fresh presigned URL   the bytes
+        needs              S3 reachable                   nothing
+        survives export    only if the bucket is shared   yes
+        =================  ============================  ==========================
+
+        Graph attrs and report markdown store ``cos-artifact:<id>``, which
+        carries no session — so an imported bundle resolves through whatever
+        scope is asking, with nothing rewritten.
+
+        Traversal is refused three times over: ``artifact_id`` is a plain path
+        parameter, so Starlette will not match a ``/`` at all; ``resolve_path``
+        re-checks the name against ``ARTIFACT_ID_RE`` and then confirms the
+        resolved file still sits inside this session's directory.
+        """
+        from CoScientist.reporting import session_files
+
+        try:
+            runtime.registry.require_session(user_id, session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        key = (user_id, session_id)
+        record = session_files.load_manifest(session_id, user_id).get(artifact_id) or {}
+        path = session_files.resolve_path(key, artifact_id)
+
+        if path is None:
+            # The bundle was exported without its files, or the copy was pruned.
+            # A second address beats a 404 when the record kept one.
+            if fallback == "s3" and record.get("bucket") and record.get("s3_key"):
+                from CoScientist.utils.report_links import artifact_link
+
+                return RedirectResponse(
+                    artifact_link(record["bucket"], record["s3_key"]), status_code=302
+                )
+            raise HTTPException(status_code=404, detail="No such artifact in this session.")
+
+        media_type = (
+            record.get("media_type")
+            or mimetypes.guess_type(artifact_id)[0]
+            or "application/octet-stream"
+        )
+        # A link to a markdown file is clicked by a person, who wants it read,
+        # not its `**` and `#`. Only a navigation asks for text/html; the doc
+        # panel's fetch() sends */* and keeps getting the bytes, as does ?raw=1.
+        is_markdown = (
+            media_type in ("text/markdown", "text/x-markdown")
+            or artifact_id.lower().endswith((".md", ".markdown"))
+        )
+        if is_markdown and not raw and "text/html" in request.headers.get("accept", ""):
+            return HTMLResponse(
+                _markdown_page(
+                    # `cos-artifact:` refs inside resolve against this session,
+                    # exactly as the same text would in the chat.
+                    _readable_links(path.read_text(encoding="utf-8", errors="replace"), key),
+                    title=record.get("label") or record.get("filename") or artifact_id,
+                    raw_href="?raw=1",
+                ),
+                headers={"Cache-Control": "private, no-cache", "Vary": "Accept"},
+            )
+
+        # Show what a browser can show; hand the rest over as a download under
+        # the name the tool gave it, not the hashed id.
+        inline = media_type.startswith(("image/", "text/")) or media_type == "application/pdf"
+        name = record.get("filename") or artifact_id
+        # A wholly Cyrillic name folds to nothing, and `filename=" .png"` is
+        # worse than no fallback at all. The id is ASCII by construction.
+        ascii_name = name.encode("ascii", "ignore").decode().strip()
+        if len(ascii_name.strip(" ._-")) < 3:
+            ascii_name = artifact_id
+        disposition = (
+            f"{'inline' if inline else 'attachment'}; filename=\"{ascii_name}\"; "
+            f"filename*=UTF-8''{quote(name)}"
+        )
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": disposition,
+                # The id is the content hash, so the bytes behind it can never
+                # change. Unlike /api/artifact/, whose 302 target expires.
+                "Cache-Control": "private, max-age=31536000, immutable",
+                # The same URL answers a navigation to a markdown file with a
+                # rendered page; a cache must not hand one to the other.
+                "Vary": "Accept",
+            },
+        )
 
     # --- Local users and sessions (process lifetime only) ---
     @app.get("/api/users")
@@ -1344,6 +2309,197 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"session": session})
+
+    # Hiding only takes sessions out of the picker; nothing is deleted.
+    @app.post("/api/users/{user_id}/sessions/hide-old")
+    async def hide_old_user_sessions(user_id: str, data: dict):
+        keep = data.get("keep", [])
+        if not isinstance(keep, list) or not all(isinstance(item, str) for item in keep):
+            raise HTTPException(status_code=400, detail="'keep' must be a list of session ids.")
+        try:
+            hidden = runtime.registry.hide_old_sessions(user_id, keep)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return JSONResponse({"hidden": hidden})
+
+    @app.post("/api/users/{user_id}/sessions/unhide-all")
+    async def unhide_user_sessions(user_id: str):
+        try:
+            shown = runtime.registry.unhide_sessions(user_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return JSONResponse({"shown": shown})
+
+    # --- Automatic stage checkpoints ---
+    @app.get("/api/users/{user_id}/sessions/{session_id}/checkpoints")
+    async def get_session_checkpoints(user_id: str, session_id: str):
+        try:
+            runtime.registry.require_session(user_id, session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return JSONResponse({
+            "checkpoints": runtime.list_checkpoints((user_id, session_id)),
+            "pipeline_stages": _pipeline_stages(),
+        })
+
+    @app.post(
+        "/api/users/{user_id}/sessions/{session_id}/checkpoints/"
+        "{checkpoint_id}/restore"
+    )
+    async def restore_session_checkpoint(
+        user_id: str,
+        session_id: str,
+        checkpoint_id: str,
+        data: dict,
+    ):
+        """Restore one stage boundary and optionally continue immediately.
+
+        Later ADK events are removed from model context, but the UI transcript
+        remains append-only for auditability and receives an explicit rollback
+        marker.  Graph state is restored alongside ADK state.
+        """
+        from CoScientist.agents.checkpoint_plugin import CHECKPOINT_RESUME_STATE_KEY
+        from CoScientist.graph.session_scope import (
+            GRAPH_SCOPE_SESSION_KEY,
+            GRAPH_SCOPE_USER_KEY,
+        )
+        from CoScientist.web.checkpoints import load_checkpoint
+
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(user_id, session_id)
+            checkpoint = await asyncio.to_thread(
+                load_checkpoint, user_id, session_id, checkpoint_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        continue_run = bool(data.get("continue", True))
+        async with runtime.control_lock(key):
+            current = runtime.active_runs.get(key)
+            if current is not None and not current.done():
+                raise HTTPException(
+                    status_code=409,
+                    detail="Stop the active run before restoring a checkpoint.",
+                )
+
+            manager = await runtime.get_manager(user_id, session_id)
+            adk_session = await runtime.session_service.get_session(
+                app_name=APP_NAME, user_id=user_id, session_id=session_id,
+            )
+            if adk_session is None:
+                raise HTTPException(status_code=404, detail="ADK session not found.")
+
+            restored_state = dict(checkpoint["state"])
+            restored_state[GRAPH_SCOPE_USER_KEY] = user_id
+            restored_state[GRAPH_SCOPE_SESSION_KEY] = session_id
+            restored_state[CHECKPOINT_RESUME_STATE_KEY] = {
+                "checkpoint_id": checkpoint_id,
+                "stage_index": checkpoint.get("stage_index", 0),
+                "agent": checkpoint.get("agent"),
+            }
+            adk_session.state.clear()
+            adk_session.state.update(restored_state)
+
+            # All events from the old invocation are unsafe after a rollback:
+            # they can mention outputs from stages later than this snapshot.
+            baseline = max(0, int(checkpoint.get("adk_event_baseline") or 0))
+            del adk_session.events[min(baseline, len(adk_session.events)):]
+            replace_session = getattr(runtime.session_service, "replace_session", None)
+            if replace_session is not None:
+                await replace_session(adk_session)
+
+            execution_graph = checkpoint.get("execution_graph")
+            if isinstance(execution_graph, dict):
+                from CoScientist.graph.memory import get_knowledge_graph
+                await asyncio.to_thread(
+                    get_knowledge_graph(
+                        user_id=user_id, session_id=session_id,
+                    ).restore,
+                    execution_graph,
+                )
+            research_graph = checkpoint.get("research_graph")
+            if isinstance(research_graph, dict):
+                from CoScientist.graph.research.store import get_research_graph
+                await asyncio.to_thread(
+                    get_research_graph(
+                        user_id=user_id, session_id=session_id,
+                    ).restore,
+                    research_graph,
+                )
+
+            runtime.tz_snapshots.pop(key, None)
+            runtime.tool_full_values.pop(key, None)
+            dataset_url = str(restored_state.get(DATASET_URL_STATE_KEY) or "")
+            if dataset_url:
+                runtime.dataset_urls[key] = dataset_url
+            else:
+                runtime.dataset_urls.pop(key, None)
+            language = str(restored_state.get(REPORT_LANGUAGE_STATE_KEY) or "")
+            if language in REPORT_LANGUAGES:
+                runtime.report_languages[key] = language
+            else:
+                runtime.report_languages.pop(key, None)
+            runtime.registry.touch_session(user_id, session_id, status="idle")
+
+        stage_index = int(checkpoint.get("stage_index") or 0)
+        marker = {
+            "type": "checkpoint_restored",
+            "checkpoint_id": checkpoint_id,
+            "stage_index": stage_index,
+            "stage_count": int(checkpoint.get("stage_count") or 0),
+            "agent": checkpoint.get("agent"),
+            "title": checkpoint.get("title") or checkpoint.get("agent"),
+            "pipeline_stages": _pipeline_stages(),
+            "dataset_url": runtime.dataset_urls.get(key, ""),
+            "report_language": runtime.report_languages.get(key, ""),
+            "continue": continue_run,
+            "timestamp": datetime.now().isoformat(),
+        }
+        runtime.record_event(key, marker)
+        await runtime.send(key, marker)
+
+        started = False
+        if continue_run:
+            root_query = str(checkpoint.get("root_query") or "").strip()
+            resume_message = (
+                "Continue the original task from the restored pipeline "
+                f"checkpoint immediately before stage {stage_index + 1} "
+                f"({marker['title']}). Use the restored session state as the "
+                "authoritative output of all earlier stages. Do not recreate "
+                "earlier work; the runtime will fast-forward any earlier "
+                "stages that a containing workflow enters. Execute the target "
+                "stage and every later required stage, then produce the final "
+                "deliverable."
+            )
+            if root_query:
+                resume_message += f"\n\nOriginal user request:\n{root_query}"
+            started = await runtime.start_run(key, {
+                "message": resume_message,
+                "_checkpoint_resume": True,
+                "_checkpoint_root_query": root_query or resume_message,
+            })
+            if not started:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Checkpoint was restored, but another run claimed the "
+                        "session before continuation could start."
+                    ),
+                )
+
+        return JSONResponse({
+            "status": "restored",
+            "checkpoint": {
+                key: marker[key]
+                for key in (
+                    "checkpoint_id", "stage_index", "stage_count", "agent", "title"
+                )
+            },
+            "continued": started,
+        })
 
     # --- Session export / import / save / restore ---
     @app.post("/api/users/{user_id}/sessions/{session_id}/export")
@@ -1562,6 +2718,72 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.get("/stats", response_class=HTMLResponse)
+    async def stats_page():
+        """The paper database statistics, as the paper-analysis server reports them."""
+        return HTMLResponse(
+            (WEB_DIR / "templates" / "stats.html").read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/tools", response_class=HTMLResponse)
+    async def tools_catalog_page():
+        """Deployment-wide catalogue of configured MCP tools."""
+        return HTMLResponse(
+            _versioned_static_refs(
+                (WEB_DIR / "templates" / "tools.html").read_text(encoding="utf-8"),
+                _static_dir,
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/agent-tree", response_class=HTMLResponse)
+    async def agent_tree_page():
+        """Visualize the effective multi-agent configuration of one session."""
+        return HTMLResponse(
+            _versioned_static_refs(
+                (WEB_DIR / "templates" / "agent_tree.html").read_text(encoding="utf-8"),
+                _static_dir,
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/mcp-tools")
+    async def mcp_tools_catalog_api():
+        """Return the saved catalogue immediately and refresh it when stale."""
+        from CoScientist.tools.mcp_catalog import get_catalog
+
+        return JSONResponse(
+            await get_catalog(refresh_if_stale=True),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/mcp-tools/refresh", status_code=202)
+    async def refresh_mcp_tools_catalog_api():
+        """Start one bounded MCP discovery pass (or join the current one)."""
+        from CoScientist.tools.mcp_catalog import get_catalog, request_refresh
+
+        started = await request_refresh(force=True)
+        payload = await get_catalog(refresh_if_stale=False)
+        payload["refresh_started"] = started
+        return JSONResponse(
+            payload,
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/paper-statistics")
+    async def paper_statistics_api():
+        """Call get_papers_database_statistics on the paper-analysis MCP server.
+
+        The tool answers from memory, so this is quick and the page can poll it.
+        """
+        from CoScientist.tools.paper_statistics_client import fetch_paper_statistics
+
+        payload = await fetch_paper_statistics()
+        status_code = {"not_configured": 503, "unavailable": 502}.get(payload["status"], 200)
+        return JSONResponse(payload, status_code=status_code, headers={"Cache-Control": "no-store"})
+
     def graph_payload(user_id: str, session_id: str, view: str,
                       turn: str | None = None):
         """Return one session's graph: research, execution, or execution
@@ -1574,10 +2796,16 @@ def create_app() -> FastAPI:
             if view == "research":
                 # One study at a time, and the session's others listed beside
                 # it — the same shape the execution log uses for requests.
-                return get_research_graph(
+                payload = get_research_graph(
                     user_id=user_id,
                     session_id=session_id,
                 ).view_of(turn)
+                # The graph page is a self-contained monolith: it loads none of
+                # the chat page's scripts and so cannot read the settings the
+                # usual way. A setting it must honour rides along with the data
+                # it already asks for.
+                payload["auto_node_reports"] = get_settings().web.node_report_auto
+                return payload
             execution = get_knowledge_graph(
                 user_id=user_id,
                 session_id=session_id,
@@ -1591,7 +2819,12 @@ def create_app() -> FastAPI:
                 # One request at a time: roster and hub removed, placed on a
                 # clock. The payload also lists the session's other requests.
                 from CoScientist.graph.projection import execution_tree
-                return execution_tree(execution, turn=turn)
+                # The scope is what turns a stored reference into a link, and it
+                # is the scope of whoever is *reading* — so an imported session
+                # resolves its artifacts under its own id.
+                return execution_tree(
+                    execution, turn=turn, scope=(user_id, session_id)
+                )
             if view not in ("", "execution"):
                 # `knowledge` and `memory` were served here until the knowledge
                 # memory was removed. Falling through to the execution graph
@@ -1621,6 +2854,125 @@ def create_app() -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return JSONResponse(payload)
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/graph/framing")
+    async def api_research_framing(
+        user_id: str,
+        session_id: str,
+        study_id: str = "active",
+    ):
+        """Structured technical specification for the selected research.
+
+        The graph itself remains a compact polling payload.  The full field
+        descriptions and long values are fetched only when the reader opens the
+        Technical specification card.
+        """
+        try:
+            runtime.registry.require_session(user_id, session_id)
+            from CoScientist.graph.research.store import get_research_graph
+
+            payload = get_research_graph(
+                user_id=user_id,
+                session_id=session_id,
+            ).framing_view_of(study_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/users/{user_id}/sessions/{session_id}/graph/agent_summary")
+    async def api_agent_summary(user_id: str, session_id: str, request: Request):
+        """A few lines from a small model on what one agent did in one request.
+
+        Body: ``{"node_id", "turn", "lang"}``. Only on request — the button in
+        the execution log's panel — and remembered per trace, so a click on an
+        agent that has not changed since is free.
+        """
+        body = await request.json() if await request.body() else {}
+        node_id, turn = body.get("node_id"), body.get("turn") or None
+        if not node_id:
+            raise HTTPException(status_code=422, detail="node_id is required")
+        try:
+            tree = graph_payload(user_id, session_id, "execution", turn)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        node = next((n for n in tree.get("nodes", []) if n.get("id") == node_id), None)
+        if node is None or node.get("kind") not in ("agent", "agent_call"):
+            raise HTTPException(status_code=404, detail=f"agent {node_id!r} is not in this request")
+        from CoScientist.graph.agent_summary import summarize
+        from CoScientist.graph.summary_store import for_session
+        try:
+            result = await summarize(node, lang=str(body.get("lang") or "ru"),
+                                     scope=f"{user_id}/{session_id}",
+                                     force=bool(body.get("again")),
+                                     # Durable: the in-process cache dies with
+                                     # the process, and re-opening a finished
+                                     # study used to re-buy every account.
+                                     store=for_session((user_id, session_id)))
+        except Exception as exc:  # noqa: BLE001 — the model is an outside service
+            raise HTTPException(status_code=502, detail=f"summary failed: {exc}") from exc
+        return JSONResponse(result)
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/graph/agent_summary")
+    async def api_agent_summary_stored(user_id: str, session_id: str,
+                                       node_id: str, lang: str = "ru"):
+        """What has already been written about this agent's run, or 404.
+
+        Reads, never writes. The node report cites these accounts, and one
+        research node can have half a dozen contributors — generating them
+        inside that request would turn opening a card into six model calls.
+        """
+        runtime.registry.require_session(user_id, session_id)
+        from CoScientist.graph.summary_store import latest
+
+        kept = latest((user_id, session_id), node_id, lang=lang)
+        if not kept:
+            raise HTTPException(status_code=404,
+                                detail=f"no summary written for {node_id!r}")
+        return JSONResponse(kept)
+
+    @app.post("/api/users/{user_id}/sessions/{session_id}/graph/node_report")
+    async def api_node_report(user_id: str, session_id: str, request: Request):
+        """Write, or return, the account of one RESEARCH-graph node.
+
+        A sibling of the agent summary and deliberately not the same route: the
+        two graphs have separate id namespaces, and a route that accepted either
+        would answer about whichever node happened to match.
+        """
+        runtime.registry.require_session(user_id, session_id)
+        body = await request.json() if await request.body() else {}
+        node_id = str(body.get("node_id") or "")
+        if not node_id:
+            raise HTTPException(status_code=422, detail="node_id is required")
+
+        from CoScientist.graph.research.store import get_research_graph
+        from CoScientist.graph.summary_store import for_session
+        from CoScientist.reporting import node_report
+
+        store = get_research_graph(user_id=user_id, session_id=session_id)
+        view = store.view_of(body.get("turn") or None)
+        if not node_report._reportable(view, node_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"{node_id!r} is not a node a report is written for")
+        # A node's write-up is a document of the STUDY, and a study is written in
+        # one language. The panel sends its own interface language, and a node
+        # holds ONE write-up: two readers set differently would take turns
+        # overwriting each other's copy, each paying for a model call to do it,
+        # and every other reader would meet the loser's language. An explicit
+        # session choice therefore wins; absent one, the page's own is honoured.
+        lang = (runtime.report_languages.get((user_id, session_id), "")
+                or str(body.get("lang") or "") or "ru")
+        try:
+            written = await node_report.write_report(
+                view, node_id, scope=(user_id, session_id), store=store,
+                summaries=for_session((user_id, session_id)), lang=lang,
+                force=bool(body.get("again")))
+        except Exception as exc:  # noqa: BLE001 — the model is an outside service
+            raise HTTPException(status_code=502,
+                                detail=f"node report failed: {exc}") from exc
+        if written is None:
+            raise HTTPException(status_code=404, detail=f"no node {node_id!r}")
+        return JSONResponse(written)
 
     @app.get("/api/users/{user_id}/sessions/{session_id}/graph.svg")
     async def api_session_graph_svg(user_id: str, session_id: str):
@@ -1758,6 +3110,17 @@ def create_app() -> FastAPI:
     from CoScientist.alembic.web.app import create_app as _create_alembic_app
     app.mount("/alembic", _create_alembic_app())
 
+
+    @app.get("/fedot-trace", response_class=HTMLResponse)
+    async def fedot_trace_page():
+        return HTMLResponse(
+            (WEB_DIR / "templates" / "fedot_trace.html").read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    from CoScientist.web.fedot_routes import register_fedot_routes
+    register_fedot_routes(app, runtime, WEB_DIR, _RevalidatingStatic)
+
     # --- Roadmap endpoints ---
     @app.get("/api/users/{user_id}/sessions/{session_id}/roadmap")
     async def get_roadmap(user_id: str, session_id: str):
@@ -1812,15 +3175,44 @@ def create_app() -> FastAPI:
         return JSONResponse({"status": "success", "tasks": _json_safe(tasks)})
 
 
-    # --- ТЗ document (microfluidics profile) ---
+    # --- ТЗ panel (filled by a profile that builds a ТЗ, e.g. microfluidics) ---
+    @app.get("/api/users/{user_id}/sessions/{session_id}/tz")
+    async def get_tz(user_id: str, session_id: str):
+        """The session's ТЗ as the ТЗ panel renders it: the latest live snapshot,
+        or — once the ТЗ stage is over — the ТЗ stored in the session state."""
+        try:
+            runtime.registry.require_session(user_id, session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        key = (user_id, session_id)
+        if key in runtime.tz_snapshots:
+            return JSONResponse(runtime.tz_snapshots[key])
+
+        from CoScientist.hitl.tz_panel import stored_tz_view
+
+        adk_session = await runtime.session_service.get_session(
+            app_name=APP_NAME, user_id=user_id, session_id=session_id,
+        )
+        view = stored_tz_view(adk_session.state) if adk_session else None
+        if view is None:
+            return JSONResponse({"type": "tz_snapshot", "phase": "empty", "sections": []})
+        return JSONResponse(_json_safe({"type": "tz_snapshot", "phase": "stored", **view}))
+
+    # --- ТЗ document ---
     @app.get("/api/tz-document")
     async def get_tz_document(name: str = ""):
         """Serve a ТЗ document from tz_documents/ (the latest one by default).
 
-        The TZSpecAgent announces the file in the chat; this endpoint lets the
-        user open it in the browser.
+        The framing stage announces the file in the chat and hangs it off the
+        «Постановка» card of the research graph; both links land here.
+
+        Markdown is returned as text so the browser shows it; a .docx is
+        returned as a download, because a Word file rendered as text is a
+        screenful of binary. The file name travels in the link, so the two
+        formats of one document are two links, not a format switch.
         """
         from fastapi.responses import PlainTextResponse
+        from urllib.parse import quote
 
         tz_dir = Path("tz_documents")
         if not tz_dir.is_dir():
@@ -1831,10 +3223,24 @@ def create_app() -> FastAPI:
             if not candidate.is_file():
                 return JSONResponse({"error": f"no such document: {name}"}, status_code=404)
         else:
-            files = sorted(tz_dir.glob("TZ_*.md"))
+            # Newest of either format. `TZ_*` is the microfluidics profile's
+            # naming, `ТЗ_*` the research frame's; both live here.
+            files = sorted((p for p in tz_dir.iterdir()
+                            if p.suffix.lower() in (".md", ".docx")),
+                           key=lambda p: p.stat().st_mtime)
             if not files:
                 return JSONResponse({"error": "no ТЗ documents yet"}, status_code=404)
             candidate = files[-1]
+        if candidate.suffix.lower() == ".docx":
+            return FileResponse(
+                str(candidate),
+                media_type="application/vnd.openxmlformats-officedocument."
+                           "wordprocessingml.document",
+                # RFC 5987: the names are Russian, and a bare `filename=` would
+                # reach the browser as mojibake.
+                headers={"Content-Disposition":
+                         "attachment; filename*=UTF-8''" + quote(candidate.name)},
+            )
         return PlainTextResponse(
             candidate.read_text(encoding="utf-8"),
             media_type="text/markdown; charset=utf-8",
@@ -1849,14 +3255,189 @@ def create_app() -> FastAPI:
     @app.post("/api/settings")
     async def save_settings_api(data: dict):
         """Update WebSettings from the frontend."""
+        before = _current_settings()
         _apply_frontend_settings(data)
-        return JSONResponse({"status": "success", **_settings_payload()})
+        changed = before != _current_settings()
+        queued = runtime.invalidate_agent_trees() if changed else 0
+        return JSONResponse({
+            "status": "success",
+            "agentTreesQueued": queued,
+            **_settings_payload(),
+        })
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/settings")
+    async def get_session_settings_api(user_id: str, session_id: str):
+        """Return process settings with this session's agent overlay applied."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        with settings_scope(snapshot):
+            payload = _settings_payload()
+        payload["agentConfiguration"] = runtime.agent_configuration_state(key)
+        return JSONResponse(_json_safe(payload))
+
+    @app.post("/api/users/{user_id}/sessions/{session_id}/settings")
+    async def save_session_settings_api(user_id: str, session_id: str, data: dict):
+        """Save agent topology for one session and keep other settings global."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # Existing settings outside agent composition retain their historical
+        # process-wide semantics. Only the fields that can change the topology
+        # are isolated and persisted with the selected session.
+        global_payload = _without_agent_configuration(data)
+        _, current_snapshot = runtime.settings_snapshot(key)
+        candidate = current_snapshot.model_copy(deep=True)
+        requested_overlay = _agent_configuration_payload(data)
+        from CoScientist.web.agent_configuration_policy import (
+            validate_agent_configuration_transition,
+            validate_raw_agent_configuration_request,
+        )
+        try:
+            validate_raw_agent_configuration_request(current_snapshot, requested_overlay)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        with settings_scope(candidate):
+            _apply_frontend_settings(requested_overlay)
+            normalized_overlay = _agent_configuration_payload(_current_settings())
+        # Validate the complete requested composition before applying even the
+        # process-wide part of the same form submission.  A forbidden agent
+        # change therefore cannot leave a partially saved settings form.
+        try:
+            validate_agent_configuration_transition(current_snapshot, candidate)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        before_global = _current_settings()
+        if global_payload:
+            _apply_frontend_settings(global_payload)
+        global_changed = before_global != _current_settings()
+        if global_changed:
+            runtime.session_settings_cache.clear()
+            runtime.invalidate_agent_trees()
+
+        _, saved_overlay = runtime.agent_configuration(key)
+        if normalized_overlay != saved_overlay:
+            runtime.save_agent_configuration(key, normalized_overlay)
+
+        _, effective = runtime.settings_snapshot(key)
+        with settings_scope(effective):
+            payload = _settings_payload()
+        payload["agentConfiguration"] = runtime.agent_configuration_state(key)
+        await runtime.send(key, {
+            "type": "agent_configuration",
+            **payload["agentConfiguration"],
+        })
+        return JSONResponse(_json_safe({"status": "success", **payload}))
 
     # --- Agent info ---
+    @app.get("/api/agents/catalog")
+    async def get_agents_catalog():
+        """Every agent of the profile with its declared values, for Settings → Agents."""
+        from CoScientist.web.agent_settings import agents_catalog
+        return JSONResponse(_json_safe(agents_catalog()))
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agents/catalog")
+    async def get_session_agents_catalog(user_id: str, session_id: str):
+        try:
+            runtime.registry.require_session(user_id, session_id)
+            _, snapshot = runtime.settings_snapshot((user_id, session_id))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.web.agent_settings import agents_catalog
+        with settings_scope(snapshot):
+            return JSONResponse(_json_safe(agents_catalog()))
+
+    @app.post("/api/users/{user_id}/sessions/{session_id}/agents/{agent_name}/enabled")
+    async def set_session_agent_enabled(user_id: str, session_id: str, agent_name: str, data: dict):
+        """Atomically change one agent without replacing other session overrides."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if set(data) != {"enabled"} or not isinstance(data["enabled"], bool):
+            raise HTTPException(status_code=422, detail="Ожидается логическое поле enabled.")
+        from CoScientist.web.agent_settings import agent_enabled_patch, agents_catalog
+
+        candidate = snapshot.model_copy(deep=True)
+        with settings_scope(candidate):
+            before = _agent_configuration_payload(_current_settings())
+            try:
+                patch = agent_enabled_patch(agent_name, data["enabled"])
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Агент не найден.") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            _apply_frontend_settings(patch)
+            overlay = _agent_configuration_payload(_current_settings())
+            catalog = agents_catalog()
+        # No await between reading, merging and saving: a concurrent switch
+        # cannot overwrite an unrelated agent, model or reasoning setting.
+        if overlay != before:
+            runtime.save_agent_configuration(key, overlay)
+        state = runtime.agent_configuration_state(key)
+        await runtime.send(key, {"type": "agent_configuration", **state})
+        return JSONResponse(_json_safe({**catalog, "agentConfiguration": state}))
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agent-tree")
+    async def get_session_agent_tree(user_id: str, session_id: str):
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            revision, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        state = runtime.agent_configuration_state(key)
+        from CoScientist.web.agent_tree import project_agent_tree
+
+        payload = project_agent_tree(
+            snapshot,
+            desired_revision=revision,
+            active_revision=state["activeRevision"],
+            running=state["running"],
+        )
+        return JSONResponse(_json_safe(payload), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agents/{agent_name}/tools")
+    async def get_session_agent_tools(user_id: str, session_id: str, agent_name: str):
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.agents import config_for_mode
+        from CoScientist.tools.mcp_catalog import get_catalog
+        from CoScientist.web.agent_tree import agent_tools_payload
+
+        with settings_scope(snapshot):
+            config = config_for_mode()
+        if agent_name not in config.agents:
+            raise HTTPException(status_code=404, detail=f"Unknown agent '{agent_name}'.")
+        session = await runtime.session_service.get_session(
+            app_name=APP_NAME,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        session_state = dict(getattr(session, "state", None) or {}) if session else {}
+        catalog = await get_catalog(refresh_if_stale=False)
+        with settings_scope(snapshot):
+            payload = agent_tools_payload(config, agent_name, session_state, catalog)
+        return JSONResponse(_json_safe(payload), headers={"Cache-Control": "no-store"})
+
     @app.get("/api/agents")
     async def get_agents():
         """Return list of registered agents and system hierarchy."""
         from CoScientist.assembly.schema import get_config
+        from CoScientist.web.agent_tree import agent_structure, call_graph_titles
         cfg = get_config()
         hierarchy = cfg.agent_hierarchy_map()
         internal_names = cfg.internal_agent_names()
@@ -1879,8 +3460,37 @@ def create_app() -> FastAPI:
             "agents": agents_list,
             "hierarchy": hierarchy,
             "delegatable_names": list(cfg.delegatable_names()),
+            "pipeline_stages": cfg.linear_stages(),
             "internal_agents": sorted(internal_names),
+            "titles": call_graph_titles(),
+            **agent_structure(),
         })
+
+    @app.post("/api/fedot-debug-run")
+    async def fedot_debug_run(data: dict):
+        from CoScientist.capabilities import fedot_mas_enabled
+
+        if not fedot_mas_enabled():
+            raise HTTPException(
+                status_code=409,
+                detail=("FEDOT.MAS is disabled. Enable the experiment route or "
+                        "executor fallback before starting a debug run."),
+            )
+        task_description = data.get(
+            "task_description",
+            "Ping test: say hello, do nothing else.",
+        )
+        from CoScientist.tools.fedotmas_tools import FedotMASToolset
+
+        async def _run():
+            toolset = FedotMASToolset()
+            try:
+                await toolset.fedot_tool(task_description=task_description, tool_context=None)
+            except Exception as exc:  # noqa: BLE001 — this is a debug trigger, never crash the server
+                logging.getLogger("CoScientist.web").warning("fedot-debug-run failed: %r", exc)
+
+        asyncio.create_task(_run())
+        return JSONResponse({"status": "started", "task_description": task_description})
 
     # --- Events log ---
     @app.get("/api/users/{user_id}/sessions/{session_id}/events")
@@ -1902,6 +3512,42 @@ def create_app() -> FastAPI:
             except Exception:  # noqa: BLE001
                 events = []
         return JSONResponse({"events": events[-100:]})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/call-graph")
+    async def get_call_graph_skeleton(user_id: str, session_id: str):
+        """Where each agent can run in this session, for the side-nav graph."""
+        key = (user_id, session_id)
+        try:
+            runtime.registry.require_session(*key)
+            _, snapshot = runtime.settings_snapshot(key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.graph.memory import get_knowledge_graph
+        from CoScientist.web.agent_tree import call_graph_skeleton, session_agent_names, session_profile
+        events = runtime.agent_events.get(key) or []
+        if not events:
+            try:
+                from CoScientist.web.session_store import load_events
+                events = load_events(user_id, session_id)
+            except Exception:  # noqa: BLE001
+                events = []
+        # Each profile has agents of its own: draw the one this session ran.
+        execution = get_knowledge_graph(user_id=user_id, session_id=session_id).full()
+        profile = session_profile(session_agent_names(events, execution))
+        return JSONResponse(call_graph_skeleton(snapshot, profile), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/users/{user_id}/sessions/{session_id}/agent-runs")
+    async def get_agent_runs(user_id: str, session_id: str):
+        """The session's agent runs from its execution graph, for the call
+        graph of a session whose transcript predates agent-run records."""
+        try:
+            runtime.registry.require_session(user_id, session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        from CoScientist.graph.memory import get_knowledge_graph
+        from CoScientist.web.agent_tree import agent_run_events
+        execution = get_knowledge_graph(user_id=user_id, session_id=session_id).full()
+        return JSONResponse({"events": agent_run_events(execution)})
 
     # --- Usage and cost ---
     @app.get("/api/users/{user_id}/sessions/{session_id}/metrics")
@@ -2004,6 +3650,11 @@ def create_app() -> FastAPI:
         )
         # Re-deliver only HITL requests belonging to this session.
         await runtime.hitl_handler.attach_websocket(ws, key)
+        durable_handle = runtime.execution_handle(key)
+        if durable_handle is not None:
+            for cause, decision in durable_handle.status().pending_decisions.items():
+                if cause.startswith("hitl:") and isinstance(decision.get("payload"), dict):
+                    await runtime.send_socket(ws, decision["payload"], key)
         delivered_interrupts = set()
         for pending in runtime.pending_hitl.values():
             payload = pending.get("payload")
@@ -2141,6 +3792,7 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
     resumes the workflow by calling run_async with a FunctionResponse message.
     """
     query = data.get("message", "").strip()
+    internal_resume = bool(data.get("_checkpoint_resume") or data.get("_execution_resume"))
     run_status_version = int(
         data.get("_run_status_version", runtime.run_versions[key])
     )
@@ -2156,17 +3808,25 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
 
     user_id, session_id = key
 
-    # Echo user message
-    user_event = {
-        "type": "user_message",
-        "message": query,
-        "timestamp": datetime.now().isoformat(),
-    }
-    runtime.record_event(key, user_event)
-    await runtime.send(key, user_event)
+    # A checkpoint continuation is a control instruction generated by the
+    # server, not a new user utterance.  The restore marker already visible in
+    # chat describes it; do not pretend the internal prompt came from the user.
+    if not internal_resume:
+        user_event = {
+            "type": "user_message",
+            "message": query,
+            "timestamp": datetime.now().isoformat(),
+        }
+        runtime.record_event(key, user_event)
+        await runtime.send(key, user_event)
 
     try:
-        manager = await runtime.get_manager(user_id, session_id)
+        manager = await runtime.get_manager(
+            user_id,
+            session_id,
+            settings_snapshot=data.get("_settings_snapshot"),
+            agent_revision=data.get("_agent_revision"),
+        )
         # The attachment may predate the ADK session (it is created with the
         # manager), so mirror it into state now that the session exists — this is
         # what puts the link in front of CoderAgent.
@@ -2174,18 +3834,29 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
         # Same reason as the attachment above: the language may have been picked
         # before the ADK session existed.
         await runtime.apply_report_language(key)
+        adk_session = await runtime.session_service.get_session(
+            app_name=APP_NAME, user_id=user_id, session_id=session_id,
+        )
+        runtime.run_contexts[key] = {
+            "run_version": run_status_version,
+            "adk_event_baseline": len(adk_session.events) if adk_session else 0,
+            "root_query": data.get("_checkpoint_root_query") or query,
+        }
         runtime.registry.touch_session(user_id, session_id, status="processing")
         execution_lock = runtime.execution_locks[key]
 
         async with execution_lock:
-            await _run_chat_invocation(
-                runtime,
-                key,
-                manager,
-                query,
-                run_status_version=run_status_version,
-                report_language=report_language,
-            )
+            with manager.settings_context():
+                await _run_chat_invocation(
+                    runtime,
+                    key,
+                    manager,
+                    query,
+                    run_status_version=run_status_version,
+                    report_language=report_language,
+                    continuation=bool(data.get("_execution_resume")),
+                    continuation_instruction=data.get("_execution_resume_instruction"),
+                )
 
     except asyncio.CancelledError:
         _cancel_pending_hitl(runtime, key)
@@ -2196,13 +3867,25 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
         _cancel_pending_hitl(runtime, key)
         runtime.hitl_handler.reset(key)
         runtime.registry.touch_session(user_id, session_id, status="idle")
+        handle = runtime.execution_handle(key)
+        if handle is not None:
+            handle.controller.request_pause(handle.run_id, "execution_error",
+                pending_decision={"error_type": type(exc).__name__, "message": str(exc)})
+
+        # Whatever card the operator gets, the exception itself goes to the log.
+        # Without this the proxy branch below was a dead end: it replaced the
+        # error with advice about the proxy and recorded nothing else, so a run
+        # that failed for some other reason left no trace to diagnose from.
+        logging.getLogger("CoScientist.web").exception(
+            "Run failed for %s/%s: %s", user_id, session_id, exc)
 
         if is_proxy_error(exc):
             msg = (
                 f"**Error connecting to proxy server**\n\n"
                 f"Failed to connect to the proxy server to execute the query to the language model. "
                 f"Please ensure the proxy container is running, the corporate VPN is enabled (other - disabled), and "
-                f"and the proxy is accessible."
+                f"and the proxy is accessible.\n\n"
+                f"`{type(exc).__name__}: {exc}`"
             )
             agent_msg = {
                 "type": "agent_event",
@@ -2228,6 +3911,7 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
             runtime.record_event(key, error_event)
 
 
+
 async def _run_chat_invocation(
     runtime: WebRuntime,
     key: SessionKey,
@@ -2236,6 +3920,8 @@ async def _run_chat_invocation(
     *,
     run_status_version: int,
     report_language: str | None = None,
+    continuation: bool = False,
+    continuation_instruction: str | None = None,
 ) -> None:
     """Execute one serialized ADK invocation for a session."""
     user_id, session_id = key
@@ -2251,6 +3937,24 @@ async def _run_chat_invocation(
     # (report_language) and reaches the prompt through inject_report_language.
     report_config = ReportConfig()
     await manager._set_state("report_config", report_config.to_state())
+    # The question the user just asked is the root of the research graph, and
+    # nothing else guarantees it exists — see seed_research_context.
+    if not continuation:
+        await manager.seed_research_context(query)
+    else:
+        current_message = types.Content(role="user", parts=[types.Part(text=(
+            continuation_instruction
+            or "Resume the saved research state. Preserve the approved plan and active attempt. "
+               "Do not repeat completed tools or tasks. Process any saved pending result first."
+        ))])
+        from CoScientist.execution_control import current_run
+        handle = current_run()
+        restored_answer = handle.status().metadata.get("request_input_response") if handle else None
+        if restored_answer:
+            current_message = types.Content(role="user", parts=[create_request_input_response(
+                restored_answer["interrupt_id"], restored_answer["response"],
+            )])
+            handle.controller.update_metadata(handle.run_id, {"request_input_response": None})
     # Prompt templates read {report_language?} from session state. An explicit
     # per-message choice overrides the per-session mirror for this run; a
     # message without one leaves the mirror (and the callback default) alone.
@@ -2272,10 +3976,9 @@ async def _run_chat_invocation(
                 user_id=manager.user_id,
                 session_id=manager.session_id,
                 new_message=current_message,
-                # Lift ADK's 500-LLM-call default so a long autonomous run driven
-                # by a single prompt isn't cut off mid-work.
+                # The shared durable budget gate owns the 100-call quota.
                 run_config=RunConfig(
-                    max_llm_calls=get_settings().orchestrator.max_llm_calls
+                    max_llm_calls=0
                 ),
             ):
                 # Stream each event to frontend
@@ -2302,7 +4005,9 @@ async def _run_chat_invocation(
                         if cleaned:
                             text_parts.append(cleaned)
                     if text_parts:
-                        event_data["content"] = "\n".join(text_parts)
+                        event_data["content"] = _readable_links(
+                            "\n".join(text_parts), key
+                        )
 
                     # Extract tool calls (function_call) and tool responses
                     # (function_response) so the frontend can show live
@@ -2377,6 +4082,20 @@ async def _run_chat_invocation(
                             "session_key": key,
                             "payload": hitl_payload,
                         }
+                    from CoScientist.execution_control import current_run
+                    execution_handle = current_run()
+                    if execution_handle is not None:
+                        for iid in interrupt_ids:
+                            execution_handle.controller.request_pause(execution_handle.run_id, f"hitl:{iid}",
+                                pending_decision={"payload": hitl_payload, "kind": "request_input"})
+                            execution_handle.controller.journal(execution_handle.run_id, "hitl_requested",
+                                                                action_id=iid, data=hitl_payload)
+                    if runtime.checkpoint_hitl is not None:
+                        await runtime.checkpoint_hitl(key, {
+                            **hitl_payload,
+                            "agent": event.author or "system",
+                            "hitl_kind": "request_input",
+                        })
                     runtime.record_event(key, hitl_payload)
                     await runtime.send(key, hitl_payload)
 
@@ -2409,26 +4128,27 @@ async def _run_chat_invocation(
                 try:
                     await asyncio.wait_for(wait_event.wait(), timeout=600)
                 except asyncio.TimeoutError:
-                    print(f"[HITL] Timeout waiting for response, auto-approving")
-                    for iid in interrupt_ids:
-                        if iid in runtime.pending_hitl and runtime.pending_hitl[iid]["response"] is None:
-                            runtime.pending_hitl[iid]["response"] = {"approved": True}
+                    print("[HITL] Review window elapsed; waiting for an explicit decision")
                     timeout_event = {
                         "type": "hitl_timeout",
                         "request_id": interrupt_ids[0] if interrupt_ids else "",
                         "interrupt_ids": interrupt_ids,
                         "agent_name": hitl_interrupt_event.author or "system",
                         "timeout_seconds": 600,
+                        "paused": True,
                         "timestamp": datetime.now().isoformat(),
                     }
                     runtime.record_event(key, timeout_event)
                     await runtime.send(key, timeout_event)
+                    await wait_event.wait()
 
                 # Build FunctionResponse message for resume
                 response_parts = []
                 for iid in interrupt_ids:
                     info = runtime.pending_hitl.pop(iid, None)
-                    response_data = (info["response"] if info and info["response"] else {"approved": True})
+                    if not info or info.get("response") is None:
+                        raise asyncio.CancelledError("HITL ended without an explicit decision")
+                    response_data = info["response"]
                     response_parts.append(
                         create_request_input_response(iid, response_data)
                     )
@@ -2452,25 +4172,83 @@ async def _run_chat_invocation(
                 # No interrupt, we're done
                 break
 
+        # A normal runner return and a final-looking model message are not
+        # scientific completion evidence.  Gate report finalization on the
+        # freshest durable state before emitting `final_response`; the outer
+        # execution controller will persist the same state and create the
+        # durable pause.  This ordering prevents a transient false-completed UI
+        # and avoids publishing a report for unfinished work.
+        from CoScientist.experiments.outcome.reconciliation import (
+            reconcile_scientific_outcome,
+        )
+
+        reconciled_session = await runtime.session_service.get_session(
+            app_name=APP_NAME, user_id=user_id, session_id=session_id,
+        )
+        reconciled_state = (
+            reconciled_session.state if reconciled_session is not None else {}
+        )
+        from CoScientist.execution_control import current_run as current_execution_run
+
+        execution_handle = current_execution_run()
+        disposition = reconcile_scientific_outcome(
+            reconciled_state,
+            current_run_id=execution_handle.run_id if execution_handle else None,
+        )
+        if not disposition.report_allowed:
+            logging.getLogger("CoScientist.web").info(
+                "REPORT_FINALIZATION_DEFERRED disposition=%s reason=%s stage=%s",
+                disposition.kind.value, disposition.reason, disposition.stage,
+            )
+            return
+
         # ── Package the deliverable ──────────────────────────────────────────────
         # The Result Aggregator already ran as the terminal stage of the single
         # run_async above (its events streamed like any other agent), so its report
         # is in `report_markdown`. Fall back to the orchestrator's own answer only if
         # the aggregator produced nothing.
+        # The scope, not None. Everything downstream of finalize that writes
+        # anywhere reads the user and session from here: passing None made
+        # `_publish_to_research_graph` bail with "no user scope in state", so
+        # the Report card was never published from the web path at all — only
+        # from the CLI, which passes real state.
+        from CoScientist.graph.session_scope import (
+            GRAPH_SCOPE_SESSION_KEY,
+            GRAPH_SCOPE_USER_KEY,
+        )
+
+        finalize_state = {
+            GRAPH_SCOPE_USER_KEY: user_id,
+            GRAPH_SCOPE_SESSION_KEY: session_id,
+        }
+        from CoScientist.execution_control import before_tool_action
+        await before_tool_action("finalize_report")
         result = await asyncio.to_thread(
             finalize_report, manager.session_id,
-            report_markdown or final_response, report_config, None,
+            report_markdown or final_response, report_config, finalize_state,
         )
 
         runtime.registry.touch_session(user_id, session_id, status="idle")
         payload = {
             "type": "final_response",
-            "content": remint_report_urls(result.markdown),
+            "content": _readable_links(result.markdown, key),
             "timestamp": datetime.now().isoformat(),
         }
         if result.report_dir:
             payload["report_dir"] = str(result.report_dir)
             payload["manifest"] = result.manifest
+        if result.report_artifact_id:
+            # `finalize` already mirrored report.md into this session, so the
+            # panel opens that file rather than a second copy of the same text.
+            from CoScientist.reporting.documents import summarise_markdown
+
+            title, summary = summarise_markdown(result.markdown)
+            payload["document"] = {
+                "artifact_id": result.report_artifact_id,
+                "title": title or "Отчёт по исследованию",
+                "kind": "result",
+            }
+            payload["summary"] = summary
         await runtime.send(key, payload)
 
     finally:
@@ -2516,6 +4294,8 @@ def _handle_hitl_response(runtime: WebRuntime, key: SessionKey, data: dict):
             return
         # If it was resolved there, no need to check _pending_hitl
         if request_id not in runtime.pending_hitl:
+            if hasattr(runtime, "resolve_durable_hitl"):
+                runtime.resolve_durable_hitl(key, request_id, data)
             return
 
     # 2) Try ADK RequestInput mechanism
@@ -2533,7 +4313,8 @@ def _handle_hitl_response(runtime: WebRuntime, key: SessionKey, data: dict):
             "Ignoring RequestInput response from the wrong session"
         )
         return
-
+    if info.get("response") is not None:
+        return  # A double click must not replace an already accepted decision.
     # Store the response data
     response = {
         "approved": data.get("approved", False),
@@ -2542,12 +4323,21 @@ def _handle_hitl_response(runtime: WebRuntime, key: SessionKey, data: dict):
         "free_input": data.get("free_input"),
     }
     info["response"] = response
+    if hasattr(runtime, "execution_handle"):
+        handle = runtime.execution_handle(key)
+        if handle is not None:
+            handle.controller.journal(handle.run_id, "hitl_decision", action_id=lookup_id, data=response)
+            handle.controller.resume(handle.run_id, f"hitl:{lookup_id}")
 
     # Check if all interrupt IDs sharing this wait_event have responses
     wait_event = info["event"]
-    for pending in runtime.pending_hitl.values():
+    for pending_id, pending in runtime.pending_hitl.items():
         if pending["event"] is wait_event and pending.get("session_key") == key:
             pending["response"] = response
+            if hasattr(runtime, "execution_handle"):
+                sibling_handle = runtime.execution_handle(key)
+                if sibling_handle is not None:
+                    sibling_handle.controller.resume(sibling_handle.run_id, f"hitl:{pending_id}")
     all_resolved = all(
         v["response"] is not None
         for v in runtime.pending_hitl.values()

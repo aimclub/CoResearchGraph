@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/css/fonts.css" />
+<title>FEDOT.MAS Trace — CoScientist</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 15px/1.5 "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #0f1115; color: #e6e6e6; }
+  header { padding: 20px 28px; border-bottom: 1px solid #262a33; display: flex;
+           align-items: baseline; gap: 14px; }
+  header h1 { font-size: 20px; margin: 0; }
+  header a { color: #6ea8fe; text-decoration: none; font-size: 13px; }
+  main { padding: 24px 28px; max-width: 1080px; }
+  .empty { color: #9aa0b0; padding: 40px 0; }
+  .muted { color: #9aa0b0; font-size: 12px; }
+  button.refresh { background: #1b1f27; color: #cfd3dc; border: 1px solid #2b303a;
+                   border-radius: 7px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  button.refresh:hover { border-color: #6ea8fe; }
+  .meta { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; color: #9aa0b0; font-size: 13px; }
+  .meta b { color: #e6e6e6; font-weight: 600; }
+  .tree { border: 1px solid #21242c; border-radius: 10px; overflow: hidden; }
+  .node { border-bottom: 1px solid #21242c; }
+  .node:last-child { border-bottom: none; }
+  .row { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; cursor: pointer; }
+  .row:hover { background: #161922; }
+  .type { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+          font-weight: 600; text-transform: uppercase; letter-spacing: .03em; flex-shrink: 0; }
+  .type-span      { background: #1b2a3d; color: #6ea8fe; }
+  .type-agent     { background: #1b2a3d; color: #6ea8fe; }
+  .type-generation{ background: #123d24; color: #4ade80; }
+  .type-tool      { background: #3a2410; color: #fbbf24; }
+  .type-event     { background: #232538; color: #b7a6f7; }
+  .name { font-weight: 600; }
+  .dur { color: #9aa0b0; font-size: 12px; margin-left: auto; flex-shrink: 0; }
+  .err { color: #f87171; }
+  .detail { display: none; padding: 4px 14px 14px 44px; }
+  .detail.open { display: block; }
+  .detail pre { background: #0a0c10; border: 1px solid #21242c; border-radius: 8px; padding: 10px 12px;
+                white-space: pre-wrap; word-break: break-word; font-size: 12.5px; margin: 6px 0; }
+  .detail .label { color: #9aa0b0; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .children { padding-left: 22px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FEDOT.MAS Trace</h1>
+  <a href="/">← chat</a>
+  <span style="flex:1"></span>
+  <a id="langfuse-link" href="#" target="_blank" style="display:none">Open in Langfuse ↗</a>
+  <button class="refresh" onclick="load()">Refresh</button>
+</header>
+<div id="fedot-runs"></div>
+<main>
+  <div id="content"><div class="empty">Loading…</div></div>
+</main>
+<script src="/static/js/fedot_runs.js"></script>
+<script>
+function fmtDur(startIso, endIso) {
+  if (!startIso || !endIso) return '';
+  const ms = new Date(endIso) - new Date(startIso);
+  if (!isFinite(ms) || ms < 0) return '';
+  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(2) + 's';
+}
+
+function typeClass(type) {
+  const t = (type || '').toLowerCase();
+  if (t.includes('generation')) return 'type-generation';
+  if (t.includes('tool')) return 'type-tool';
+  if (t.includes('event')) return 'type-event';
+  if (t.includes('agent')) return 'type-agent';
+  return 'type-span';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderNode(o, byParent, depth) {
+  const kids = byParent.get(o.id) || [];
+  const dur = fmtDur(o.start_time, o.end_time);
+  const errClass = o.level && o.level !== 'DEFAULT' ? ' err' : '';
+  const detailId = 'd-' + o.id;
+  let detail = '';
+  if (o.input) detail += '<div class="label">Input</div><pre>' + escapeHtml(o.input) + '</pre>';
+  if (o.output) detail += '<div class="label">Output</div><pre>' + escapeHtml(o.output) + '</pre>';
+  if (o.status_message) detail += '<div class="label">Status</div><pre>' + escapeHtml(o.status_message) + '</pre>';
+  if (o.usage) detail += '<div class="label">Tokens</div><pre>' + escapeHtml(JSON.stringify(o.usage)) + '</pre>';
+  if (!detail) detail = '<div class="muted">No input/output captured.</div>';
+
+  let html = '<div class="node">'
+    + '<div class="row" onclick="toggle(\'' + detailId + '\')">'
+    + '<span class="type ' + typeClass(o.type) + '">' + escapeHtml(o.type || '?') + '</span>'
+    + '<span class="name' + errClass + '">' + escapeHtml(o.name || '(unnamed)') + '</span>'
+    + (o.level && o.level !== 'DEFAULT' ? '<span class="muted err">' + escapeHtml(o.level) + '</span>' : '')
+    + '<span class="dur">' + dur + '</span>'
+    + '</div>'
+    + '<div class="detail" id="' + detailId + '">' + detail + '</div>';
+
+  if (kids.length) {
+    html += '<div class="children">' + kids.map(k => renderNode(k, byParent, depth + 1)).join('') + '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function toggle(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+
+let selectedRun = null, requestVersion = 0, refreshTimer = null;
+async function load() {
+  if (!selectedRun) return;
+  const version = ++requestVersion;
+  const box = document.getElementById('content');
+  const query = new URLSearchParams(location.search);
+  query.set('run_id', selectedRun.run_id);
+  try {
+    const response = await fetch('/api/fedot-langfuse-trace?' + query, {cache: 'no-store'});
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    if (version !== requestVersion) return;
+    const byParent = new Map(), roots = [];
+    for (const observation of data.observations || []) {
+      if (!observation.parent_id) roots.push(observation);
+      else {
+        if (!byParent.has(observation.parent_id)) byParent.set(observation.parent_id, []);
+        byParent.get(observation.parent_id).push(observation);
+      }
+    }
+    const expanded = new Set(Array.from(box.querySelectorAll('.detail.open'), node => node.id));
+    box.innerHTML = '<div class="meta">Локальный журнал · ' + escapeHtml(selectedRun.run_id)
+      + ' · ' + escapeHtml(data.run.status) + '</div><div class="tree">'
+      + roots.map(o => renderNode(o, byParent, 0)).join('') + '</div>';
+    for (const node of box.querySelectorAll('.detail')) {
+      if (expanded.has(node.id)) node.classList.add('open');
+    }
+  } catch (error) {
+    if (version === requestVersion) box.textContent = 'Не удалось загрузить трейсы: ' + error.message;
+  }
+}
+const picker = window.FedotRuns({
+  host: document.getElementById('fedot-runs'),
+  onReset(meta) {
+    requestVersion++;
+    selectedRun = meta;
+    clearTimeout(refreshTimer); refreshTimer = null;
+    document.getElementById('content').textContent = meta ? 'Загрузка журнала…' : 'Выберите запуск FEDOT в этой сессии.';
+    if (meta) load();
+  },
+  onEvent() {
+    if (!refreshTimer) refreshTimer = setTimeout(() => { refreshTimer = null; load(); }, 500);
+  },
+  onStatus() { load(); },
+});
+</script>
+</body>
+</html>

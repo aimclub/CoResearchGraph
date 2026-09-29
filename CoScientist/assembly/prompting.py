@@ -33,7 +33,7 @@ Two ways to involve them:
 - `request_approval(agent_name, message)` — a yes / no question. The human may
   answer plainly OR reply with free-text ("other") — that free-text is an
   instruction, follow it. Returns {approved, feedback}.
-- `request_selection(agent_name, message, options)` — offer 2–4 concrete options
+- `request_selection(agent_name, message, options, default_option=None)` — offer 2–4 concrete options
   and let the human choose (e.g. among hypotheses, plans, thresholds). The human
   may pick one of the options OR give their own answer in the feedback ("other");
   honor whichever they provide. Returns {selected, approved, feedback}.
@@ -155,7 +155,33 @@ Keep the order honest and specific: a human who reads "search the literature"
 learns nothing; "искать в PubMed РКИ по X с 2015 года, без описаний клинических
 случаев" is something they can correct."""
 
-_WORK_ORDER_HINTS = (
+# Appended to the protocol for agents with `work_order_step_review: true`.
+# No curly braces here either (ADK state injection).
+_WORK_ORDER_STEP_REVIEW_SECTION = """\
+### Step review — the human checks every step
+
+The human confirms each step of your order before you go on: what you sent,
+what you expected and what you found. So:
+- Every step that calls a tool has `inputs` — exactly what you will send to
+  the tool (search queries, substance names, SMILES, route ids, parameter
+  values) — and `expected_outcome` — what you expect back, as concretely as
+  you can (fields, counts, ranges, units). A step without `inputs` is refused.
+- One step, one purpose: keep calls that answer different questions in
+  different steps, so each can be judged on its own.
+- Before a step's first tool call, mark it `in_progress` with
+  `update_work_step`. A tool call made while no step is in progress is BLOCKED.
+- When the step is finished, call `update_work_step` with status `done`, a
+  short `note` and `result` — what the step actually produced: numbers with
+  units, statuses, ids, what is missing. The system shows the human every call
+  of the step next to your result, so report what came back, not what you hoped.
+- Read the answer:
+  - `accepted` — go on to the next step; follow operator notes if any.
+  - `revise` — redo this step as the feedback says (it is in progress again),
+    then mark it `done` with the new result.
+  - `rejected` — the human stopped the order: call no more tools, submit your
+    work report with `not_met` and say what was done and what was not."""
+
+_WORK_ORDER_HINTS: list[tuple[tuple[str, ...], str]] = [
     (("websearch",),
      "For searches, the query formulations and the source selection criteria "
      "(recency, study types, venues) are assumptions — list them as atomic items "
@@ -181,7 +207,13 @@ _WORK_ORDER_HINTS = (
     (("research_graph",),
      "If you will write the research graph, name in the steps which nodes you will "
      "create or change."),
-)
+]
+
+
+def register_work_order_hint(tool_keys: tuple[str, ...], hint: str) -> None:
+    """Add a Work Order hint shown to agents that have any of ``tool_keys``
+    (profiles register the hints for their own tools)."""
+    _WORK_ORDER_HINTS.append((tuple(tool_keys), hint))
 
 
 # The orchestrator alone holds `research_triggers`, so only its copy of the
@@ -219,6 +251,27 @@ class PromptContext:
     def has_subordinate(self, agent_name: str) -> bool:
         return any(s.name == agent_name for s in self.subordinates)
 
+    def _delegators_beside_me(self) -> List[AgentConfig]:
+        """Enabled agents that sit beside me under the same composite parent and
+        delegate to subordinates of their own.
+
+        The planner is a CHILD of a composite (it runs before the orchestrator
+        rather than under it), so its roster cannot be found through
+        ``parents_of``, which only walks subordinates. Found by SHAPE rather
+        than by name: the profiles name their orchestrator differently
+        (OrchestratorAgent, LiteratureOrchestrator), and a roster that silently
+        empties on a rename is worse than no roster at all.
+        """
+        out = []
+        for parent in self.system.agents.values():
+            if self.config.name not in parent.children or not parent.is_enabled():
+                continue
+            for name in parent.children:
+                agent = self.system.agent(name)
+                if name != self.config.name and agent.subordinates and agent.is_enabled():
+                    out.append(agent)
+        return out
+
     def siblings(self) -> List[AgentConfig]:
         """Enabled co-subordinates: my parents' other enabled subordinates.
 
@@ -227,8 +280,9 @@ class PromptContext:
         steps to.
         """
         if self.config.name == "PlannerAgent":
-            if "OrchestratorAgent" in self.system.agents:
-                return self.system.enabled_subordinates("OrchestratorAgent")
+            delegators = self._delegators_beside_me()
+            if delegators:
+                return self.system.enabled_subordinates(delegators[0].name)
 
         seen, out = set(), []
         for parent in self.system.parents_of(self.config.name):
@@ -291,6 +345,8 @@ class PromptContext:
                 section += "\n" + _HITL_RESEARCH_COOP_ORCHESTRATOR
         if self.work_order_attached:
             section += "\n\n" + _WORK_ORDER_SECTION
+            if self.config.work_order_step_review:
+                section += "\n\n" + _WORK_ORDER_STEP_REVIEW_SECTION
             hints = [
                 hint for keys, hint in _WORK_ORDER_HINTS
                 if any(self.has_tool(key) for key in keys)

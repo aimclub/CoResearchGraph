@@ -204,8 +204,10 @@ def test_a_dead_file_url_is_reminted_from_the_key(index_root, tmp_path, monkeypa
     assert len(result["files"]) == 1
 
 
-def test_the_workspace_walk_collects_files_but_not_code(index_root, tmp_path):
+def test_the_workspace_walk_collects_files_but_not_code(index_root, tmp_path, monkeypatch):
     """The disk walk is uncurated, so only known deliverable types qualify."""
+    # Keep S3 off: the repo .env on a configured machine would really upload.
+    monkeypatch.setattr(collect, "upload_and_ref", lambda *a, **k: None)
     ws = tmp_path / "ws" / "ws_s1"
     ws.mkdir(parents=True)
     (ws / "model.pt").write_bytes(b"x")

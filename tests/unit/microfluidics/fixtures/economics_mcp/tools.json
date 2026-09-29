@@ -1,0 +1,2492 @@
+[
+  {
+    "name": "search_reagents_by_name",
+    "description": "Нечёткий поиск реагентов по русскому названию (триграммы, устойчив к опечаткам).\n\nРезультаты свёрнуты до уровня реагента: по каждому названию — представитель с наименьшей\nценой за единицу и число найденных предложений (``offer_count``). Отсортировано по близости\nназвания к запросу. Пустой запрос → пустой список.\n\nArgs:\n    query: название или его часть, напр. «глицерин», «серная кислота», «ацетн» (с опечаткой).\n    limit: максимум результатов (реагентов), по умолчанию 20.\n",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "search_reagents_by_nameArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ReagentMatch": {
+          "description": "Совпадение по названию, свёрнутое до уровня реагента.\n\nПредставитель группы — предложение с наименьшей ценой за единицу; ``offer_count`` —\nсколько всего предложений (по всем фасовкам/поставщикам) найдено под этим названием.",
+          "properties": {
+            "name_norm": {
+              "title": "Name Norm",
+              "type": "string"
+            },
+            "name_raw": {
+              "title": "Name Raw",
+              "type": "string"
+            },
+            "similarity": {
+              "title": "Similarity",
+              "type": "number"
+            },
+            "supplier": {
+              "title": "Supplier",
+              "type": "string"
+            },
+            "best_price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Best Price"
+            },
+            "price_currency": {
+              "title": "Price Currency",
+              "type": "string"
+            },
+            "pack_qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Pack Qty"
+            },
+            "pack_unit": {
+              "title": "Pack Unit",
+              "type": "string"
+            },
+            "unit_price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unit Price"
+            },
+            "purity_grade": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Purity Grade"
+            },
+            "offer_count": {
+              "title": "Offer Count",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name_norm",
+            "name_raw",
+            "similarity",
+            "supplier",
+            "best_price",
+            "price_currency",
+            "pack_qty",
+            "pack_unit",
+            "offer_count"
+          ],
+          "title": "ReagentMatch",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "result": {
+          "items": {
+            "$ref": "#/$defs/ReagentMatch"
+          },
+          "title": "Result",
+          "type": "array"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "search_reagents_by_nameOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_price",
+    "description": "Все предложения по нечётко совпавшему названию: совпавшие по словам выше, дешевле выше.\n\nКаждое предложение несёт два числа: ``price`` — реальный чек за упаковку, ``unit_price`` —\nсебестоимость за единицу (g/kg/ml/l). Валюта — у каждого предложения своя (мультивалютность\nбез пересчёта курса), и сравнивать цены в разных валютах инструмент не умеет.\n\nПорядок. Сначала отбираются строки, где встретились ВСЕ значимые слова запроса; если таких\nнет (опечатка), берётся триграммное приближение — выдача не обнуляется никогда. Отобранные\nидут по цене за единицу, дешевле — выше, причём цена приводится к общей мере: грамм и\nмиллилитр пересчитываются в килограмм и литр. Без этого граммовая позиция всегда\n«дешевле» килограммовой, хотя стоит в тысячу раз дороже.\n\nЧего порядок не гарантирует. Слова сравниваются по началу, поэтому соседи по названию\nпроходят отбор: «ацетон» цепляет «ацетилацетон», «дихлорметан» — «дихлорэтан».\nШтучные единицы (pcs, amp, vial, pack) к массе не сводятся, и ампула рядом с бульком\nсравнима условно. Если название разрешается в структуру, надёжнее ``search_by_structure``.\n\nArgs:\n    name: название реагента (нечёткое совпадение), напр. «ацетон».\n    pack_unit: фильтр по канонической единице фасовки (``g|kg|ml|l|pcs|vial|amp|pack|set``).\n    purity_grade: фильтр по квалификации чистоты (``ч.д.а.``, ``х.ч.``, ``ос.ч.``, …).\n    limit: максимум предложений, по умолчанию 50.\n",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "pack_unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pack Unit"
+        },
+        "purity_grade": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Purity Grade"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "get_priceArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Offering": {
+          "description": "Одно предложение поставщика: цена за упаковку + производная цена за единицу.\n\n``unit_price`` (price / pack_qty) — себестоимость за g/kg/ml/l; ``price`` — реальный чек\nза упаковку. Валюта у каждого предложения своя (мультивалютность без пересчёта курса).",
+          "properties": {
+            "name_raw": {
+              "title": "Name Raw",
+              "type": "string"
+            },
+            "name_norm": {
+              "title": "Name Norm",
+              "type": "string"
+            },
+            "supplier": {
+              "title": "Supplier",
+              "type": "string"
+            },
+            "supplier_key": {
+              "title": "Supplier Key",
+              "type": "string"
+            },
+            "purity_grade": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Purity Grade"
+            },
+            "pack_qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Pack Qty"
+            },
+            "pack_unit": {
+              "title": "Pack Unit",
+              "type": "string"
+            },
+            "pack_raw": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Pack Raw"
+            },
+            "price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Price"
+            },
+            "price_currency": {
+              "title": "Price Currency",
+              "type": "string"
+            },
+            "unit_price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unit Price"
+            },
+            "price_basis": {
+              "default": "per_package",
+              "title": "Price Basis",
+              "type": "string"
+            },
+            "price_basis_suspect": {
+              "default": false,
+              "title": "Price Basis Suspect",
+              "type": "boolean"
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Category"
+            },
+            "gost_tu": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Gost Tu"
+            },
+            "catalog_no": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Catalog No"
+            },
+            "price_list_date": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Price List Date"
+            }
+          },
+          "required": [
+            "name_raw",
+            "name_norm",
+            "supplier",
+            "supplier_key",
+            "pack_qty",
+            "pack_unit",
+            "price",
+            "price_currency"
+          ],
+          "title": "Offering",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "result": {
+          "items": {
+            "$ref": "#/$defs/Offering"
+          },
+          "title": "Result",
+          "type": "array"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "get_priceOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "search_by_structure",
+    "description": "Поиск предложений по структуре молекулы (по каждому соединению — дешевле за единицу).\n\nИщет только среди соединений с распознанной структурой (у которых есть предложения).\n\nСтруктуру можно не искать самому: задайте ``name``, и она будет получена резолвером\n(IUPAC, тривиальное имя, формула — по-русски или по-английски). Задавайте что-то одно.\n\nArgs:\n    smiles: структура запроса в SMILES, напр. «OCC(O)CO» (глицерин) или «c1ccccc1» (бензол).\n    mode: ``exact`` — точное совпадение по InChIKey с откатом на скелет связности;\n        ``substructure`` — молекулы, содержащие входной фрагмент (RDKit-картридж, ``@>``).\n    limit: максимум соединений, по умолчанию 50.\n    name: имя вещества вместо SMILES — напр. «2,6-ди-трет-бутилфенол», «acetyl chloride»,\n        «AlCl3». Разрешается в структуру перед поиском.\n    use_llm: разрешить слой перевода RU→EN моделью для имён, которые не взяли ни словарь,\n        ни правила. По умолчанию выключен: он медленнее и требует настроенного эндпоинта.\n\n:raises ValueError: заданы оба поля или ни одного; имя не разрешилось в структуру.\n",
+    "inputSchema": {
+      "properties": {
+        "smiles": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Smiles"
+        },
+        "mode": {
+          "default": "exact",
+          "title": "Mode",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "use_llm": {
+          "default": false,
+          "title": "Use Llm",
+          "type": "boolean"
+        }
+      },
+      "title": "search_by_structureArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "StructureMatch": {
+          "description": "Соединение, совпавшее по структуре, с самым дешёвым (за единицу) предложением.\n\n``match_level`` — как совпало: ``точный`` (полный InChIKey), ``по_связности`` (первый блок\nInChIKey, без стерео/солевой формы), ``подструктура`` (входной фрагмент содержится в молекуле).\n``similarity`` = 1.0 для точного; для подструктуры не определена (None).",
+          "properties": {
+            "canonical_smiles": {
+              "title": "Canonical Smiles",
+              "type": "string"
+            },
+            "inchikey": {
+              "title": "Inchikey",
+              "type": "string"
+            },
+            "display_name_en": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Display Name En"
+            },
+            "match_level": {
+              "title": "Match Level",
+              "type": "string"
+            },
+            "similarity": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Similarity"
+            },
+            "supplier": {
+              "title": "Supplier",
+              "type": "string"
+            },
+            "best_price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Best Price"
+            },
+            "price_currency": {
+              "title": "Price Currency",
+              "type": "string"
+            },
+            "pack_qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Pack Qty"
+            },
+            "pack_unit": {
+              "title": "Pack Unit",
+              "type": "string"
+            },
+            "unit_price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unit Price"
+            },
+            "offer_count": {
+              "title": "Offer Count",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "canonical_smiles",
+            "inchikey",
+            "match_level",
+            "supplier",
+            "best_price",
+            "price_currency",
+            "pack_qty",
+            "pack_unit",
+            "offer_count"
+          ],
+          "title": "StructureMatch",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "result": {
+          "items": {
+            "$ref": "#/$defs/StructureMatch"
+          },
+          "title": "Result",
+          "type": "array"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "search_by_structureOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "resolve_chemicals",
+    "description": "Имена веществ → структуры (SMILES, InChIKey, формула, масса) с указанием источника.\n\nОтдельный инструмент, потому что вопрос отдельный: «какие это структуры» спрашивают и\nбез всякой сметы — например, чтобы записать маршрут из статьи в машинном виде.\n\nКаскад: словарь русских названий (офлайн) → OPSIN (систематика, офлайн при наличии Java)\n→ PubChem → NCI/CADD CIR → OPSIN-веб. Русские систематические имена перед этим переводятся\nна английский по правилам номенклатуры; PubChem и CIR кириллицу не индексируют вовсе.\nСтруктура принимается, только если её разбирает RDKit, — ответ сервиса, который не\nразбирается, считается отсутствующим (правило Open Reaction Database).\n\nСтрока, которую можно прочесть и как имя, и как SMILES (``CO``, ``NO``, ``NBS``, ``Br``),\n**не угадывается**: это разные вещества, и в ответе будет отказ с подсказкой, как записать\nоднозначно. Готовый SMILES пропускается насквозь, без обращения к сети.\n\nArgs:\n    names: имена или SMILES, напр. ``[\"2,6-ди-трет-бутилфенол\", \"AlCl3\", \"CC(=O)Cl\"]``.\n        Не более 200 за вызов.\n    use_llm: разрешить слой перевода RU→EN моделью (по умолчанию выключен).\n\n:raises ValueError: список пуст или длиннее 200 имён.\n",
+    "inputSchema": {
+      "properties": {
+        "names": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Names",
+          "type": "array"
+        },
+        "use_llm": {
+          "default": false,
+          "title": "Use Llm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "names"
+      ],
+      "title": "resolve_chemicalsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ResolvedInput": {
+          "description": "Одно вещество на входе: что пришло и во что разрешилось.",
+          "properties": {
+            "input": {
+              "title": "Input",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "canonical_smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Smiles"
+            },
+            "inchikey": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inchikey"
+            },
+            "formula": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Formula"
+            },
+            "molar_mass": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Molar Mass"
+            },
+            "method": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Method"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confidence"
+            },
+            "translated_from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Translated From"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Error"
+            },
+            "hint": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Hint"
+            }
+          },
+          "required": [
+            "input",
+            "kind"
+          ],
+          "title": "ResolvedInput",
+          "type": "object"
+        }
+      },
+      "description": "Итог разрешения набора строк: разрешённые и нет, плюс сводка по слоям.",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ResolvedInput"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "by_method": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "By Method",
+          "type": "object"
+        }
+      },
+      "title": "ResolutionReport",
+      "type": "object"
+    }
+  },
+  {
+    "name": "estimate_synthesis_cost",
+    "description": "Оценка стоимости набора реагентов: лучшая цена по каждому → суммы.\n\nРеагент задаётся структурой (``smiles``) ИЛИ именем (``name``) — можно смешивать в одном\nсписке. Имя разрешается в структуру резолвером, и результат разрешения возвращается в\n``resolved_inputs``: видно, какую именно молекулу посчитали. Неразрешённое имя попадает\nв ``missing`` с причиной ``unresolved_name`` — до поиска цены дело не доходит.\n\nВозвращает два числа стоимости (по упаковкам = реальный чек; за единицу = себестоимость),\nраздельно по валютам, плюс ``missing`` (несопоставленные) и пометку уровня совпадения на каждой\nпозиции. В режиме ``hard`` любой промах даёт ``error = no_exact_match`` без частичной сметы.\n\nArgs:\n    reagents: список ``{smiles | name, qty, unit, purity_min?}``, напр.\n        ``[{\"name\": \"глицерин\", \"qty\": 100, \"unit\": \"g\"}]``.\n    strategy: ``cheapest`` — дешевле за единицу по каждому реагенту независимо;\n        ``single_supplier`` — один поставщик на все реагенты (мин. суммарная себестоимость).\n    similarity: ``hard`` (по умолчанию) — только точное совпадение структуры; ``soft`` — каскад\n        точное → по связности → похожее (Tanimoto), с пояснением в ``comment``.\n    preferred_currency: предпочтительная валюта при выборе оффера (по умолчанию ``RUB``).\n        Среди офферов в этой валюте выбирается дешевейший. Если офферов в предпочтённой\n        валюте нет — берётся дешевейший в другой валюте, и строка сметы несёт пояснение\n        вида «нет предложений в RUB, выбрано USD». Курсы конвертации не вводятся.\n    use_llm: разрешить слой перевода RU→EN моделью для имён, которые не взяли ни словарь,\n        ни правила. По умолчанию выключен.\n",
+    "inputSchema": {
+      "$defs": {
+        "ReagentInput": {
+          "description": "Один реагент на входе ИНСТРУМЕНТА: структура либо имя, ровно одно из двух.\n\n``{\"smiles\": \"OCC(O)CO\", \"qty\": 100, \"unit\": \"g\"}`` — как было.\n``{\"name\": \"глицерин\", \"qty\": 100, \"unit\": \"g\"}`` — новое: имя разрешит резолвер.",
+          "properties": {
+            "smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Smiles"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Qty"
+            },
+            "unit": {
+              "title": "Unit",
+              "type": "string"
+            },
+            "purity_min": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Purity Min"
+            }
+          },
+          "required": [
+            "qty",
+            "unit"
+          ],
+          "title": "ReagentInput",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "reagents": {
+          "items": {
+            "$ref": "#/$defs/ReagentInput"
+          },
+          "title": "Reagents",
+          "type": "array"
+        },
+        "strategy": {
+          "default": "cheapest",
+          "title": "Strategy",
+          "type": "string"
+        },
+        "similarity": {
+          "default": "hard",
+          "title": "Similarity",
+          "type": "string"
+        },
+        "preferred_currency": {
+          "default": "RUB",
+          "title": "Preferred Currency",
+          "type": "string"
+        },
+        "use_llm": {
+          "default": false,
+          "title": "Use Llm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reagents"
+      ],
+      "title": "estimate_synthesis_costArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "CandidateOffering": {
+          "description": "Кандидат из моста по синонимам (требует подтверждения; не смешивается со сметой).",
+          "properties": {
+            "query_smiles": {
+              "title": "Query Smiles",
+              "type": "string"
+            },
+            "name_raw": {
+              "title": "Name Raw",
+              "type": "string"
+            },
+            "supplier": {
+              "title": "Supplier",
+              "type": "string"
+            },
+            "price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Price"
+            },
+            "price_currency": {
+              "title": "Price Currency",
+              "type": "string"
+            },
+            "similarity": {
+              "title": "Similarity",
+              "type": "number"
+            },
+            "comment": {
+              "default": "",
+              "title": "Comment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query_smiles",
+            "name_raw",
+            "supplier",
+            "price",
+            "price_currency",
+            "similarity"
+          ],
+          "title": "CandidateOffering",
+          "type": "object"
+        },
+        "ChosenOffering": {
+          "description": "Выбранное предложение под реагент.",
+          "properties": {
+            "supplier": {
+              "title": "Supplier",
+              "type": "string"
+            },
+            "name_raw": {
+              "title": "Name Raw",
+              "type": "string"
+            },
+            "pack_qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Pack Qty"
+            },
+            "pack_unit": {
+              "title": "Pack Unit",
+              "type": "string"
+            },
+            "price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Price"
+            },
+            "price_currency": {
+              "title": "Price Currency",
+              "type": "string"
+            },
+            "unit_price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unit Price"
+            }
+          },
+          "required": [
+            "supplier",
+            "name_raw",
+            "pack_qty",
+            "pack_unit",
+            "price",
+            "price_currency"
+          ],
+          "title": "ChosenOffering",
+          "type": "object"
+        },
+        "CostLineItem": {
+          "description": "Строка сметы по одному реагенту.",
+          "properties": {
+            "query_smiles": {
+              "title": "Query Smiles",
+              "type": "string"
+            },
+            "matched_inchikey": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Matched Inchikey"
+            },
+            "display_name_en": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Display Name En"
+            },
+            "match_level": {
+              "title": "Match Level",
+              "type": "string"
+            },
+            "similarity": {
+              "title": "Similarity",
+              "type": "number"
+            },
+            "qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Qty"
+            },
+            "unit": {
+              "title": "Unit",
+              "type": "string"
+            },
+            "chosen": {
+              "$ref": "#/$defs/ChosenOffering"
+            },
+            "packs_needed": {
+              "title": "Packs Needed",
+              "type": "integer"
+            },
+            "cost_packs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Cost Packs"
+            },
+            "cost_per_unit": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Cost Per Unit"
+            },
+            "is_bulk": {
+              "default": false,
+              "title": "Is Bulk",
+              "type": "boolean"
+            },
+            "basis_suspect": {
+              "default": false,
+              "title": "Basis Suspect",
+              "type": "boolean"
+            },
+            "comment": {
+              "default": "",
+              "title": "Comment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query_smiles",
+            "matched_inchikey",
+            "display_name_en",
+            "match_level",
+            "similarity",
+            "qty",
+            "unit",
+            "chosen",
+            "packs_needed",
+            "cost_packs",
+            "cost_per_unit"
+          ],
+          "title": "CostLineItem",
+          "type": "object"
+        },
+        "CurrencyTotal": {
+          "description": "Итог по одной валюте: по упаковкам и за единицу.",
+          "properties": {
+            "packs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Packs"
+            },
+            "per_unit": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Per Unit"
+            },
+            "bulk_excluded_count": {
+              "default": 0,
+              "title": "Bulk Excluded Count",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "packs",
+            "per_unit"
+          ],
+          "title": "CurrencyTotal",
+          "type": "object"
+        },
+        "ErrorResult": {
+          "description": "Ошибка режима ``hard``: нет точного совпадения хотя бы по одному реагенту.",
+          "properties": {
+            "error": {
+              "title": "Error",
+              "type": "string"
+            },
+            "unmatched": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Unmatched",
+              "type": "array"
+            }
+          },
+          "required": [
+            "error",
+            "unmatched"
+          ],
+          "title": "ErrorResult",
+          "type": "object"
+        },
+        "MissingReagent": {
+          "description": "Реагент без сопоставления.",
+          "properties": {
+            "smiles": {
+              "title": "Smiles",
+              "type": "string"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            },
+            "detail": {
+              "default": "",
+              "title": "Detail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles",
+            "reason"
+          ],
+          "title": "MissingReagent",
+          "type": "object"
+        },
+        "ResolvedInput": {
+          "description": "Одно вещество на входе: что пришло и во что разрешилось.",
+          "properties": {
+            "input": {
+              "title": "Input",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "canonical_smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Smiles"
+            },
+            "inchikey": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inchikey"
+            },
+            "formula": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Formula"
+            },
+            "molar_mass": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Molar Mass"
+            },
+            "method": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Method"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confidence"
+            },
+            "translated_from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Translated From"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Error"
+            },
+            "hint": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Hint"
+            }
+          },
+          "required": [
+            "input",
+            "kind"
+          ],
+          "title": "ResolvedInput",
+          "type": "object"
+        }
+      },
+      "description": "Смета по покрытым позициям. ``error`` заполняется только при промахе в режиме ``hard``.",
+      "properties": {
+        "line_items": {
+          "items": {
+            "$ref": "#/$defs/CostLineItem"
+          },
+          "title": "Line Items",
+          "type": "array"
+        },
+        "total_by_currency": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CurrencyTotal"
+          },
+          "title": "Total By Currency",
+          "type": "object"
+        },
+        "resolved_inputs": {
+          "items": {
+            "$ref": "#/$defs/ResolvedInput"
+          },
+          "title": "Resolved Inputs",
+          "type": "array"
+        },
+        "missing": {
+          "items": {
+            "$ref": "#/$defs/MissingReagent"
+          },
+          "title": "Missing",
+          "type": "array"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/CandidateOffering"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "comment": {
+          "default": "",
+          "title": "Comment",
+          "type": "string"
+        },
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "CostEstimate",
+      "type": "object"
+    }
+  },
+  {
+    "name": "rank_routes_by_cost",
+    "description": "Ранжирует маршруты синтеза по стоимости — от самого дешёвого к самому дорогому.\n\n**Шаг записывается одним из трёх способов, и они смешиваются в одном маршруте.**\nПервый — структурный, остальные два для маршрута, добытого из статьи, где SMILES нет::\n\n    \"CC(=O)Cl.CCO>>CCOC(C)=O\"                         reaction SMILES, как раньше\n\n    {\"reactants\": [\"2,6-ди-трет-бутилфенол\", \"ацетилхлорид\"],\n     \"agents\": [\"AlCl3\", \"CCl4\"],\n     \"products\": [\"1-(3,5-ди-трет-бутил-4-гидроксифенил)этан-1-он\"],\n     \"conditions\": \"0–5 °C\", \"yield\": 0.75}                        вещества именами\n\n    {\"text\": \"+ Br2 в EtOH → 2-бром-1-(...)этан-1-он, выход 65%\"}  стадия строкой\n\nВ именной записи вещество — строка (``\"ацетилхлорид\"``), либо ``{\"name\": …}``, либо\n``{\"smiles\": …}``, либо ``{\"name\": …, \"equiv\": 2}`` для эквивалентов, либо\n``{\"name\": \"CCl4\", \"amount\": {\"qty\": 50, \"unit\": \"ml\"}}``, чтобы растворитель попал в\nсмету. ``\"@prev\"`` в реагентах означает продукт предыдущей стадии — им начинается\nвторая стадия любой методики, и переписывать её длинное имя не нужно.\n\nВ строковой записи (``text``) стрелка делит стадию, ``+`` соединяет реагенты, а запятая\nс пробелом отделяет агенты и условия; условия (``0–5 °C``, ``2 ч``) распознаются по виду\nи в реагенты не попадают. Ведущий ``+`` значит «к продукту предыдущей стадии».\n\n**Имена превращаются в структуры, и подстановка видна.** Каскад: словарь → правила\nRU→EN → OPSIN → PubChem → CIR → OPSIN-веб (порядок Open Reaction Database). Итог — в\n``routes[].steps_smiles`` (собранные reaction SMILES, которые реально пошли в расчёт) и\n``routes[].resolved_inputs`` (что во что превратилось, каким слоем, с какой массой и\nформулой). Имя, которое не разрешилось, делает маршрут ``invalid`` с объяснением: без\nструктуры нет ни молярной массы, ни цены, и «примерно посчитать» тут нечего.\n\nСчитается закупка ТОЛЬКО стартовых материалов: вещество, получаемое на предыдущем шаге,\nне покупается. Количества выводятся обратным ходом от целевого количества продукта: моли\nпродукта → делим на выход шага → моли реагентов по стехиометрии (повтор компонента в\nзаписи = эквивалент) → граммы по молярной массе. Поэтому длинный маршрут честно требует\nбольше исходных веществ.\n\nВсе маршруты считаются на ОДНО целевое количество, иначе сравнение бессмысленно.\nМаршрут с непокрытыми позициями остаётся в рейтинге со статусом ``partial``: его сумма —\nзаниженная нижняя граница, а ``missing`` перечисляет несопоставленное. Сравнение цен —\nтолько внутри одной валюты, курсы не вводятся.\n\nArgs:\n    routes: маршруты ``{route_id, steps, target_smiles?, target_name?, overrides?}``.\n        Шаг — строка reaction SMILES, объект ``{\"reaction\": …, \"yield\": 0.8}``, объект\n        ``{\"reactants\": […], \"agents\": […], \"products\": […]}`` с именами или объект\n        ``{\"text\": \"<стадия одной строкой>\"}``. ``target_smiles``/``target_name`` нужны,\n        только если цель — не главный продукт последнего шага. ``overrides`` — список\n        ``{smiles | name, qty, unit}``: явное количество закупки вместо стехиометрического\n        (способ учесть растворитель или катализатор; то же делает ``amount`` у вещества).\n    target_qty: целевое количество продукта, одинаковое для всех маршрутов.\n    target_unit: единица цели — ``g``, ``kg``, ``mol`` или ``mmol``. Объём (мл, л) целью\n        быть не может: без плотности он в моли не переводится.\n    default_yield: выход шага, если у шага не задан свой (0 < y ≤ 1). По умолчанию 1.0 —\n        потери не моделируются, и расход реагентов занижен; задайте реальный выход.\n    strategy: ``cheapest`` — дешевейшее предложение по каждому реагенту;\n        ``single_supplier`` — один поставщик на весь маршрут.\n    similarity: ``soft`` (по умолчанию) — каскад точное → по связности → похожее;\n        ``hard`` — только точное совпадение, иначе маршрут становится ``unpriceable``.\n    preferred_currency: валюта итога и рейтинга (``RUB``, ``USD``, ``EUR``).\n    rank_by: ``per_unit`` — по себестоимости (масштабируемое сравнение химии, по\n        умолчанию); ``packs`` — по реальному чеку за целые упаковки.\n    include_breakdown: вкладывать ли полную смету каждого маршрута (``estimate``).\n        Выключите, если нужен только рейтинг: ответ станет заметно короче.\n    use_llm: разрешить слой перевода RU→EN моделью для имён, которые не взяли ни словарь,\n        ни правила номенклатуры. По умолчанию выключен: он медленнее, требует настроенного\n        эндпоинта и вносит недетерминизм. На маршрут из SMILES не влияет вовсе — там\n        разрешать нечего.\n",
+    "inputSchema": {
+      "$defs": {
+        "ChemicalRef": {
+          "description": "Вещество на входе: структура ЛИБО имя. Ровно одно из двух.\n\nТри принимаемые формы, от самой явной к самой удобной::\n\n    {\"smiles\": \"CC(=O)Cl\"}              структура — резолвер не включается\n    {\"name\": \"ацетилхлорид\"}            имя — пойдёт через резолвер\n    \"CC(=O)Cl\"  /  \"ацетилхлорид\"       строка — тип определит классификатор\n\nЯвный тип побеждает всегда, и это не формальность: ``CO`` как имя — оксид углерода\n(28.01), как SMILES — метанол (32.04). Классификатор такие строки не угадывает, а честно\nотказывается (:mod:`chemquote.resolver.input_kind`) — но если тип назван, отказываться\nне от чего.\n\n``equiv`` — эквиваленты. В reaction SMILES стехиометрия выражается повтором компонента\n(``CCO.CCO>>…`` — две моли этанола); в именной записи повторять имя неудобно, поэтому\nчисло выносится в поле. Значения эквивалентны: ``{\"name\": \"этанол\", \"equiv\": 2}`` даёт\nровно тот же расчёт, что и этанол, записанный дважды.",
+          "properties": {
+            "smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Smiles"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Text"
+            },
+            "equiv": {
+              "default": 1,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Equiv",
+              "type": "integer"
+            },
+            "amount": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RefAmount"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "title": "ChemicalRef",
+          "type": "object"
+        },
+        "ReagentOverride": {
+          "description": "Явное количество закупки, перекрывающее стехиометрический расчёт.\n\nНужен там, где стехиометрии нет: растворитель, катализатор, реагент в большом избытке.\nСопоставление с веществом маршрута — по структуре (InChIKey), а не по тексту SMILES,\nпоэтому вещество можно назвать именем: сначала оно разрешится в структуру, потом\nсопоставится.",
+          "properties": {
+            "smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Smiles"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Qty"
+            },
+            "unit": {
+              "default": "g",
+              "title": "Unit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "qty"
+          ],
+          "title": "ReagentOverride",
+          "type": "object"
+        },
+        "RefAmount": {
+          "description": "Сколько этого вещества закупать — прямо в записи шага.\n\nИначе растворитель пришлось бы называть дважды: один раз в ``agents``, второй раз в\n``overrides``, и оба написания должны были бы совпасть. Здесь количество стоит рядом с\nвеществом, а внутри превращается в тот же :class:`ReagentOverride`.",
+          "properties": {
+            "qty": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Qty"
+            },
+            "unit": {
+              "default": "g",
+              "title": "Unit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "qty"
+          ],
+          "title": "RefAmount",
+          "type": "object"
+        },
+        "RouteStep": {
+          "description": "Один шаг маршрута: реакция и (опционально) её выход.\n\nРеакция задаётся одним из двух способов, и смешивать их в одном шаге нельзя:\n\n* ``reaction`` — reaction SMILES (``\"CC(=O)Cl.CCO>>CCOC(C)=O\"``). Голая строка шага\n  означает то же самое: retro-движку удобно так.\n* ``reactants`` / ``agents`` / ``products`` — списки веществ (:class:`ChemicalRef`),\n  где каждое может быть именем. Так шаг выглядит в статье, и так его отдаёт\n  литературный агент.",
+          "properties": {
+            "reaction": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reaction"
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Text"
+            },
+            "reactants": {
+              "items": {
+                "$ref": "#/$defs/ChemicalRef"
+              },
+              "title": "Reactants",
+              "type": "array"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/ChemicalRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "products": {
+              "items": {
+                "$ref": "#/$defs/ChemicalRef"
+              },
+              "title": "Products",
+              "type": "array"
+            },
+            "conditions": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conditions"
+            },
+            "yield": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "maximum": 1.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Yield"
+            }
+          },
+          "title": "RouteStep",
+          "type": "object"
+        },
+        "SynthesisRoute": {
+          "description": "Маршрут синтеза: шаги в порядке выполнения, продукт последнего шага — цель.",
+          "properties": {
+            "route_id": {
+              "title": "Route Id",
+              "type": "string"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/RouteStep"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "target_smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Target Smiles"
+            },
+            "target_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Target Name"
+            },
+            "overrides": {
+              "items": {
+                "$ref": "#/$defs/ReagentOverride"
+              },
+              "title": "Overrides",
+              "type": "array"
+            }
+          },
+          "required": [
+            "route_id",
+            "steps"
+          ],
+          "title": "SynthesisRoute",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "routes": {
+          "items": {
+            "$ref": "#/$defs/SynthesisRoute"
+          },
+          "title": "Routes",
+          "type": "array"
+        },
+        "target_qty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "default": "1",
+          "title": "Target Qty"
+        },
+        "target_unit": {
+          "default": "g",
+          "title": "Target Unit",
+          "type": "string"
+        },
+        "default_yield": {
+          "default": 1.0,
+          "title": "Default Yield",
+          "type": "number"
+        },
+        "strategy": {
+          "default": "cheapest",
+          "title": "Strategy",
+          "type": "string"
+        },
+        "similarity": {
+          "default": "soft",
+          "title": "Similarity",
+          "type": "string"
+        },
+        "preferred_currency": {
+          "default": "RUB",
+          "title": "Preferred Currency",
+          "type": "string"
+        },
+        "rank_by": {
+          "default": "per_unit",
+          "title": "Rank By",
+          "type": "string"
+        },
+        "include_breakdown": {
+          "default": true,
+          "title": "Include Breakdown",
+          "type": "boolean"
+        },
+        "use_llm": {
+          "default": false,
+          "title": "Use Llm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "routes"
+      ],
+      "title": "rank_routes_by_costArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "CandidateOffering": {
+          "description": "Кандидат из моста по синонимам (требует подтверждения; не смешивается со сметой).",
+          "properties": {
+            "query_smiles": {
+              "title": "Query Smiles",
+              "type": "string"
+            },
+            "name_raw": {
+              "title": "Name Raw",
+              "type": "string"
+            },
+            "supplier": {
+              "title": "Supplier",
+              "type": "string"
+            },
+            "price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Price"
+            },
+            "price_currency": {
+              "title": "Price Currency",
+              "type": "string"
+            },
+            "similarity": {
+              "title": "Similarity",
+              "type": "number"
+            },
+            "comment": {
+              "default": "",
+              "title": "Comment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query_smiles",
+            "name_raw",
+            "supplier",
+            "price",
+            "price_currency",
+            "similarity"
+          ],
+          "title": "CandidateOffering",
+          "type": "object"
+        },
+        "ChosenOffering": {
+          "description": "Выбранное предложение под реагент.",
+          "properties": {
+            "supplier": {
+              "title": "Supplier",
+              "type": "string"
+            },
+            "name_raw": {
+              "title": "Name Raw",
+              "type": "string"
+            },
+            "pack_qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Pack Qty"
+            },
+            "pack_unit": {
+              "title": "Pack Unit",
+              "type": "string"
+            },
+            "price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Price"
+            },
+            "price_currency": {
+              "title": "Price Currency",
+              "type": "string"
+            },
+            "unit_price": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Unit Price"
+            }
+          },
+          "required": [
+            "supplier",
+            "name_raw",
+            "pack_qty",
+            "pack_unit",
+            "price",
+            "price_currency"
+          ],
+          "title": "ChosenOffering",
+          "type": "object"
+        },
+        "CostEstimate": {
+          "description": "Смета по покрытым позициям. ``error`` заполняется только при промахе в режиме ``hard``.",
+          "properties": {
+            "line_items": {
+              "items": {
+                "$ref": "#/$defs/CostLineItem"
+              },
+              "title": "Line Items",
+              "type": "array"
+            },
+            "total_by_currency": {
+              "additionalProperties": {
+                "$ref": "#/$defs/CurrencyTotal"
+              },
+              "title": "Total By Currency",
+              "type": "object"
+            },
+            "resolved_inputs": {
+              "items": {
+                "$ref": "#/$defs/ResolvedInput"
+              },
+              "title": "Resolved Inputs",
+              "type": "array"
+            },
+            "missing": {
+              "items": {
+                "$ref": "#/$defs/MissingReagent"
+              },
+              "title": "Missing",
+              "type": "array"
+            },
+            "candidates": {
+              "items": {
+                "$ref": "#/$defs/CandidateOffering"
+              },
+              "title": "Candidates",
+              "type": "array"
+            },
+            "comment": {
+              "default": "",
+              "title": "Comment",
+              "type": "string"
+            },
+            "assumptions": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Assumptions",
+              "type": "array"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ErrorResult"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "title": "CostEstimate",
+          "type": "object"
+        },
+        "CostLineItem": {
+          "description": "Строка сметы по одному реагенту.",
+          "properties": {
+            "query_smiles": {
+              "title": "Query Smiles",
+              "type": "string"
+            },
+            "matched_inchikey": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Matched Inchikey"
+            },
+            "display_name_en": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Display Name En"
+            },
+            "match_level": {
+              "title": "Match Level",
+              "type": "string"
+            },
+            "similarity": {
+              "title": "Similarity",
+              "type": "number"
+            },
+            "qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Qty"
+            },
+            "unit": {
+              "title": "Unit",
+              "type": "string"
+            },
+            "chosen": {
+              "$ref": "#/$defs/ChosenOffering"
+            },
+            "packs_needed": {
+              "title": "Packs Needed",
+              "type": "integer"
+            },
+            "cost_packs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Cost Packs"
+            },
+            "cost_per_unit": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Cost Per Unit"
+            },
+            "is_bulk": {
+              "default": false,
+              "title": "Is Bulk",
+              "type": "boolean"
+            },
+            "basis_suspect": {
+              "default": false,
+              "title": "Basis Suspect",
+              "type": "boolean"
+            },
+            "comment": {
+              "default": "",
+              "title": "Comment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query_smiles",
+            "matched_inchikey",
+            "display_name_en",
+            "match_level",
+            "similarity",
+            "qty",
+            "unit",
+            "chosen",
+            "packs_needed",
+            "cost_packs",
+            "cost_per_unit"
+          ],
+          "title": "CostLineItem",
+          "type": "object"
+        },
+        "CurrencyTotal": {
+          "description": "Итог по одной валюте: по упаковкам и за единицу.",
+          "properties": {
+            "packs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Packs"
+            },
+            "per_unit": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Per Unit"
+            },
+            "bulk_excluded_count": {
+              "default": 0,
+              "title": "Bulk Excluded Count",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "packs",
+            "per_unit"
+          ],
+          "title": "CurrencyTotal",
+          "type": "object"
+        },
+        "ErrorResult": {
+          "description": "Ошибка режима ``hard``: нет точного совпадения хотя бы по одному реагенту.",
+          "properties": {
+            "error": {
+              "title": "Error",
+              "type": "string"
+            },
+            "unmatched": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Unmatched",
+              "type": "array"
+            }
+          },
+          "required": [
+            "error",
+            "unmatched"
+          ],
+          "title": "ErrorResult",
+          "type": "object"
+        },
+        "MissingReagent": {
+          "description": "Реагент без сопоставления.",
+          "properties": {
+            "smiles": {
+              "title": "Smiles",
+              "type": "string"
+            },
+            "reason": {
+              "title": "Reason",
+              "type": "string"
+            },
+            "detail": {
+              "default": "",
+              "title": "Detail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "smiles",
+            "reason"
+          ],
+          "title": "MissingReagent",
+          "type": "object"
+        },
+        "ResolvedInput": {
+          "description": "Одно вещество на входе: что пришло и во что разрешилось.",
+          "properties": {
+            "input": {
+              "title": "Input",
+              "type": "string"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "canonical_smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Smiles"
+            },
+            "inchikey": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inchikey"
+            },
+            "formula": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Formula"
+            },
+            "molar_mass": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Molar Mass"
+            },
+            "method": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Method"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confidence"
+            },
+            "translated_from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Translated From"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Error"
+            },
+            "hint": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Hint"
+            }
+          },
+          "required": [
+            "input",
+            "kind"
+          ],
+          "title": "ResolvedInput",
+          "type": "object"
+        },
+        "RouteCost": {
+          "description": "Итог по одному маршруту: стоимость закупки стартовых материалов + прозрачность расчёта.",
+          "properties": {
+            "route_id": {
+              "title": "Route Id",
+              "type": "string"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "rank": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Rank"
+            },
+            "step_count": {
+              "default": 0,
+              "title": "Step Count",
+              "type": "integer"
+            },
+            "target_smiles": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Target Smiles"
+            },
+            "currency": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Currency"
+            },
+            "cost_packs": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Packs"
+            },
+            "cost_per_unit": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Per Unit"
+            },
+            "starting_materials": {
+              "items": {
+                "$ref": "#/$defs/RouteReagentNeed"
+              },
+              "title": "Starting Materials",
+              "type": "array"
+            },
+            "intermediates": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Intermediates",
+              "type": "array"
+            },
+            "unpriced_agents": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Unpriced Agents",
+              "type": "array"
+            },
+            "missing": {
+              "items": {
+                "$ref": "#/$defs/MissingReagent"
+              },
+              "title": "Missing",
+              "type": "array"
+            },
+            "steps_smiles": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Steps Smiles",
+              "type": "array"
+            },
+            "resolved_inputs": {
+              "items": {
+                "$ref": "#/$defs/ResolvedInput"
+              },
+              "title": "Resolved Inputs",
+              "type": "array"
+            },
+            "estimate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CostEstimate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "route_id",
+            "status"
+          ],
+          "title": "RouteCost",
+          "type": "object"
+        },
+        "RouteReagentNeed": {
+          "description": "Сколько одного стартового материала нужно закупить на весь маршрут.",
+          "properties": {
+            "smiles": {
+              "title": "Smiles",
+              "type": "string"
+            },
+            "inchikey": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Inchikey"
+            },
+            "qty": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Qty"
+            },
+            "unit": {
+              "title": "Unit",
+              "type": "string"
+            },
+            "moles": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Moles"
+            },
+            "molar_mass": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Molar Mass"
+            },
+            "source": {
+              "default": "stoichiometry",
+              "title": "Source",
+              "type": "string"
+            },
+            "used_in_steps": {
+              "items": {
+                "type": "integer"
+              },
+              "title": "Used In Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "smiles",
+            "inchikey",
+            "qty",
+            "unit"
+          ],
+          "title": "RouteReagentNeed",
+          "type": "object"
+        }
+      },
+      "description": "Отранжированный список маршрутов — от дешевейшего к дорогому.",
+      "properties": {
+        "routes": {
+          "items": {
+            "$ref": "#/$defs/RouteCost"
+          },
+          "title": "Routes",
+          "type": "array"
+        },
+        "preferred_currency": {
+          "default": "RUB",
+          "title": "Preferred Currency",
+          "type": "string"
+        },
+        "rank_by": {
+          "default": "per_unit",
+          "title": "Rank By",
+          "type": "string"
+        },
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        }
+      },
+      "title": "RouteRanking",
+      "type": "object"
+    }
+  }
+]

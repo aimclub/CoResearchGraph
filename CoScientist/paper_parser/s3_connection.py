@@ -1,3 +1,4 @@
+import mimetypes
 import os
 from io import BytesIO
 from pathlib import Path
@@ -132,12 +133,19 @@ class S3BucketService:
         """
         client = self.create_s3_client()
         destination_path = (Path(prefix, source_file_name)).as_posix()
-        
+
         with open(file_path, 'rb') as f:
             content = f.read()
-        
+
         buffer = BytesIO(content)
-        client.upload_fileobj(buffer, self.bucket_name, destination_path)
+        # Without an explicit ContentType the object is stored as
+        # binary/octet-stream, and a browser refuses to render an SVG from it.
+        content_type = mimetypes.guess_type(source_file_name)[0]
+        if content_type:
+            client.upload_fileobj(buffer, self.bucket_name, destination_path,
+                                  ExtraArgs={"ContentType": content_type})
+        else:
+            client.upload_fileobj(buffer, self.bucket_name, destination_path)
 
     def upload_bytes(self, prefix: str, source_file_name: str, data: bytes) -> str:
         """
@@ -154,7 +162,12 @@ class S3BucketService:
         client = self.create_s3_client()
         destination_path = (Path(prefix, source_file_name)).as_posix()
         buffer = BytesIO(data)
-        client.upload_fileobj(buffer, self.bucket_name, destination_path)
+        content_type = mimetypes.guess_type(source_file_name)[0]
+        if content_type:
+            client.upload_fileobj(buffer, self.bucket_name, destination_path,
+                                  ExtraArgs={"ContentType": content_type})
+        else:
+            client.upload_fileobj(buffer, self.bucket_name, destination_path)
         return destination_path
 
     def list_objects(self, prefix: str) -> list[str]:
@@ -234,6 +247,7 @@ class S3BucketService:
             method: str = 'get_object',
             expiration: int = 360,
             bucket_name: str = None,
+            response_content_type: str = None,
     ) -> str:
         """
         Generates a presigned URL for accessing an S3 object.
@@ -248,6 +262,10 @@ class S3BucketService:
             method: HTTP method for the presigned URL (default: 'get_object')
             expiration: Time in seconds for the URL to remain valid (default: 360)
             bucket_name: Bucket that holds the object (default: the service bucket)
+            response_content_type: Overrides the Content-Type of the GET
+                response. Objects uploaded without a ContentType come back as
+                binary/octet-stream, and a browser will not render an SVG from
+                that. Only meaningful for get_object.
 
         Returns:
             A presigned URL string for accessing the S3 object
@@ -256,9 +274,12 @@ class S3BucketService:
             client = self.create_signing_client()
         else:
             client = self.create_s3_client()
+        params = {'Bucket': bucket_name or self.bucket_name, 'Key': s3_key}
+        if response_content_type:
+            params['ResponseContentType'] = response_content_type
         return client.generate_presigned_url(
             method,
-            Params={'Bucket': bucket_name or self.bucket_name, 'Key': s3_key},
+            Params=params,
             ExpiresIn=expiration
         )
     

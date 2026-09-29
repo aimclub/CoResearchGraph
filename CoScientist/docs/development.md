@@ -258,7 +258,7 @@ Work Order name checks for that agent. Use it only for truly dynamic surfaces.
 
 **4. Attach it** to agents in the YAML: `tools: [..., weather]`. Do it in every
 profile that should have the tool: `agents/system.yaml`, and
-`agents/microfluidics.yaml` if needed (`COSCIENTIST_CONFIG` selects the
+`microfluidics/microfluidics.yaml` if needed (`COSCIENTIST_CONFIG` selects the
 profile).
 
 **5. Prompt.** `<<TOOLS>>` picks up the new `ToolDoc` by itself, so you do not

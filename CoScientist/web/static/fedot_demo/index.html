@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>FEDOT.MAS — генерация мультиагентных систем</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <circle cx="16" cy="7" r="4"/>
+      <circle cx="7" cy="24" r="4"/>
+      <circle cx="25" cy="24" r="4"/>
+      <path d="M16 11 L7 20 M16 11 L25 20 M11 24 L21 24"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">FEDOT<span class="dot">.</span>MAS</span>
+      <span class="brand-sub">запуски текущей сессии CoScientist</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <button class="chip chip-icon" id="btn-theme" title="Светлая / тёмная тема">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/><circle cx="12" cy="12" r="4"/></svg>
+    </button>
+    <button class="chip chip-icon" id="btn-zoom" title="Крупный текст для большого экрана">A<sup>+</sup></button>
+    <button class="chip hidden" id="btn-key" title="Ключ провайдера">
+      <svg viewBox="0 0 24 24" class="ic"><circle cx="8" cy="14" r="4"/><path d="M11 11l8-8M17 5l2 2M15 7l2 2"/></svg>
+      <span id="btn-key-label">Ключ</span>
+    </button>
+  </div>
+</header>
+
+<div id="fedot-runs"></div>
+<main class="layout">
+
+  <!-- ЛЕВАЯ КОЛОНКА -->
+  <aside class="panel side">
+    <section class="block">
+      <div class="block-title">Постановка задачи</div>
+      <textarea id="query" rows="5" spellcheck="false" placeholder="Опишите задачу на естественном языке…"></textarea>
+      <div class="run-row">
+        <button class="btn btn-ghost" id="btn-generate">
+          <svg viewBox="0 0 24 24" class="ic"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l3 3M15 15l3 3M18 6l-3 3M9 15l-3 3"/></svg>
+          Сгенерировать заново
+        </button>
+        <button class="btn btn-primary" id="btn-run">
+          <svg viewBox="0 0 24 24" class="ic"><path d="M7 4l12 8-12 8z"/></svg>
+          Запустить
+        </button>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="block-title">Модели</div>
+      <div class="model-picks">
+        <label class="model-pick">
+          <span>Генерация системы</span>
+          <select id="model-gen" title="Модель мета-агента: проектирует состав агентов и пайплайн"></select>
+        </label>
+        <label class="model-pick">
+          <span>Запуск системы</span>
+          <select id="model-run" title="Модель агентов при исполнении и одиночной модели для сравнения"></select>
+        </label>
+        <label class="model-pick">
+          <span>Одна модель</span>
+          <select id="model-single" title="Модель, которая отвечает на ту же задачу одна, без системы"></select>
+        </label>
+        <label class="model-pick">
+          <span>Судья</span>
+          <select id="model-judge" title="Модель, которая сравнивает ответ системы с ответом одной модели"></select>
+        </label>
+      </div>
+    </section>
+
+    <section class="block block-grow">
+      <div class="block-title row-title">
+        <span>Сценарии <span class="muted-count" id="preset-count"></span></span>
+        <button class="btn btn-mini" id="btn-new" title="Описать свою задачу и сгенерировать под неё систему">Добавить сценарий</button>
+        <button class="btn btn-mini" id="btn-import" title="Загрузить сценарий из файла, сохранённого на компьютере">Импортировать</button>
+        <input type="file" id="import-file" accept="application/json,.json" hidden>
+      </div>
+      <div class="preset-list" id="presets"></div>
+    </section>
+
+    <section class="block block-data" id="data-block">
+      <div class="block-title">Источники данных</div>
+      <div class="data-list" id="data-list"></div>
+    </section>
+
+    <section class="block block-foot">
+      <div class="stat-line"><span>Трудоёмкость вручную</span><b id="stat-manual">—</b></div>
+      <div class="stat-line" id="stat-gen-row"><span>Генерация системы</span><b id="stat-gen">—</b></div>
+      <div class="stat-line"><span>Запуск системы</span><b id="stat-auto">—</b></div>
+    </section>
+  </aside>
+
+  <!-- ЦЕНТР -->
+  <section class="panel center">
+    <div class="center-head">
+      <div>
+        <div class="center-title" id="scenario-title">Выберите сценарий</div>
+        <div class="center-sub" id="scenario-sub"></div>
+      </div>
+      <div class="kind-badge" id="kind-badge"></div>
+    </div>
+
+    <div class="stage" id="stage">
+      <svg id="graph" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="zoom">
+        <button class="zbtn" id="z-in" title="Приблизить">+</button>
+        <button class="zbtn" id="z-out" title="Отдалить">&minus;</button>
+        <button class="zbtn" id="z-fit" title="По размеру окна (масштаб зумится по Ctrl/⌘ + колесо, панорама — перетаскиванием)">
+          <svg viewBox="0 0 24 24" class="ic"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
+      </div>
+      </div>
+    </div>
+
+    <div class="metrics" id="metrics">
+      <div class="metric"><span>агентов</span><b id="m-agents">0</b></div>
+      <div class="metric"><span>шагов</span><b id="m-steps">0</b></div>
+      <div class="metric"><span>инструментов</span><b id="m-tools">0</b></div>
+      <div class="metric"><span>токенов</span><b id="m-tokens">0</b></div>
+      <div class="metric"><span>время</span><b id="m-time">0.0 с</b></div>
+    </div>
+
+    <div class="player">
+      <button class="pbtn" id="p-restart" title="Сначала">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M6 5v14M19 5l-10 7 10 7z"/></svg>
+      </button>
+      <button class="pbtn pbtn-main" id="p-play" title="Пуск / пауза">
+        <svg viewBox="0 0 24 24" class="ic" id="p-play-icon"><path d="M7 4l12 8-12 8z"/></svg>
+      </button>
+      <div class="progress"><div class="progress-fill" id="p-fill"></div></div>
+      <button class="pbtn pbtn-text" id="p-export" title="Сохранить сценарий целиком в файл: схема, прогон, ответы, оценка">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M12 4v11M8 11l4 4 4-4M5 19h14"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <!-- ПРАВАЯ КОЛОНКА -->
+  <aside class="panel inspect">
+    <div class="tabs" id="tabs">
+      <button class="tab tab-active" data-tab="answer">Ответ</button>
+      <button class="tab" data-tab="feed">Ход выполнения</button>
+      <button class="tab" data-tab="agents">Агенты</button>
+      <button class="tab" data-tab="tools">Инструменты</button>
+      <button class="tab" data-tab="effort">Трудоёмкость</button>
+      <button class="tab" data-tab="json">JSON</button>
+      <button class="tab-expand" id="btn-expand" title="Развернуть панель на всю ширину">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M9 4H4v5M15 20h5v-5M20 9V4h-5M4 15v5h5"/></svg>
+      </button>
+    </div>
+
+    <div class="tab-body" id="tab-answer">
+      <div class="answer" id="answer">
+        <div class="empty">Ответ системы появится после запуска</div>
+      </div>
+      <div class="gen-progress hidden" id="judge-progress">
+        <div class="gen-progress-head"><b id="judge-progress-step">Судья читает ответы…</b><span id="judge-progress-time">0 с</span></div>
+        <div class="gen-progress-bar"><i id="judge-progress-fill"></i></div>
+        <div class="gen-progress-log" id="judge-progress-log"></div>
+      </div>
+      <div class="answer-actions" id="answer-actions">
+        <button class="btn btn-mini" id="btn-baseline" disabled>Сравнить с одной моделью</button>
+        <button class="btn btn-mini" id="btn-judge" disabled>Оценить судьёй</button>
+      </div>
+    </div>
+
+    <div class="tab-body hidden" id="tab-feed">
+      <div class="feed" id="feed">
+        <div class="empty">Журнал появится после запуска системы</div>
+      </div>
+    </div>
+
+    <div class="tab-body hidden" id="tab-agents">
+      <div class="agent-cards" id="agent-cards"></div>
+    </div>
+
+    <div class="tab-body hidden" id="tab-tools">
+      <div class="tool-cards" id="tool-cards"></div>
+    </div>
+
+    <div class="tab-body hidden" id="tab-effort">
+      <div class="effort-box" id="effort-box">
+        <div class="empty">Разбор появится после создания сценария</div>
+      </div>
+    </div>
+
+    <div class="tab-body hidden" id="tab-json">
+      <div class="json-head">
+        <span id="json-label">config.json</span>
+        <button class="btn btn-mini" id="btn-copy">Копировать</button>
+      </div>
+      <pre class="json" id="json"></pre>
+    </div>
+  </aside>
+
+</main>
+
+<!-- Ключ провайдера: в публичном режиме сервер своего ключа не имеет -->
+<div class="modal hidden" id="key-modal">
+  <div class="modal-card key-card">
+    <div class="modal-head">
+      <span>Ключ провайдера</span>
+      <button class="zbtn hidden" id="key-close" title="Закрыть">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="key-lead">Стенд работает на вашем ключе: запросы к моделям оплачиваются с вашего
+        счёта, сервер ключ никуда не сохраняет и в журнал не пишет.</p>
+      <label class="hidden" id="key-token-row">Код доступа
+        <input type="text" id="key-token" placeholder="из ссылки, часть после ?t=" autocomplete="off" spellcheck="false">
+        <span class="label-hint">ссылка открылась без кода — например, его срезала страница-предупреждение туннеля</span>
+      </label>
+      <label>Ключ OpenRouter
+        <input type="password" id="key-input" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" id="key-remember" checked>
+        <span>Запомнить в этом браузере <span class="label-hint">чтобы не вводить при каждой перезагрузке</span></span>
+      </label>
+      <div class="key-where">Ключ берётся на <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer noopener">openrouter.ai/keys</a>.</div>
+    </div>
+    <div class="modal-status"><div class="modal-note" id="key-note"></div></div>
+    <div class="modal-foot">
+      <button class="btn btn-primary" id="key-submit">Проверить и продолжить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Форма своего сценария -->
+<div class="modal hidden" id="new-modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <span>Добавить сценарий</span>
+      <button class="zbtn" id="new-close" title="Закрыть">✕</button>
+    </div>
+    <div class="modal-body">
+      <label>Название
+        <input type="text" id="new-title" placeholder="Например: оценка земельного участка">
+      </label>
+      <label>Тип системы
+        <span class="radio-row">
+          <label class="radio"><input type="radio" name="new-kind" value="maw" checked> MAW — пайплайн агентов</label>
+          <label class="radio"><input type="radio" name="new-kind" value="mas"> MAS — маршрутизация</label>
+        </span>
+      </label>
+      <label>Задача
+        <span class="label-hint">опишите своими словами, что нужно сделать; данные, если есть, вставьте сюда же —
+        постановку для мета-агента и запрос для запуска система выделит сама</span>
+        <textarea id="new-text" rows="9" placeholder="Например: проведи предпроектную оценку земельного участка 78:06:0220301:6706 — определи градостроительные ограничения, оцени транспортную доступность, рассчитай допустимые показатели застройки и укажи источник для каждого вывода…"></textarea>
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" id="new-web" checked>
+        <span>Искать данные в интернете <span class="label-hint" id="new-web-hint">агенту будет выдан веб-поиск</span></span>
+      </label>
+      <details class="tools-box" id="new-tools-box">
+        <summary>Инструменты агентов <span class="label-hint" id="new-tools-count"></span></summary>
+        <div class="tools-grid" id="new-tools"></div>
+      </details>
+      <details class="tools-box" id="new-mcp-box">
+        <summary>MCP-серверы из реестра Smithery <span class="label-hint" id="new-mcp-count"></span></summary>
+        <input type="text" id="new-mcp-search" class="mcp-search" placeholder="что должен уметь сервер: weather, geocoding, database…">
+        <div class="mcp-remote" id="new-mcp-remote"></div>
+        <div class="mcp-custom">
+          <span class="label-hint">свой сервер по ссылке (HTTP-транспорт)</span>
+          <div class="mcp-custom-row">
+            <input type="text" id="new-mcp-name" placeholder="имя, например my_tools">
+            <input type="text" id="new-mcp-url" placeholder="https://…/mcp">
+            <button type="button" class="btn btn-mini" id="new-mcp-add">Добавить</button>
+          </div>
+          <div class="mcp-added" id="new-mcp-added"></div>
+        </div>
+      </details>
+      <label class="checkbox">
+        <input type="checkbox" id="new-effort" checked>
+        <span>Рассчитать трудоёмкость вручную <span class="label-hint">задача разложится на подзадачи с оценкой в часах, сумма и станет итогом</span></span>
+      </label>
+      <label>Источники данных <span class="label-hint">по одному в строке: название | ссылка (ссылку можно не указывать)</span>
+        <textarea id="new-sources" rows="3" placeholder="Выписка из ЕГРН | https://…&#10;Правила землепользования и застройки | https://…"></textarea>
+      </label>
+      <label>Файлы-источники <span class="label-hint">таблица, выписка, отчёт — агент прочитает их сам; можно вместе со ссылками</span>
+        <div class="file-row">
+          <button type="button" class="btn btn-mini" id="new-file-pick">Прикрепить файл</button>
+          <input type="file" id="new-file" multiple hidden>
+          <span class="label-hint" id="new-file-note"></span>
+        </div>
+        <div class="mcp-added" id="new-file-list"></div>
+      </label>
+    </div>
+    <div class="modal-status">
+      <div class="gen-progress hidden" id="new-progress">
+        <div class="gen-progress-head"><b id="new-progress-step">Разбираем задачу…</b><span id="new-progress-time">0 с</span></div>
+        <div class="gen-progress-bar"><i id="new-progress-fill"></i></div>
+        <div class="gen-progress-log" id="new-progress-log"></div>
+      </div>
+      <div class="modal-note" id="new-note"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="new-cancel">Отмена</button>
+      <button class="btn btn-primary" id="new-submit">Сгенерировать систему</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/fedot_runs.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

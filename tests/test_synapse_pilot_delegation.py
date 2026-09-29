@@ -520,8 +520,14 @@ def test_pilot_reasoning_matches_gpt_oss_gateway_without_changing_regular_demo()
 
     pilot = load_config(resolve_config_path("synapse_pilot"))
     regular = load_config(resolve_config_path("synapse_demo"))
+    base = load_config(resolve_config_path("system"))
 
     assert pilot.defaults.reasoning == "medium"
     assert pilot.agent("HypothesesAgent").reasoning == "medium"
     assert regular.defaults.reasoning is False
-    assert regular.agent("HypothesesAgent").reasoning == "high"
+    # The regular demo keeps whatever system.yaml declares (a settings
+    # placeholder, not a literal), untouched by the pilot's override.
+    assert (
+        regular.agent("HypothesesAgent").reasoning
+        == base.agent("HypothesesAgent").reasoning
+    )

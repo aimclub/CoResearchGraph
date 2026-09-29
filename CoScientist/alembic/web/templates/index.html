@@ -6,7 +6,7 @@
   <meta content="width=device-width, initial-scale=1.0" name="viewport" />
   <title>Alembic Pipeline</title>
   <link
-    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
     rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
     rel="stylesheet" />
@@ -31,16 +31,16 @@
             "card": "0.75rem", "control": "0.5rem",
           },
           fontFamily: {
-            head: ["Space Grotesk", "sans-serif"],
-            mono: ["JetBrains Mono", "monospace"],
-            body: ["Inter", "sans-serif"],
+            head: ["Source Sans 3", "sans-serif"],
+            mono: ["IBM Plex Mono", "monospace"],
+            body: ["Source Sans 3", "sans-serif"],
           }
         },
       },
     }
   </script>
   <style>
-    body { font-family: 'Inter', sans-serif; }
+    body { font-family: 'Source Sans 3', sans-serif; }
     .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
 
     /* scrollbars */
@@ -64,8 +64,8 @@
     }
 
     /* lightweight markdown */
-    .md h4 { font-family: 'Space Grotesk'; font-weight: 600; color: #e1e2eb; margin: .5rem 0 .15rem; font-size: .82rem; }
-    .md code { font-family: 'JetBrains Mono'; font-size: .76rem; background: #0b0e14; padding: 1px 5px; border-radius: 5px; color: #00daf3; }
+    .md h4 { font-family: 'Source Sans 3'; font-weight: 600; color: #e1e2eb; margin: .5rem 0 .15rem; font-size: .82rem; }
+    .md code { font-family: 'IBM Plex Mono'; font-size: .76rem; background: #0b0e14; padding: 1px 5px; border-radius: 5px; color: #00daf3; }
     .md strong { color: #e1e2eb; font-weight: 600; }
     .md .li { padding-left: 14px; position: relative; margin: 3px 0; color: #c2c6d8; font-size: .81rem; line-height: 1.5; }
     .md .li::before { content: ""; position: absolute; left: 2px; top: .55em; width: 4px; height: 4px; border-radius: 999px; background: #00daf3; }
@@ -76,7 +76,7 @@
       position: fixed; z-index: 200; display: none; pointer-events: none;
       width: 360px; max-height: 260px; overflow: auto;
       background: #0b0e14; border: 1px solid #93000a; color: #ffb4ab;
-      font-family: 'JetBrains Mono'; font-size: .69rem; line-height: 1.5;
+      font-family: 'IBM Plex Mono'; font-size: .69rem; line-height: 1.5;
       padding: 9px 11px; border-radius: 12px; white-space: pre-wrap;
       box-shadow: 0 14px 40px rgba(0,0,0,.55);
     }
@@ -89,25 +89,25 @@
     #feed-resizer:hover::after { background: #00daf3; }
 
     /* tool invocation panel (expand a tool card) */
-    .lbl { font-family: 'Space Grotesk'; font-size: .62rem; font-weight: 600; letter-spacing: .1em;
+    .lbl { font-family: 'Source Sans 3'; font-size: .62rem; font-weight: 600; letter-spacing: .1em;
       text-transform: uppercase; color: #a1a7b8; margin-bottom: 4px; }
     .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; align-items: start; }
-    .kvk { font-family: 'JetBrains Mono'; font-size: .72rem; color: #00daf3; white-space: nowrap; }
-    .kvv { font-family: 'JetBrains Mono'; font-size: .72rem; color: #c2c6d8; word-break: break-word; }
-    .out { font-family: 'JetBrains Mono'; font-size: .7rem; line-height: 1.5; color: #c2c6d8;
+    .kvk { font-family: 'IBM Plex Mono'; font-size: .72rem; color: #00daf3; white-space: nowrap; }
+    .kvv { font-family: 'IBM Plex Mono'; font-size: .72rem; color: #c2c6d8; word-break: break-word; }
+    .out { font-family: 'IBM Plex Mono'; font-size: .7rem; line-height: 1.5; color: #c2c6d8;
       background: #0b0e14; border: 1px solid #475569; border-radius: 8px; padding: 8px 10px;
       max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-    .err { font-family: 'JetBrains Mono'; font-size: .69rem; line-height: 1.5; color: #ffb4ab;
+    .err { font-family: 'IBM Plex Mono'; font-size: .69rem; line-height: 1.5; color: #ffb4ab;
       background: #0b0e14; border: 1px solid #93000a; border-radius: 8px; padding: 8px 10px;
       max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-    .stat { font-family: 'JetBrains Mono'; font-size: 1.4rem; font-weight: 600; color: #e1e2eb; }
-    .chip { display: inline-block; font-family: 'JetBrains Mono'; font-size: .7rem; color: #c2c6d8;
+    .stat { font-family: 'IBM Plex Mono'; font-size: 1.4rem; font-weight: 600; color: #e1e2eb; }
+    .chip { display: inline-block; font-family: 'IBM Plex Mono'; font-size: .7rem; color: #c2c6d8;
       background: #0b0e14; border: 1px solid #475569; border-radius: 999px; padding: 2px 9px; margin: 2px 3px 2px 0; }
     .bars { display: flex; align-items: flex-end; gap: 2px; height: 44px; padding: 2px 0; }
     .bar { flex: 1; min-width: 2px; max-width: 14px; background: #00daf3; border-radius: 2px 2px 0 0; opacity: .8; }
     .svgbox { background: #fff; border-radius: 8px; padding: 8px; max-height: 300px; overflow: auto; }
     .svgbox svg { max-width: 100%; height: auto; }
-    .filechip { display: inline-flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono';
+    .filechip { display: inline-flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono';
       font-size: .72rem; color: #eac400; background: #0b0e14; border: 1px solid #475569;
       border-radius: 8px; padding: 5px 9px; }
     details > summary { list-style: none; }

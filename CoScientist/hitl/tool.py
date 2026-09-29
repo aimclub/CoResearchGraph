@@ -111,7 +111,10 @@ class HITLToolset(BaseToolset):
         response = await self._handler.handle_request(request)
         return {
             "approved": response.approved,
-            "feedback": response.instructions or response.free_input or "No feedback provided.",
+            "feedback": response.instructions or response.free_input or "",
+            "decision_source": response.decision_source.value,
+            "system_reason": response.system_reason,
+            "timed_out": response.timed_out,
         }
 
     async def request_selection(
@@ -120,6 +123,7 @@ class HITLToolset(BaseToolset):
         message: str,
         options: List[str],
         tool_context: ToolContext,
+        default_option: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Ask the human to select from a list of options.
 
@@ -130,6 +134,8 @@ class HITLToolset(BaseToolset):
             agent_name: Name of the agent requesting selection.
             message: Explanation of what to select and why.
             options: List of options for the human to choose from.
+            default_option: Option selected by auto mode; the first option is
+                used when this is omitted or not present in options.
 
         Returns:
             Dictionary with 'selected' (str) and 'approved' (bool).
@@ -140,6 +146,7 @@ class HITLToolset(BaseToolset):
             action_type=HITLAction.SELECT,
             message=message,
             options=options,
+            default_option=default_option,
             context={
                 "_session": {
                     "user_id": user_id,
@@ -153,7 +160,10 @@ class HITLToolset(BaseToolset):
         return {
             "selected": response.selected_option,
             "approved": response.approved,
-            "feedback": response.instructions or response.free_input or "No feedback provided.",
+            "feedback": response.instructions or response.free_input or "",
+            "decision_source": response.decision_source.value,
+            "system_reason": response.system_reason,
+            "timed_out": response.timed_out,
         }
 
 hitl_toolset = HITLToolset(handler=ConsoleHITLHandler())

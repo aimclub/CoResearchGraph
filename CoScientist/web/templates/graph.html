@@ -2,9 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <link rel="stylesheet" href="/static/css/fonts.css" />
+  <link rel="stylesheet" href="/static/css/framing_panel.css" />
   <title data-i18n="graph.title">CoScientist — Research Graph</title>
   <script src="/static/vis-network.min.js"></script>
+  <!-- Placement only: ELK computes coordinates, vis-network draws. -->
+  <script src="/static/elk.bundled.js"></script>
   <script src="/static/js/i18n.js"></script>
+  <script src="/static/status_indicator.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
   <style>
@@ -16,7 +21,7 @@
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
-      font-family: -apple-system, "Segoe UI", Roboto, Inter, sans-serif; font-size: 13px; }
+      font-family: "Source Sans 3", -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 13px; }
 
     /* top bar */
     #bar { position: fixed; top: 0; left: 0; right: 0; height: 46px; display: flex;
@@ -38,62 +43,95 @@
       pointer-events: none; }
     #head.hidden { display: none; }
     #question { font-size: 15px; font-weight: 650; color: var(--ink); max-width: 62%;
-      line-height: 1.35; margin-bottom: 10px; text-shadow: 0 2px 8px rgba(0,0,0,.5); }
+      line-height: 1.35; margin-bottom: 10px; text-shadow: 0 2px 8px rgba(0,0,0,.5);
+      /* A question written as a whole brief ran to eight lines and pushed the
+         first band off the screen. Three lines here, the rest on hover and in
+         the card the question has of its own. */
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+      overflow: hidden; pointer-events: auto; cursor: default; }
     #question .q { color: var(--accent); font-weight: 700; }
+    #counters, #meta, #gaps { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    #counters { margin-bottom: 6px; }
+    #counters .tile { font-size: 11px; font-weight: 600; padding: 2px 8px;
+      border: 1px solid; border-radius: 999px; background: rgba(20,22,26,.72);
+      font-variant-numeric: tabular-nums; }
+    #meta { font-size: 11px; color: var(--ink3); margin-bottom: 6px; }
+    /* #head ignores the mouse so the canvas stays draggable under it; the
+       gaps banner is the one part meant to be read closely, so it takes
+       pointer events back for its own tooltips. */
+    #gaps { pointer-events: auto; }
+    #gaps .gap { font-size: 11px; color: var(--warn); padding: 2px 8px;
+      border: 1px dashed rgba(245,158,11,.45); border-radius: 7px;
+      background: rgba(20,22,26,.72); }
 
     /* canvas + panels */
     #net { position: absolute; top: 46px; bottom: 0; left: 0; right: 0; }
-    #detail { position: fixed; top: 46px; right: 0; width: 400px; bottom: 0; background: var(--surface);
+    /* Width is a variable so the grip below and the panel agree; the reader
+       drags the left edge and the width is remembered. The type is a size up
+       from the canvas: the panel is read, the canvas is scanned. */
+    :root { --dw: 480px; }
+    #detail { position: fixed; top: 46px; right: 0; width: var(--dw); bottom: 0; background: var(--surface);
       border-left: 1px solid var(--line); padding: 0; overflow-y: auto; z-index: 18; display: none;
-      box-shadow: -12px 0 32px rgba(0,0,0,.4); }
-    #detail .dhead { padding: 16px 18px 12px; border-bottom: 1px solid var(--line);
+      box-shadow: -12px 0 32px rgba(0,0,0,.4); font-size: 14.5px; line-height: 1.5; }
+    #dgrip { position: fixed; top: 46px; bottom: 0; right: calc(var(--dw) - 5px); width: 10px;
+      cursor: col-resize; z-index: 19; display: none; touch-action: none; }
+    #dgrip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px;
+      background: transparent; transition: background .12s; }
+    #dgrip:hover::after, #dgrip.on::after { background: var(--accent); }
+    body.resizing { cursor: col-resize; user-select: none; }
+    body.resizing #detail { pointer-events: none; }
+    #detail .dhead { padding: 18px 20px 14px; border-bottom: 1px solid var(--line);
       position: sticky; top: 0; background: var(--surface); }
-    #detail .dbody { padding: 14px 18px 24px; }
-    #detail h3 { margin: 0 0 4px; font-size: 16px; word-break: break-word; }
-    #detail .sub { color: var(--ink3); font-size: 12px; }
+    #detail .dbody { padding: 16px 20px 28px; }
+    #detail h3 { margin: 0 0 5px; font-size: 19px; word-break: break-word; }
+    #detail .sub { color: var(--ink3); font-size: 13.5px; }
     #detail .badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-weight: 700;
-      font-size: 11px; margin-top: 8px; }
-    #detail .close { float: right; cursor: pointer; color: var(--ink3); font-size: 20px; line-height: 1; }
+      font-size: 12.5px; margin-top: 8px; }
+    #detail .close { float: right; cursor: pointer; color: var(--ink3); font-size: 22px; line-height: 1; }
     #detail .close:hover { color: var(--ink); }
-    #detail .k { color: var(--accent); font-weight: 600; font-size: 11px; text-transform: uppercase;
+    #detail .k { color: var(--accent); font-weight: 600; font-size: 12.5px; text-transform: uppercase;
       letter-spacing: .4px; margin: 14px 0 4px; }
-    #detail .attr { margin: 3px 0; color: var(--ink); word-break: break-word; }
+    /* pre-wrap: a Method's tool list is one server per line, and a formulation
+       written over several lines keeps them. */
+    #detail .attr { margin: 3px 0; color: var(--ink); word-break: break-word;
+      white-space: pre-wrap; }
     #detail .attr .ak { color: var(--ink2); }
-    .chars { color: var(--ink3); font-size: 10px; letter-spacing: 0;
+    .chars { color: var(--ink3); font-size: 11.5px; letter-spacing: 0;
       text-transform: none; margin-left: 6px; }
     #detail pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); padding: 10px;
-      border-radius: 8px; color: var(--ink); font-size: 12px; line-height: 1.5; margin: 4px 0 0;
+      border-radius: 8px; color: var(--ink); font-size: 13.5px; line-height: 1.5; margin: 4px 0 0;
       border: 1px solid var(--line);
       /* The whole value is here; long ones scroll rather than being cut. */
       max-height: 46vh; overflow-y: auto; }
     #detail .prov { background: var(--bg); border: 1px solid var(--line); border-left: 3px solid var(--accent);
       border-radius: 8px; padding: 9px 11px; margin: 6px 0; cursor: pointer; transition: border-color .12s, background .12s; }
     #detail .prov:hover { border-color: var(--accent); background: #1a1f28; }
-    #detail .prov .tool { font-weight: 700; color: var(--accent); font-family: ui-monospace, monospace; font-size: 12px; }
-    #detail .prov .jump { float: right; color: var(--accent); font-size: 10px; opacity: .65; }
-    #detail .prov .res { color: var(--ink2); font-size: 11.5px; margin-top: 5px; line-height: 1.5;
+    #detail .prov .tool { font-weight: 700; color: var(--accent); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13.5px; }
+    #detail .prov .jump { float: right; color: var(--accent); font-size: 11.5px; opacity: .65; }
+    #detail .prov.dim { opacity: .55; }
+    #detail .prov .res { color: var(--ink2); font-size: 13px; margin-top: 5px; line-height: 1.5;
       white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow-y: auto; }
     #detail .empty { color: var(--ink3); font-style: italic; }
 
     /* readable values: a mapping is labelled rows, not a wall of braces */
     .kv { margin-top: 2px; }
-    .kv .row { display: grid; grid-template-columns: minmax(64px, max-content) 1fr; gap: 2px 12px;
+    .kv .row { display: grid; grid-template-columns: minmax(80px, max-content) 1fr; gap: 2px 12px;
       padding: 5px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
     .kv .row:last-child { border-bottom: 0; }
-    .kv .key { color: var(--ink2); font-size: 11.5px; font-family: ui-monospace, monospace;
+    .kv .key { color: var(--ink2); font-size: 13px; font-family: "IBM Plex Mono", ui-monospace, monospace;
       word-break: break-word; }
-    .kv .val { color: var(--ink); font-size: 12.5px; line-height: 1.45; white-space: pre-wrap;
+    .kv .val { color: var(--ink); font-size: 14px; line-height: 1.45; white-space: pre-wrap;
       overflow-wrap: anywhere; min-width: 0; }
     .kv .val.block { grid-column: 1 / -1; background: var(--bg); border: 1px solid var(--line);
       border-radius: 6px; padding: 7px 9px; max-height: 40vh; overflow-y: auto; }
-    .kv .val.dim { color: var(--ink3); font-size: 11px; }
-    .kv .mono { font-family: ui-monospace, monospace; font-size: 11.5px; }
+    .kv .val.dim { color: var(--ink3); font-size: 12.5px; }
+    .kv .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
     .kv .nested { grid-column: 1 / -1; margin-left: 10px; padding-left: 10px;
       border-left: 2px solid var(--line); }
-    .kv ol.items { margin: 0; padding-left: 18px; color: var(--ink); font-size: 12.5px; }
+    .kv ol.items { margin: 0; padding-left: 18px; color: var(--ink); font-size: 14px; }
     .kv ol.items li { margin: 3px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     .kv ol.items li + li { border-top: 1px dashed var(--line); padding-top: 3px; }
-    .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11.5px;
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 13px;
       background: var(--surface2); border: 1px solid var(--line); color: var(--ink);
       margin: 0 4px 4px 0; white-space: nowrap; }
 
@@ -103,14 +141,14 @@
       user-select: none; }
     .call .hd:hover { background: #1a1f28; }
     .call .st { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-    .call .tool { font-family: ui-monospace, monospace; font-weight: 700; font-size: 12px;
+    .call .tool { font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 700; font-size: 13.5px;
       color: var(--accent); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
       white-space: nowrap; }
-    .call .when { color: var(--ink3); font-size: 11px; font-variant-numeric: tabular-nums;
+    .call .when { color: var(--ink3); font-size: 12.5px; font-variant-numeric: tabular-nums;
       white-space: nowrap; }
-    .call .caret { color: var(--ink3); font-size: 9px; transition: transform .12s; }
+    .call .caret { color: var(--ink3); font-size: 10px; transition: transform .12s; }
     .call.open .caret { transform: rotate(90deg); }
-    .call .gist { color: var(--ink2); font-size: 11.5px; padding: 0 10px 8px 26px;
+    .call .gist { color: var(--ink2); font-size: 13px; padding: 0 10px 8px 26px;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .call .bd { display: none; padding: 0 10px 10px; border-top: 1px solid var(--line); }
     .call.open .bd { display: block; }
@@ -119,27 +157,83 @@
 
     /* an agent's report, rendered from its markdown */
     .report { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-      padding: 10px 12px; font-size: 12.5px; line-height: 1.55; max-height: 52vh; overflow-y: auto;
+      padding: 10px 12px; font-size: 14px; line-height: 1.55; max-height: 52vh; overflow-y: auto;
       overflow-wrap: anywhere; }
+    /* The write-up card: the panel scrolls, so the document does not need to. */
+    .report.full { max-height: none; overflow-y: visible; }
     .report > :first-child { margin-top: 0; } .report > :last-child { margin-bottom: 0; }
-    .report h1, .report h2, .report h3, .report h4 { font-size: 13px; margin: 12px 0 4px; color: var(--ink); }
-    .report h1 { font-size: 14px; }
+    .report h1, .report h2, .report h3, .report h4 { font-size: 15px; margin: 12px 0 4px; color: var(--ink); }
+    .report h1 { font-size: 16.5px; }
     .report p, .report ul, .report ol { margin: 6px 0; } .report li { margin: 2px 0; }
-    .report code { font-family: ui-monospace, monospace; font-size: 11.5px; background: var(--surface2);
+    .report code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; background: var(--surface2);
       padding: 1px 4px; border-radius: 4px; }
     .report pre { max-height: none; margin: 6px 0; } .report pre code { background: none; padding: 0; }
     .report a { color: var(--accent); } .report img { max-width: 100%; border-radius: 6px; }
-    .report table { border-collapse: collapse; font-size: 11.5px; }
+    .report table { border-collapse: collapse; font-size: 13px; }
     .report th, .report td { border: 1px solid var(--line); padding: 3px 6px; }
     .report blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--ink2); }
     /* artifacts: what the agent left behind */
-    .art { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+    .art { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
     .art:last-child { border-bottom: 0; }
     .art .ic { flex: none; }
-    .art .uri { font-family: ui-monospace, monospace; font-size: 11.5px; overflow-wrap: anywhere; color: var(--ink); }
+    .art .uri { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; color: var(--ink); }
+    /* A DOI or URL in a field row is an anchor too, and `.uri` was only ever
+       styled inside `.art` — so the one link a reader most wants to press
+       rendered as unstyled browser default. */
+    #detail .kv .uri { color: var(--accent); overflow-wrap: anywhere; text-decoration: none; }
+    #detail .kv .uri:hover { text-decoration: underline; }
     .art a.uri { color: var(--accent); text-decoration: none; } .art a.uri:hover { text-decoration: underline; }
-    .art .by { color: var(--ink3); font-size: 11px; white-space: nowrap; margin-left: auto; }
-    #detail .note { color: var(--ink3); font-size: 11.5px; font-style: italic; margin: 2px 0 0; }
+    .art .by { color: var(--ink3); font-size: 12.5px; white-space: nowrap; margin-left: auto; }
+    #detail .note { color: var(--ink3); font-size: 13px; font-style: italic; margin: 2px 0 0; }
+    /* the on-request summary: a button until asked, then the model's lines */
+    /* Two tabs in the head: the summary alone, or everything recorded. */
+    .tabs { display: flex; gap: 6px; margin-top: 14px; }
+    .tab { padding: 7px 16px; border-radius: 9px; font-size: 14.5px; font-weight: 600; color: var(--ink2);
+      cursor: pointer; border: 1px solid transparent; user-select: none; }
+    .tab:hover { color: var(--ink); }
+    .tab.on { background: var(--surface2); color: var(--ink); border-color: var(--line); }
+    /* The summary reads as a document, the way a markdown renderer shows it:
+       no box, generous leading, real headings, lists and code. */
+    .sumbox { margin: 4px 0 18px; }
+    .sumbox .ask { padding: 26px 8px 10px; text-align: center; }
+    .sumbtn { display: inline-flex; align-items: center; gap: 9px; background: var(--surface2);
+      color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px;
+      font: inherit; font-size: 16px; font-weight: 600; cursor: pointer; }
+    .sumbtn:hover { border-color: var(--accent); color: var(--accent); }
+    .sumbtn[disabled] { opacity: .6; cursor: progress; }
+    .sumbox .hint { color: var(--ink3); font-size: 13.5px; margin-top: 12px; line-height: 1.5; }
+    .mdoc { font-size: 17px; line-height: 1.7; color: var(--ink); overflow-wrap: anywhere; padding: 6px 2px 0; }
+    .mdoc > :first-child { margin-top: 0; } .mdoc > :last-child { margin-bottom: 0; }
+    .mdoc h1, .mdoc h2, .mdoc h3, .mdoc h4 { color: var(--ink); font-weight: 700; line-height: 1.3;
+      margin: 22px 0 8px; }
+    .mdoc h1 { font-size: 21px; } .mdoc h2 { font-size: 19px; } .mdoc h3 { font-size: 17.5px; }
+    .mdoc h4 { font-size: 16.5px; color: var(--ink2); text-transform: uppercase; letter-spacing: .3px; }
+    .mdoc p { margin: 10px 0; }
+    .mdoc ul, .mdoc ol { margin: 8px 0; padding-left: 26px; }
+    .mdoc li { margin: 5px 0; } .mdoc li::marker { color: var(--ink3); }
+    .mdoc strong { color: #fff; }
+    .mdoc code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; background: var(--surface2);
+      border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; }
+    .mdoc pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+      margin: 10px 0; overflow-x: auto; font-size: 14.5px; line-height: 1.5; max-height: none; }
+    .mdoc pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+    .mdoc blockquote { margin: 10px 0; padding: 2px 0 2px 14px; border-left: 3px solid var(--accent); color: var(--ink2); }
+    .mdoc hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+    .mdoc a { color: var(--accent); } .mdoc img { max-width: 100%; border-radius: 6px; }
+    .mdoc table { border-collapse: collapse; font-size: 15px; margin: 10px 0; }
+    .mdoc th, .mdoc td { border: 1px solid var(--line); padding: 5px 10px; }
+    .mdoc th { background: var(--surface2); }
+    .sumbox .meta { display: flex; gap: 14px; align-items: baseline; color: var(--ink3); font-size: 13px;
+      margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .sumbox .meta a { color: var(--accent); cursor: pointer; text-decoration: none; }
+    .sumbox .meta a:hover { text-decoration: underline; }
+    .sumbox .err { color: var(--crit); font-size: 15px; margin: 12px 0 6px; line-height: 1.5; }
+    .sumbox .stale { color: var(--warn); }
+    /* pictures: any image the agent produced or linked is shown, not named */
+    .pic { display: block; margin: 8px 0 4px; }
+    .pic img { max-width: 100%; max-height: 60vh; border-radius: 8px; border: 1px solid var(--line);
+      background: #fff; cursor: zoom-in; display: block; }
+    .art { flex-wrap: wrap; } .art .pic { flex-basis: 100%; }
   </style>
 </head>
 <body>
@@ -148,7 +242,6 @@
     <label><span data-i18n="graph.view.label">view</span>
       <select id="view">
         <option value="research" data-i18n="graph.view.research">research</option>
-        <option value="slide" data-i18n="graph.view.slide">research · slide</option>
         <option value="execution" data-i18n="graph.view.execution">execution log</option>
       </select>
     </label>
@@ -156,6 +249,8 @@
       <select id="turn" style="max-width:340px"></select>
     </label>
     <label><input type="checkbox" id="auto" checked /> <span data-i18n="graph.live">live</span></label>
+    <label id="autoReportWrap" style="display:none"><input type="checkbox" id="autoReport"
+      onchange="toggleAutoNodeReports(this)" /> <span data-i18n="graph.nodeReport.auto">write node reports</span></label>
     <button id="refresh" data-i18n-title="graph.refresh">↻</button>
     <span class="spacer"></span>
     <span id="status" data-i18n="graph.connecting">connecting…</span>
@@ -164,10 +259,13 @@
 
   <div id="head">
     <div id="question"></div>
+    <div id="counters"></div>
+    <div id="meta"></div>
+    <div id="gaps"></div>
   </div>
 
   <div id="net"></div>
-  <div id="slide" style="display:none;overflow:auto;padding:14px;background:#05070b;height:100%"></div>
+  <div id="dgrip" title="drag to resize · double-click to reset"></div>
   <div id="detail"></div>
 
   <script>
@@ -178,7 +276,8 @@
     const C = getComputedStyle(document.documentElement);
     const col = n => C.getPropertyValue(n).trim();
     const GOOD=col('--good'), WARN=col('--warn'), CRIT=col('--crit'), INFO=col('--info'),
-          ORANGE=col('--orange'), SLATE=col('--slate'), VIOLET=col('--violet'), INK=col('--ink');
+          ORANGE=col('--orange'), SLATE=col('--slate'), VIOLET=col('--violet'), INK=col('--ink'),
+          INK2=col('--ink2');
 
     const R_STATUS = {  // status -> {color, glyph, label}
       confirmed:{c:GOOD,g:'✓'}, validated:{c:GOOD,g:'✓'}, met:{c:GOOD,g:'✓'},
@@ -186,24 +285,133 @@
       refuted:{c:CRIT,g:'✗'}, rejected:{c:CRIT,g:'✗'}, failed:{c:CRIT,g:'✗'}, creation_failed:{c:CRIT,g:'✗'},
       // Tested and not settled: neither a verdict nor an untouched branch.
       inconclusive:{c:ORANGE,g:'≈'},
-      under_verification:{c:WARN,g:'⧗'}, running:{c:WARN,g:'⧗'}, obtained:{c:WARN,g:'●'}, draft:{c:WARN,g:'✎'},
+      under_verification:{c:WARN,g:'⧗'}, running:{c:WARN,g:'⧗'}, obtained:{c:INFO,g:'●'}, draft:{c:WARN,g:'✎'},
       formulated:{c:INFO,g:'○'}, open:{c:INFO,g:'○'}, planned:{c:INFO,g:'○'}, not_met:{c:INFO,g:'○'},
+      // The plan track's own vocabulary, which this table simply did not know:
+      // a step in progress and a step nobody had started both fell through to
+      // the default and drew as the same slate bullet, so the one question the
+      // plan column exists to answer — what is going on right now — had the
+      // same answer everywhere on it.
+      todo:{c:INFO,g:'○'}, in_progress:{c:WARN,g:'⧗'},
+      blocked:{c:CRIT,g:'⊗'}, skipped:{c:SLATE,g:'⊘'},
+      // A method's own three. It is the MEANS, never work: it is offered, the
+      // study leans on it, or it is left aside.
+      proposed:{c:INFO,g:'○'}, used:{c:GOOD,g:'✓'}, not_used:{c:SLATE,g:'⊘'},
       needs_adaptation:{c:ORANGE,g:'⚙'}, being_created:{c:ORANGE,g:'⚙'},
       postponed:{c:SLATE,g:'⏸'}, exhausted:{c:SLATE,g:'∅'}, decomposed:{c:SLATE,g:'⊟'}, closed:{c:SLATE,g:'●'},
       active:{c:VIOLET,g:'▮'}, created:{c:SLATE,g:'▢'},
+      // The two derived cards: a summary, not a state anything moves through.
+      derived:{c:SLATE,g:'▣'},
     };
     const rStatus = s => R_STATUS[s] || {c:SLATE,g:'•'};
+    // What KIND of thing a card is, in colour — for EVERY kind, with no
+    // exceptions and no two the same. Status used to be the only thing colour
+    // said, which made an `open` question and a `planned` method the same
+    // blue; the first fix moved colour onto the type but left `Hypothesis` out
+    // of the table so it could keep carrying its verdict, and that put the
+    // study's central claim on the status palette: a hypothesis
+    // `under_verification` came out amber, which is where `Evidence` already
+    // lives. The two cards a reader most needs to tell apart were the one pair
+    // that looked alike.
+    //
+    // Two rules hold this table together:
+    //   * every type in the server's NODE_TYPES appears exactly once, with a
+    //     hue no other type uses — a card's colour answers "what is this?"
+    //     before a word is read;
+    //   * no type may take `--good` or `--crit`. Green and red are the
+    //     verdict's, and a green card would read as a confirmed one whatever
+    //     its label said.
+    // Both are pinned by tests, because neither fails visibly: a duplicate
+    // just makes two types look the same, which is the defect this replaces.
+    const R_KIND = {
+      // The setup, agreed with the operator: one family, three weights.
+      framing:              "#d29922",  // gold
+      constraint:           "#b45309",  // burnt amber — the setup's boundary
+      empiricalbase:        "#0ea5e9",  // sky: where the material came from
+      resource:             "#84cc16",  // lime: what the run is allowed to use
+      researchquestion:     "#3b82f6",  // blue: what was asked
+      // The claim the whole study exists to settle. Yellow because it is the
+      // one card a reader should find first, and because it is far from both
+      // the verdict colours and from the orange of an observation.
+      hypothesis:           "#facc15",
+      confirmationcriteria: "#8b5cf6",  // violet: the bar
+      verificationmethod:   "#14b8a6",  // teal: by what means
+      planstep:             "#64748b",  // slate: the intention, background
+      // The same track one grain finer, and deliberately NOT a shade of the
+      // step's slate: a reader has to tell the general plan from the detailed
+      // one at a glance.
+      experimenttask:       "#e879f9",  // magenta
+      tool:                 "#a9682a",  // brown: the instrument
+      evidence:             "#f97316",  // orange: what was measured
+      generateddata:        "#06b6d4",  // cyan: what the run produced
+      codeartifact:         "#f472b6",  // pink: the code that produced it
+      conclusion:           "#fdba74",  // light orange: what it adds up to
+      // Paper: the deliverable is the one card that should look like a
+      // document, and near-white is a tone no other type can be given.
+      // It also keeps green off the cards entirely — see the rule above.
+      report:               "#e2e8f0",
+      publication:          "#a855f7",  // purple
+      spec:                 "#6366f1",  // indigo
+      outcome:              "#94a3b8",  // light slate: the summary card
+      // The efficiency family, rare and always together, so they are told
+      // apart from each other rather than from the rest of the graph.
+      efficiencyjustification: "#2dd4bf",
+      efficiencymetric:        "#22d3ee",
+      costmodel:               "#c2410c",
+    };
+    // Which statuses are a verdict, and which way. Everything absent from both
+    // sets is neither — in progress, postponed, not yet measured — and reads in
+    // neutral ink. `inconclusive` belongs there too: it is the honest "we
+    // measured and it did not settle", not a failure.
+    const STATUS_GOOD = new Set(["confirmed", "validated", "met", "approved",
+                                 "done", "available", "used"]);
+    const STATUS_BAD = new Set(["refuted", "rejected", "failed", "creation_failed"]);
+    // …and a third thing, which is neither: what is happening RIGHT NOW. Left
+    // in neutral ink it read exactly like a card nobody had touched, which is
+    // the complaint this whole table exists to answer — the study says which
+    // stage is going, and the reader could not see it.
+    const STATUS_LIVE = new Set(["in_progress", "running", "under_verification"]);
+    const statusInk = st => STATUS_GOOD.has(st) ? GOOD
+                          : STATUS_BAD.has(st) ? CRIT
+                          : STATUS_LIVE.has(st) ? WARN : INK2;
 
     const R_ICON = { researchquestion:'❓', hypothesis:'💡', evidence:'🔬', conclusion:'✅',
       verificationmethod:'⚙️', confirmationcriteria:'🎯', tool:'🔧', resource:'🔋',
       empiricalbase:'🗄️', constraint:'⚖️', codeartifact:'💻', generateddata:'📦',
       report:'📑', publication:'📰', spec:'📋', efficiencyjustification:'📈',
-      costmodel:'💰', efficiencymetric:'📊' };
+      costmodel:'💰', efficiencymetric:'📊', framing:'🧩', outcome:'▣' };
     const R_LEVEL = { researchquestion:0, constraint:0, hypothesis:1, empiricalbase:1,
       verificationmethod:2, confirmationcriteria:2, tool:2,
+      // The plan track. Absent from this table the two of them were not in
+      // `RESEARCH_KINDS` either, and the tooltip of the very cards a reader
+      // watches for progress printed the raw code — "experimenttask",
+      // "in_progress" — instead of the words on the card beside it.
+      planstep:2, experimenttask:2,
       evidence:3, resource:3, generateddata:3, codeartifact:3, conclusion:4,
-      report:5, publication:5, spec:5, efficiencyjustification:5, costmodel:5, efficiencymetric:5 };
-    const R_EDGE = { supports:GOOD, refutes:CRIT, refines:WARN };
+      report:5, publication:5, spec:5, efficiencyjustification:5, costmodel:5, efficiencymetric:5,
+      framing:0, outcome:5 };
+    const R_EDGE = { supports:GOOD, refutes:CRIT, refines:WARN,
+      supersedes:SLATE, conditional_successor:WARN, frames:SLATE, concludes:INFO };
+    // An untyped link — motivates, tested_by, produces, uses — used to be
+    // drawn in #4a5160 on a #14161a canvas, and its label in #aeb6c2 at 12px.
+    // Three stops off the background is invisible past a dozen cards, and on
+    // this study most links are untyped. "Black", on a dark canvas, is the
+    // light end of the range.
+    const EDGE_NEUTRAL = "#cbd5e1", EDGE_BRIGHT = "#ffffff";
+    //: The plan links (realises, elaborates) stay subordinate — they say which
+    //: intention a record serves, not what the study found — but subordinate is
+    //: not the same as unreadable.
+    const EDGE_QUIET = "#94a3b8";
+    const EDGE_HALO = "#14161a";
+    //: A label is typeset by the same parser as a card, so a real weight is
+    //: available: escape the text and wrap it in <b>. Bigger type would have
+    //: been the other way to be noticed, and it costs room a graph does not
+    //: have.
+    const edgeLabel = v => { const e = visSafe(String(v == null ? "" : v));
+                             return e ? "<b>" + e + "</b>" : ""; };
+    const edgeFont = (color, size) => ({ color, size: size || 13, multi: "html",
+                                         strokeWidth: 5, strokeColor: EDGE_HALO,
+                                         bold: { color, size: size || 13, mod: "bold" } });
     // Human-readable type names (shown as "Hypothesis 1" instead of the terse id
     // "H1") and edge phrases, so a first-time viewer instantly reads the graph.
     const R_TYPE_NAME = { researchquestion:"Question", hypothesis:"Hypothesis", evidence:"Evidence",
@@ -211,13 +419,14 @@
       tool:"Tool", resource:"Resource", empiricalbase:"Data source", constraint:"Constraint",
       codeartifact:"Code", generateddata:"Dataset", report:"Report", publication:"Publication",
       spec:"Spec", efficiencyjustification:"Efficiency", costmodel:"Cost model",
-      efficiencymetric:"Metric" };
+      efficiencymetric:"Metric", framing:"Technical specification", outcome:"Outcome" };
     const R_EDGE_NAME = { motivates:"motivates", tested_by:"tested by", requires:"requires",
       uses:"uses", consumes:"consumes", produces:"produces", supports:"supports", refutes:"refutes",
       refines:"refines", based_on:"based on", determines_sufficiency:"sufficiency for",
       formulated_for:"criterion for", regulates:"regulates", constrains:"constrains",
       derived_from:"derived from", contextualizes:"frames", defines_scope:"scope of",
-      relates_to:"relates to", applies_to:"applies to", via:"via" };
+      relates_to:"relates to", applies_to:"applies to",
+      conditional_successor:"if refuted, continue with", via:"via" };
     // The server now names the type and the status in the words a scientist
     // uses; the client keeps its own table only as a fallback for older data.
     const rTypeName = n => {
@@ -227,18 +436,45 @@
     };
     const rStatusWord = n => n.status_word || String(n.status || "").replace(/_/g, " ");
     const RESEARCH_KINDS = new Set(Object.keys(R_LEVEL));
-    // What the research graph draws: the scientific record and nothing else.
-    // Everything left out (tools, budget, datasets, code, cost and efficiency
-    // bookkeeping) is still stored, still in the report, and still reachable
-    // from the node that used it — it just is not a box on this canvas.
-    const RESEARCH_SHOWN = new Set([
-      "researchquestion", "hypothesis", "verificationmethod",
-      "confirmationcriteria", "evidence", "conclusion", "constraint", "report",
-    ]);
+    // There is no client-side allow-list any more. What the canvas draws is
+    // decided by the store, which folds the engineering record (tools, budget,
+    // datasets, code) into the card it belongs to and re-points its edges. The
+    // list that used to live here dropped those nodes AND every edge touching
+    // one, which in a real session was every edge there was.
     // hex -> "r,g,b" for translucent fills
-    function rgba(hex, a){ const m = hex.replace('#',''); const v = m.length===3
-      ? m.split('').map(x=>parseInt(x+x,16)) : [0,2,4].map(i=>parseInt(m.slice(i,i+2),16));
+    function channels(hex){ const m = String(hex).replace('#','').trim();
+      return m.length===3 ? m.split('').map(x=>parseInt(x+x,16))
+                          : [0,2,4].map(i=>parseInt(m.slice(i,i+2),16)); }
+    function rgba(hex, a){ const v = channels(hex);
       return `rgba(${v[0]},${v[1]},${v[2]},${a})`; }
+
+    // A card on the canvas must be OPAQUE.
+    //
+    // vis draws every edge before it draws any node (`_drawEdges` then
+    // `_drawNodes`), so a card painted at 14% alpha lets the wires running
+    // beneath it straight through — across the label, which is what made the
+    // graph hard to read. Compositing the very same tint over the canvas colour
+    // keeps each card looking exactly as it did and gives its text something
+    // solid to sit on. The blend base is read from `--bg`, so a theme change
+    // moves the cards with it instead of leaving them a shade off.
+    let _canvasRgb = null;
+    function canvasRgb(){
+      if (!_canvasRgb) {
+        let v = null;
+        try {
+          const css = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg').trim();
+          if (/^#?[0-9a-f]{3}([0-9a-f]{3})?$/i.test(css)) v = channels(css);
+        } catch (err) { v = null; }
+        _canvasRgb = (v && v.every(x => Number.isFinite(x))) ? v : [0x14, 0x16, 0x1a];
+      }
+      return _canvasRgb;
+    }
+    function solid(hex, a){
+      const v = channels(hex), b = canvasRgb();
+      const mix = v.map((x, i) => Math.round(x * a + b[i] * (1 - a)));
+      return `rgb(${mix[0]},${mix[1]},${mix[2]})`;
+    }
 
     // ── execution view styling ────────────────────────────────────────────────
     // One tint per stretch of a run: enough to tell them apart behind the
@@ -306,28 +542,44 @@
         // Its tool calls are folded into the card; the count says there is
         // something to open, and how much.
         const calls = Array.isArray(n.calls) ? n.calls.length : 0;
-        const name = String(n.executor_agent || n.label || "").slice(0, 30);
+        const name = String(n.executor_agent ? shortAgent(n.executor_agent) : (n.label || "")).slice(0, 30);
         return (n.stage ? n.stage + ". " : "") + name
           + (n.runs > 1 ? "  (" + t('graph.detail.runOf', { run: n.run, runs: n.runs }) + ")" : "") + tail
           + (calls ? "\n🛠 " + t('graph.count.calls', { count: calls }) : "");
       }
+      // A decision is written for its card — the Experiment Module's plan says
+      // "plan rev 2 · 4 tasks · 90 min" — so it keeps its whole line where a
+      // tool result, which is a dump, is cut to a headline.
+      if (n.kind === "decision")
+        return "📋 " + String(n.label || "decision").slice(0, 70) + tail;
       return String(n.label || n.id || "").slice(0, 30) + tail;
     }
 
     const isResearch = () => document.getElementById("view").value === "research";
-    const isSlide = () => document.getElementById("view").value === "slide";
 
-    // Slide mode renders server-side (same renderer as the CLI/report), so the
-    // live view and the exported deck are literally the same artifact.
-    async function pollSlide(userId, sessionId){
-      const box = document.getElementById("slide");
-      const url = `/api/users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(sessionId)}/graph.svg?t=${Date.now()}`;
-      const r = await fetch(url, { cache: "no-store" });
-      box.innerHTML = await r.text();
-      const svg = box.querySelector("svg");
-      if (svg) { svg.removeAttribute("height"); svg.style.width = "100%"; svg.style.height = "auto"; }
-    }
     function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+    // For canvas labels ONLY — never for innerHTML, which still needs esc().
+    //
+    // vis-network 10.1.0 parses a multi:"html" label with its own tokenizer, and
+    // the moment it meets an '&' it calls its two-argument replace() with three
+    // arguments: the whole label becomes the pattern and is compiled as
+    // `new RegExp(<the entire card text>)`. Any '(' or '[' left unbalanced by
+    // the 190-character cut then throws SyntaxError — out of the node loop, so
+    // the canvas stayed blank and every later poll threw on the same cached
+    // label until the page was reloaded.
+    //
+    // Escaping to "&amp;" makes it strictly worse: agents write plain '&' too
+    // ("Rassabina & Fedorov"). So no '&', '<' or '>' may reach the label at all;
+    // the <b>/<i>/<code> we do want is added after this runs. Full-width '＆',
+    // '＜' and '＞' read as their ASCII twins and are inert to the tokenizer.
+    // Deleting the brackets instead cost the meaning: a criterion reading
+    // "SA <= 3.5" was drawn as "SA  = 3.5", which is a different threshold.
+    function visSafe(s){
+      return String(s == null ? "" : s)
+        .replace(/<=/g, "≤").replace(/>=/g, "≥")
+        .replace(/</g, "＜").replace(/>/g, "＞")
+        .replace(/&/g, "＆");
+    }
     function rText(n){ return String(n.output||n.label||"").replace(/\s+/g," ").trim(); }
     // A card is a headline, not the document. Seven hundred characters of
     // formulation per node turned the canvas into a wall of prose nobody scans;
@@ -341,50 +593,213 @@
       const cut = trimmed.lastIndexOf(" ", cap);
       return trimmed.slice(0, stop > cap * 0.4 ? stop + 1 : (cut > 0 ? cut : cap)) + " …";
     }
+    // Five lines, in the order a reader asks for them: WHAT this is and how it
+    // stands, what it says, what it is checked by (or where it came from), what
+    // it was built with, and who recorded it. A step that ended badly says WHY
+    // on the card itself — that answer used to live in the store and never
+    // reach the page, so a failed method drew as "не удался" and stopped there.
+    // No pictograms on the canvas. A method card carried five or six of them —
+    // ⚙️ for the type, 🎯 twice, 📎, 🛠️ — on a box 230 px wide, and none of
+    // them said anything the words beside them did not. The status glyph stays:
+    // ✓ ✗ ⧗ ○ is a typographic mark that carries the verdict, and it is the
+    // one thing on the card that is read at a glance rather than word by word.
     function researchLabel(n){
-      const st = rStatus(n.status); const icon = R_ICON[n.kind]||"•";
+      const st = rStatus(n.status);
+      const idx = n.index && n.kind !== "researchquestion" ? " " + n.index : "";
       const sw = rStatusWord(n);
-      const head = `<b>${st.g} ${icon} ${esc(rTypeName(n))}${sw ? " · " + esc(sw) : ""}</b>`;
-      const body = esc(firstSentence(rText(n), 190));
-      const calls = Array.isArray(n.provenance) ? n.provenance.length : 0;
-      const by = n.executor_agent ? esc(shortAgent(n.executor_agent)) : "";
-      // The footer is what makes a verdict checkable without opening the logs:
-      // who recorded it, and how many tool calls it came from.
-      const foot = [by, calls ? `🛠️ ${t('graph.count.calls', { count: calls })}` : ""]
-        .filter(Boolean).join("  ·  ");
-      return head + "\n" + body + (foot ? `\n<i>${foot}</i>` : "");
+      const L = [];
+      // The type in ink, the status in the verdict's colour. Both are bold;
+      // the status word is wrapped in <b><i> so it lands on the `boldital`
+      // class, which `researchNode` gives the status colour and a plain bold
+      // weight — the only way to get two colours into one vis label.
+      const head = visSafe(st.g + " " + rTypeName(n) + idx);
+      L.push(sw ? "<b>" + head + " · </b><b><i>" + visSafe(sw) + "</i></b>"
+                : "<b>" + head + "</b>");
+      // A headline, still — but a wider one than the cramped column layout
+      // could afford. At 150 characters an observation was cut before its
+      // numbers ("mean AD=59.7%; …"), which is the part a reader came for.
+      const body = firstSentence(rText(n), 210);
+      if (body) L.push(visSafe(body));
+      if (n.why)
+        L.push("<i>" + visSafe(st.g + " " + t('graph.why.title') + ": "
+                               + firstSentence(n.why, 110)) + "</i>");
+      else if (n.why_missing)
+        L.push("<i>" + visSafe(t('graph.why.missing')) + "</i>");
+      // What the method answers, and — when two plan steps read alike — the step
+      // that tells this card from its twin. Four look-alike method cards left
+      // the reader no way to know why there were four.
+      if (n.tests)
+        L.push(visSafe(t('graph.card.tests') + " "
+                       + firstSentence(n.tests, 80)));
+      if (n.plan_step)
+        L.push("<code>" + visSafe(String(n.plan_step).slice(0, 24)) + "</code>");
+      // WITH WHAT. A method is a method of a claim, for settling it, BY some
+      // instrument — and the card carried only the first two, so every method
+      // read as a restated task. The reference drawing hangs the tool names
+      // right on the method box, and that is what makes it answerable: a
+      // reader can see the LD50 came out of ADMETlab and not out of a model's
+      // recollection.
+      // No slice: the store decides how many instruments a card names
+      // (`_MAX_INSTRUMENTS`), and a second, smaller cap here meant the last of
+      // them were polled to the browser and drawn nowhere.
+      if (n.instruments)
+        L.push(String(n.instruments).split(",")
+               .map(x => "<code>" + visSafe(x.trim().slice(0, 34)) + "</code>")
+               .join(" "));
+      // A detailed task names the general step it serves. Without it the two
+      // lanes read as two unrelated lists.
+      if (n.kind === "experimenttask" && n.elaborates)
+        L.push(visSafe(t('graph.card.elaborates') + " " + n.elaborates));
+      if (n.kind === "experimenttask" && n.input && n.input.route)
+        L.push("<code>" + visSafe(String(n.input.route).slice(0, 34)) + "</code>");
+      if ((n.kind === "planstep" || n.kind === "experimenttask")
+          && n.input && n.input.tools)
+        L.push(String(n.input.tools).split(",").slice(0, 4)
+               .map(x => "<code>" + visSafe(x.trim().slice(0, 34)) + "</code>")
+               .join(" "));
+      if (n.criterion)
+        L.push(visSafe(t('graph.card.criterion') + " "
+                       + firstSentence(n.criterion, 80)));
+      else if (n.origin && n.origin.code !== "question")
+        L.push("<i>" + visSafe(t('graph.origin.' + n.origin.code,
+                                 { reason: n.origin.reason || "" })) + "</i>");
+      if (n.chips && n.chips.length)
+        L.push(n.chips.slice(0, 4)
+               .map(c => "<code>" + visSafe(String(c.label || "").slice(0, 22)) + "</code>")
+               .join(" "));
+      const foot = [
+        n.attachments && n.attachments.length
+          ? t('graph.count.attached', { count: n.attachments.length }) : "",
+        n.executor_agent ? shortAgent(n.executor_agent) : "",
+        (n.provenance || []).length
+          ? t('graph.count.calls', { count: n.provenance.length }) : "",
+      ].filter(Boolean).join("  ·  ");
+      if (foot) L.push("<i>" + visSafe(foot) + "</i>");
+      return L.join("\n");
     }
-    const shortAgent = a => String(a).replace(/Agent$/, "");
-    const titleOf = n => [ t('graph.tooltip.type', { kind: n.kind || "" }),
-      n.executor_agent ? t('graph.tooltip.source', { agent: n.executor_agent }) : "",
-      t('graph.tooltip.status', { status: n.status || "" }),
+    // Agents are shown by their Russian role name — the same table the main
+    // window uses (status_indicator.js); runtime ids stay in the data.
+    const shortAgent = a => (window.StatusIndicator && StatusIndicator.agentName)
+      ? (StatusIndicator.agentName(a) || String(a)) : String(a).replace(/Agent$/, "");
+    // The tooltip used to print the raw identifiers — "type: hypothesis · status:
+    // under_verification" — while the card beside it said the same thing in the
+    // reader's own words. Research nodes carry those words from the server.
+    const titleOf = n => [
+      t('graph.tooltip.type', { kind: RESEARCH_KINDS.has(n.kind) ? rTypeName(n) : (n.kind || "") }),
+      n.executor_agent ? t('graph.tooltip.source', { agent: shortAgent(n.executor_agent) }) : "",
+      t('graph.tooltip.status', { status: RESEARCH_KINDS.has(n.kind) ? rStatusWord(n) : (n.status || "") }),
       Array.isArray(n.calls) && n.calls.length ? t('graph.tooltip.toolCalls', { count: n.calls.length }) : "",
+      n.why ? t('graph.why.title') + ": " + String(n.why).slice(0, 200) : "",
       n.output?String(n.output).slice(0,300):"" ].filter(Boolean).join("\n");
+
+    // ── what is working right now ─────────────────────────────────────────────
+    // An ACTION card pulses; everything else in flight is coloured and still.
+    // The difference is the user's, and it is the right one: a plan step and an
+    // experiment task are work somebody is doing this minute, while a
+    // hypothesis under verification or an observation waiting to be weighed is
+    // a state, not an activity. On a canvas of sixty cards a reader finds the
+    // one that moves before they find the one that is merely yellow.
+    const PULSING_KINDS = new Set(["planstep", "experimenttask"]);
+    const PULSING_STATUS = new Set(["in_progress", "running"]);
+    const isPulsing = n => PULSING_KINDS.has(n.kind) && PULSING_STATUS.has(n.status);
+    //: Redraw rate while something is running. 20 is far below the 60 a plain
+    //: rAF loop would ask for, and a pulse this slow does not need the rest.
+    //: PULSE_CYCLE is the full breath in milliseconds — named as the period a
+    //: reader can time, not as the 1/ω the sine actually takes, because the
+    //: two differ by 2π and one of them is what somebody tuning this will mean.
+    const PULSE_FPS = 20, PULSE_MS = 1000 / PULSE_FPS, PULSE_CYCLE = 1200;
+    let pulsing = new Set(), pulseRunning = false, pulseLast = 0;
+
+    //: Which cards are working, recomputed from the payload the server just
+    //: sent. Held OUTSIDE the DataSet on purpose: `poll` rebuilds every node
+    //: object wholesale every 1.5 s, so a colour an animation wrote into a node
+    //: would be overwritten within the second — and each such write re-runs
+    //: vis's html-label parser over agent-written text, the one code path in
+    //: this file that can take the whole canvas down.
+    function setPulsing(next){
+      pulsing = next;
+      if (pulsing.size && !pulseRunning) {
+        pulseRunning = true;
+        requestAnimationFrame(pulseLoop);
+      }
+    }
+    function pulseLoop(ts){
+      // …and it stops when there is nothing to say. `pulsing` is recomputed
+      // only inside `poll`, so with the live feed switched off — or with every
+      // poll throwing — nothing would ever empty the set, and the loop would
+      // repaint the canvas twenty times a second for as long as the tab was
+      // open, animating a study that is no longer being updated.
+      const live = document.getElementById("auto");
+      if (!pulsing.size || !network || (live && !live.checked)) {
+        pulseRunning = false;
+        return;
+      }
+      if (ts - pulseLast >= PULSE_MS) { pulseLast = ts; network.redraw(); }
+      requestAnimationFrame(pulseLoop);
+    }
+    function roundPath(ctx, x, y, w, h, r){
+      const k = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + k, y);
+      ctx.arcTo(x + w, y, x + w, y + h, k);
+      ctx.arcTo(x + w, y + h, x, y + h, k);
+      ctx.arcTo(x, y + h, x, y, k);
+      ctx.arcTo(x, y, x + w, y, k);
+      ctx.closePath();
+    }
+    //: The halo itself, drawn UNDER the cards: `solid()` makes every card
+    //: background fully opaque, so a ring painted before them can never touch
+    //: the label — it reads as a glow escaping from behind the box, and the
+    //: text it surrounds stays exactly as legible as it was.
+    function drawPulse(ctx){
+      if (!pulsing.size || !network) return;
+      const phase = 0.5 + 0.5 * Math.sin(
+        performance.now() * 2 * Math.PI / PULSE_CYCLE);
+      ctx.save();
+      ctx.strokeStyle = WARN;
+      ctx.lineWidth = 3;
+      pulsing.forEach(id => {
+        let box = null;
+        try { box = network.getBoundingBox(id); } catch (err) { return; }
+        if (!box || box.right - box.left < 2 || box.bottom - box.top < 2) return;
+        ctx.globalAlpha = 0.22 + 0.62 * phase;
+        const pad = 4 + 5 * phase;
+        roundPath(ctx, box.left - pad, box.top - pad,
+                  box.right - box.left + pad * 2,
+                  box.bottom - box.top + pad * 2, 13);
+        ctx.stroke();
+      });
+      ctx.restore();
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     const nodes = new vis.DataSet([]);
     const edges = new vis.DataSet([]);
     let network = null;
+    // The research bands the canvas paints behind the cards, newest layout wins.
+    let stageBands = [];
     function makeNetwork(){
       const r = isResearch();
-      // research = hierarchical top-down (epistemic layers). execution & memory =
-      // radial force layout that grows outward from the central system node.
       if (network) network.destroy();
       network = new vis.Network(document.getElementById("net"), { nodes, edges }, {
         nodes: { borderWidth: 2, shadow: { enabled: true, color: "rgba(0,0,0,0.35)", size: 10, x: 0, y: 3 } },
-        edges: { arrows: { to: { scaleFactor: 0.55 } }, color: { color: "#3a4150", highlight: "#64748b" },
-                 font: { color: "#8b93a1", size: r ? 12 : 10, strokeWidth: 0 }, smooth: r
-                   ? { type: "cubicBezier", forceDirection: "vertical", roundness: 0.5 }
-                   : { type: "cubicBezier", forceDirection: "horizontal", roundness: 0.35 } },
-        // The research graph is a hierarchy, so vis lays it out. The log is a
-        // timeline: every node already carries the x its start time earns and
-        // the row of the agent that ran it, so vis must not move anything —
-        // hierarchical layout would collapse the clock back into columns.
-        layout: r ? { hierarchical: { enabled: true, direction: "UD",
-                    sortMethod: "directed", shakeTowards: "roots",
-                    levelSeparation: 220, nodeSpacing: 300, treeSpacing: 320,
-                    blockShifting: true, edgeMinimization: true, parentCentralization: true } }
-                  : { hierarchical: false, randomSeed: 1 },
+        edges: { arrows: { to: { scaleFactor: r ? 0.8 : 0.55 } },
+                 color: { color: r ? "#94a3b8" : "#3a4150",
+                          highlight: r ? "#ffffff" : "#64748b" },
+                 font: { color: r ? "#cbd5e1" : "#8b93a1", size: r ? 13 : 10,
+                         strokeWidth: r ? 5 : 0, strokeColor: "#14161a" },
+                 // The research graph now reads top to bottom through its stage
+                 // bands, so its links bend the way they travel; the log still
+                 // runs along a clock, left to right.
+                 smooth: { type: "cubicBezier",
+                           forceDirection: r ? "vertical" : "horizontal",
+                           roundness: r ? 0.45 : 0.35 } },
+        // Neither view lets vis place anything. The log is a timeline: every
+        // node already carries the x its start time earns and the row of the
+        // agent that ran it. The research graph is banded by stage, and a band
+        // is a fact about the study — hierarchical layout would collapse both
+        // back into columns of its own choosing.
+        layout: { hierarchical: false, randomSeed: 1 },
         physics: { enabled: false },
         interaction: { hover: true, tooltipDelay: 120, navigationButtons: false },
       });
@@ -393,7 +808,8 @@
       // just says where one stretch ended and the next began, which is the
       // thing you otherwise reconstruct by reading every name in order.
       network.on("beforeDrawing", ctx => {
-        if (isResearch() || !lastPhases.length) return;
+        if (isResearch()) { drawStageBands(ctx); return drawPulse(ctx); }
+        if (!lastPhases.length) return;
         const ys = Object.values(nodeData)
           .map(n => n.y).filter(v => typeof v === "number");
         if (!ys.length) return;
@@ -422,27 +838,692 @@
       });
     }
 
+    // ── stage bands ───────────────────────────────────────────────────────────
+    // A study is read down the page by the stage that produced each card — what
+    // was asked, what was read, what was tested, what came out — and across a
+    // band by the epistemic level, so the two readings do not fight: down is
+    // the work, across is the argument.
+    //
+    // This replaces vis's hierarchical layout for the research view. Its levels
+    // are an x index, so one layer is one column and a study that recorded
+    // eighteen observations put all eighteen in a single column four thousand
+    // pixels tall; the fit that followed dropped to 0.21, and vis stops drawing
+    // a label once fontSize × scale falls under its scaling.label.drawThreshold
+    // of 5 — the canvas showed eighteen empty boxes. Unlinked cards made it
+    // worse still: with no edge to hang on, each is its own tree and vis stacks
+    // the trees down the y axis, so the column came out as a diagonal.
+    // A band with no STAGE_TINT entry does not fall back visibly — stageOf
+    // below sends its cards to "hypotheses" instead, so the two tables must be
+    // extended together or a whole stage silently disappears into another one.
+    const STAGE_ORDER = ["framing", "literature", "hypotheses", "experiment", "report"];
+    const STAGE_TINT = {
+      framing:    { fill: "rgba(59,130,246,0.07)",  line: "rgba(59,130,246,0.42)" },
+      literature: { fill: "rgba(56,189,248,0.07)",  line: "rgba(56,189,248,0.42)" },
+      hypotheses: { fill: "rgba(139,92,246,0.07)",  line: "rgba(139,92,246,0.42)" },
+      experiment: { fill: "rgba(249,115,22,0.07)",  line: "rgba(249,115,22,0.42)" },
+      report:     { fill: "rgba(34,197,94,0.07)",   line: "rgba(34,197,94,0.42)" },
+    };
+    // The server names the stage; this is the fallback for a study archived
+    // before it did, where the type is all there is to go on. Literature
+    // evidence is indistinguishable from experimental evidence here — that
+    // distinction lives in attrs.subtype, which the projection reads.
+    const STAGE_BY_KIND = { framing: "framing", researchquestion: "framing",
+      constraint: "framing", empiricalbase: "framing", resource: "framing",
+      hypothesis: "hypotheses", confirmationcriteria: "hypotheses",
+      verificationmethod: "experiment", tool: "experiment",
+      evidence: "experiment", generateddata: "experiment", codeartifact: "experiment",
+      conclusion: "report", outcome: "report", report: "report",
+      publication: "report", efficiencyjustification: "report",
+      costmodel: "report", efficiencymetric: "report" };
+    const stageOf = n => {
+      const s = n.stage || STAGE_BY_KIND[n.kind];
+      return STAGE_TINT[s] ? s : "experiment";
+    };
+    // Nominal card pitch, used for the first pass and as the fallback when a
+    // card has not been drawn yet and has no measured box.
+    const LEVEL_SEPARATION = 400, NODE_PITCH = 240;
+    // How wide a band runs before it wraps, and the breathing room around a
+    // band's contents. Wide enough for six cards: past that the whole study
+    // stops fitting a screen at a readable zoom.
+    const BAND_WIDTH = 2160, BAND_PAD = 38, BAND_MIN_HEIGHT = 128;
+
+    // ── the stage rail ────────────────────────────────────────────────────────
+    // The stage names used to be painted INSIDE each band, at its top-left
+    // corner. That is exactly where the plan column then put its first card, so
+    // the one thing a reader needs in order to know which stage they are
+    // looking at was the one thing a card was guaranteed to cover: on a real
+    // study three of the five names were unreadable. The names now live in a
+    // rail of their own, left of every card in either track, and nothing is
+    // ever seated in it — so this cannot come back by rearrangement.
+    const PLAN_LANE_TITLE = ['graph.plan.title', 'graph.plan.experiments'];
+    const RAIL_GAP = 30, RAIL_MIN = 140;
+    const STAGE_FONT = "600 26px -apple-system, Segoe UI, sans-serif";
+    const STAGE_NOTE_FONT = "400 18px -apple-system, Segoe UI, sans-serif";
+    //: Measured off an offscreen context rather than assumed, because the
+    //: widest name is a translation: "Анализ литературы" is half again as wide
+    //: as "Hypotheses", and a rail sized for one clips the other.
+    let railMeasure;
+    function railWidth(){
+      if (railMeasure === undefined) {
+        try { railMeasure = document.createElement("canvas").getContext("2d"); }
+        catch (err) { railMeasure = null; }
+      }
+      if (!railMeasure) return 260;
+      let w = RAIL_MIN;
+      railMeasure.font = STAGE_FONT;
+      STAGE_ORDER.forEach(s => {
+        w = Math.max(w, railMeasure.measureText(t('graph.stage.' + s, s)).width);
+      });
+      railMeasure.font = STAGE_NOTE_FONT;
+      w = Math.max(w, railMeasure.measureText(t('graph.stage.empty')).width);
+      return Math.ceil(w) + RAIL_GAP;
+    }
+
+    // The four stages, painted behind the cards as the rows of one page. A band
+    // with nothing in it is still drawn: an empty "report" row says the study
+    // has not got there yet, which is the question a reader opens the graph
+    // with, and leaving it out made a study that had barely started look
+    // finished.
+    function drawStageBands(ctx){
+      if (!stageBands.length) return;
+      ctx.save();
+      stageBands.forEach(b => {
+        const tint = STAGE_TINT[b.stage] || { fill: "rgba(148,163,184,0.05)",
+                                              line: "rgba(148,163,184,0.25)" };
+        const w = b.right - b.left, h = b.bottom - b.top;
+        ctx.fillStyle = b.count ? tint.fill : "rgba(148,163,184,0.03)";
+        ctx.fillRect(b.left, b.top, w, h);
+        ctx.strokeStyle = tint.line;
+        ctx.lineWidth = 1;
+        // A stage nobody has reached is outlined, not filled — the row is
+        // there, the work is not.
+        if (!b.count) ctx.setLineDash([7, 6]);
+        ctx.strokeRect(b.left, b.top, w, h);
+        ctx.setLineDash([]);
+        // The plan column's own edge, so the reader sees two tracks rather
+        // than one wide band: the intention on the left, the record on the
+        // right, sharing the level.
+        if (b.planRight != null) {
+          ctx.strokeStyle = "rgba(148,163,184,0.30)";
+          ctx.setLineDash([3, 5]);
+          ctx.beginPath();
+          ctx.moveTo(b.planRight + BAND_PAD / 2, b.top);
+          ctx.lineTo(b.planRight + BAND_PAD / 2, b.bottom);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        // In the rail: right-aligned against the band's edge and centred on
+        // the band, so it reads as the label of the row whatever the row holds.
+        const name = t('graph.stage.' + b.stage, b.stage);
+        const railX = b.left - RAIL_GAP, mid = (b.top + b.bottom) / 2;
+        ctx.textAlign = "right";
+        ctx.fillStyle = tint.line;
+        ctx.font = STAGE_FONT;
+        if (b.count) {
+          ctx.textBaseline = "middle";
+          ctx.fillText(name, railX, mid);
+        } else {
+          // Two lines for a stage nobody has reached: the name, and what the
+          // empty row means.
+          ctx.textBaseline = "bottom";
+          ctx.fillText(name, railX, mid - 3);
+          ctx.font = STAGE_NOTE_FONT;
+          ctx.fillStyle = "rgba(148,163,184,0.55)";
+          ctx.textBaseline = "top";
+          ctx.fillText(t('graph.stage.empty'), railX, mid + 5);
+        }
+        ctx.textAlign = "left";
+      });
+      // A heading per lane that has anything in it, so the reader is told
+      // which plan each column is: the study's general steps, and the
+      // experiment module's detailed tasks under them.
+      const withPlan = stageBands.filter(b => b.planRight != null);
+      if (withPlan.length && Array.isArray(withPlan[0].planLanes)) {
+        const top = Math.min.apply(null, withPlan.map(b => b.top));
+        ctx.fillStyle = "rgba(148,163,184,0.75)";
+        ctx.font = "600 22px -apple-system, Segoe UI, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        withPlan[0].planLanes.forEach((lane, i) => {
+          if (!lane) return;
+          ctx.fillText(t(PLAN_LANE_TITLE[i], PLAN_LANE_TITLE[i]),
+                       (lane.left + lane.right) / 2, top - 12);
+        });
+        ctx.textAlign = "left";
+      }
+      ctx.restore();
+    }
+
+    // ── layered placement ─────────────────────────────────────────────────────
+    // Flowing the cards row by row put every card in the right band but in an
+    // arbitrary order inside it, and that is what made the hogweed graph hard
+    // to follow: the evidence a method produced sat six cards away with three
+    // unrelated methods between them, and the link cut across all of them.
+    // Ordering within a band to keep connected cards adjacent is the one thing
+    // a layered engine does that a flow cannot, so the order is ELK's now
+    // (elkjs 0.12, layered — Sugiyama): `elk.partitioning` pins each card to
+    // its stage, and ELK is free to arrange inside it.
+    //
+    // ELK computes COORDINATES ONLY. Its POLYLINE bend points go unused —
+    // vis-network draws an edge as one curve between two anchors and accepts no
+    // waypoints — so crossings go away through placement, not routing.
+    const ELK_OPTS = {
+      "elk.algorithm": "layered",
+      "elk.direction": "DOWN",
+      "elk.partitioning.activate": "true",
+      "elk.edgeRouting": "POLYLINE",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "96",
+      "elk.spacing.nodeNode": "34",
+      "elk.spacing.edgeNode": "26",
+      // Ties broken by the order the projection emitted — which is the order
+      // the study recorded things in — so re-opening a finished study does not
+      // reshuffle it.
+      "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+    };
+    let elk = null;
+    try { elk = new ELK(); } catch (err) { console.warn("ELK unavailable", err); }
+
+    // Coordinates for the cards vis has drawn, or null if the engine could not
+    // be asked. Sizes are the measured boxes: a layered layout that guesses the
+    // card widths packs the rows wrong.
+    async function elkBoxes(place, sizeOf, edgeList){
+      if (!elk) return null;
+      const ids = Object.keys(place).filter(
+        id => nodes.get(id) && place[id].track !== "plan");
+      if (!ids.length) return null;
+      const children = ids.map(id => {
+        const size = sizeOf(id);
+        return { id: id, width: size.w, height: size.h,
+                 layoutOptions: { "elk.partitioning.partition":
+                                    String(STAGE_ORDER.indexOf(place[id].stage)) } };
+      });
+      const live = {};
+      ids.forEach(id => { live[id] = true; });
+      // Edges that run UP the page are handed to ELK the other way round.
+      // The graph is cyclic as recorded — a question motivates a hypothesis
+      // downward while the evidence it produced relates back up to the question
+      // — and a layered engine breaks a cycle by reversing an edge of its own
+      // choosing, which on this study put the evidence and the method that
+      // produced it on opposite sides of the band. The partitions already fix
+      // which layer each card lands in, so an upward edge carries no layering
+      // information: all it can still say is which two cards want to be near
+      // each other, and it says that in either direction. vis draws the real
+      // arrow from the real edge, so nothing about the record changes.
+      const rank = id => STAGE_ORDER.indexOf(place[id].stage);
+      const elkEdges = [];
+      (edgeList || []).forEach((e, i) => {
+        if (!e || !live[e.src] || !live[e.dst] || e.src === e.dst) return;
+        const up = rank(e.dst) < rank(e.src);
+        elkEdges.push({ id: "le" + i,
+                        sources: [up ? e.dst : e.src],
+                        targets: [up ? e.src : e.dst] });
+      });
+      const laid = await elk.layout({ id: "root", layoutOptions: ELK_OPTS,
+                                      children: children, edges: elkEdges });
+      const box = {};
+      (laid.children || []).forEach(c => {
+        if (typeof c.x === "number" && typeof c.y === "number") box[c.id] = c;
+      });
+      return Object.keys(box).length ? box : null;
+    }
+
+    // ELK leaves no room for a stage nobody has reached — it has no nodes there
+    // to space out — and an empty "report" row is the answer to "how far has
+    // this got". So the bands are re-stacked afterwards: each stage keeps the
+    // geometry ELK gave it and moves as one block, and an empty stage gets a
+    // strip of its own. Translating a stage uniformly cannot introduce a
+    // crossing: it preserves both the order within the band and the order of
+    // the bands.
+    function stackBands(place, box){
+      const extent = {};
+      Object.keys(box).forEach(id => {
+        const c = box[id], stage = place[id].stage;
+        const e = extent[stage] ||
+                  (extent[stage] = { top: Infinity, bottom: -Infinity, count: 0 });
+        e.top = Math.min(e.top, c.y);
+        e.bottom = Math.max(e.bottom, c.y + c.height);
+        e.count += 1;
+      });
+      // What the plan needs of each band, BEFORE the bands are sized — see
+      // planBlocks. A band too short for its own steps pushed them into the
+      // band above and the band below.
+      const blocks = planBlocks(place);
+      const shift = {}, bands = [];
+      let cursor = 0;
+      STAGE_ORDER.forEach(stage => {
+        const e = extent[stage];
+        const recordH = e ? e.bottom - e.top : 0;
+        const planH = blocks[stage] ? blocks[stage].height : 0;
+        const inner = Math.max(BAND_MIN_HEIGHT, recordH, planH);
+        const height = inner + BAND_PAD * 2;
+        // Both blocks are centred in the band. Top-aligning the record left a
+        // hole under it whenever the band had grown for the plan's sake.
+        if (e) shift[stage] = cursor + BAND_PAD + (inner - recordH) / 2 - e.top;
+        bands.push({ stage: stage, top: cursor, bottom: cursor + height,
+                     count: e ? e.count : 0 });
+        cursor += height;
+      });
+      const seats = {};
+      let x0 = Infinity, x1 = -Infinity;
+      Object.keys(box).forEach(id => {
+        const c = box[id];
+        seats[id] = { x: c.x + c.width / 2,
+                      y: c.y + c.height / 2 + shift[place[id].stage] };
+        x0 = Math.min(x0, c.x);
+        x1 = Math.max(x1, c.x + c.width);
+      });
+      bands.forEach(b => { b.left = x0 - BAND_PAD; b.right = x1 + BAND_PAD; });
+      // The plan goes in beside the finished bands, at each step's own level,
+      // and the bands are then widened to run behind the column: the tint is
+      // what makes "this step belongs to the literature stage" unambiguous
+      // rather than a guess from vertical position.
+      const plan = planColumn(bands, x0 - BAND_PAD, blocks);
+      if (plan.used) {
+        Object.keys(plan.seats).forEach(id => { seats[id] = plan.seats[id]; });
+        bands.forEach(b => { b.left = plan.left - BAND_PAD; b.planRight = plan.right;
+                             b.planLanes = plan.lanes; });
+      }
+      addRail(bands);
+      return { seats: seats, bands: bands };
+    }
+
+    // Where the rail starts. Kept on the band so frameStudy can open the camera
+    // wide enough to show it: a name the reader has to pan to find is no better
+    // than a name a card sits on.
+    function addRail(bands){
+      const rail = railWidth();
+      bands.forEach(b => { b.railLeft = b.left - rail; });
+    }
+
+    // ── the plan column ───────────────────────────────────────────────────────
+    // The plan is a parallel track, not part of the argument, so it is drawn in
+    // its own column beside the bands rather than as cards inside them. A step
+    // sits at the height of the stage it asks for, so the reader can see the
+    // intention and the record of it on one line: "collect the literature" next
+    // to the literature that was collected.
+    //
+    // Kept out of the layout engine entirely. Feeding the steps to ELK put them
+    // in the band flow, which is exactly the conflation this separation exists
+    // to undo — and the `realises` links would then drag the record's cards
+    // toward the plan instead of ordering them by the argument.
+    const PLAN_GAP = 72, PLAN_ROW_GAP = 16;
+
+    // What the plan track needs of each band, measured before the bands are
+    // sized. Getting this order wrong is the defect the operator hit: the plan
+    // used to be centred in whatever height the RECORD happened to need, and
+    // allowed to overflow. A study with four steps and two cards — which is
+    // every study in its first minutes — then pushed its steps clean out of
+    // their own band, so "collect the literature" was drawn under the heading
+    // «Постановка» and two steps from different stages landed on top of each
+    // other. A step drawn outside its band is worse than a step drawn small:
+    // the column exists to say which stage the plan asked for, and outside its
+    // band it says the wrong one.
+    //: The plan track reads left to right by GRAIN: the general step the outer
+    //: planner wrote, then the detailed task the experiment module designed
+    //: under it, then the record. Two intentions at different grains must not
+    //: share a column — stacked together a reader cannot tell which plan a
+    //: card came from, which is the whole reason the two types exist.
+    //: `lane` comes from the server (store._PLAN_LANE); 0 when it says nothing,
+    //: so a study recorded before lanes existed still draws.
+    const PLAN_LANES = 2;
+    function planBlocks(place){
+      const blocks = {};
+      Object.keys(place).forEach(id => {
+        if (place[id].track !== "plan" || !nodes.get(id)) return;
+        const stage = place[id].stage;
+        const lane = Math.max(0, Math.min(PLAN_LANES - 1, place[id].lane || 0));
+        const byStage = blocks[stage] = blocks[stage] || { lanes: [], height: 0 };
+        (byStage.lanes[lane] = byStage.lanes[lane] || { ids: [], height: 0 })
+          .ids.push(id);
+      });
+      Object.keys(blocks).forEach(stage => {
+        const byStage = blocks[stage];
+        byStage.lanes.forEach(lane => {
+          if (!lane) return;
+          lane.ids.sort((a, b) => (place[a].order || 0) - (place[b].order || 0)
+                                || String(a).localeCompare(String(b)));
+          lane.height = lane.ids.reduce((s, id) => s + measuredSize(id).h, 0)
+                      + PLAN_ROW_GAP * (lane.ids.length - 1);
+          // The band has to hold the FULLEST lane, not their sum.
+          byStage.height = Math.max(byStage.height, lane.height);
+        });
+      });
+      return blocks;
+    }
+
+    function planColumn(bands, leftEdge, blocks){
+      const stages = Object.keys(blocks);
+      if (!stages.length)
+        return { seats: {}, right: leftEdge, left: leftEdge, lanes: [],
+                 used: false };
+      // One axis per lane, each sized by the widest card in THAT lane, so a
+      // lane of short cards does not leave a hole beside a lane of long ones.
+      // The rightmost lane's widest card ends exactly at `right`, clearing the
+      // record track by PLAN_GAP.
+      const widest = [];
+      for (let lane = 0; lane < PLAN_LANES; lane++) {
+        let w = 0;
+        stages.forEach(s => ((blocks[s].lanes[lane] || {}).ids || [])
+          .forEach(id => { w = Math.max(w, measuredSize(id).w); }));
+        widest[lane] = w;
+      }
+      const right = leftEdge - PLAN_GAP;
+      // Laid out from the right edge backwards, so the detailed lane sits
+      // against the record it produced and the general one outside it.
+      const axis = [];
+      let edge = right;
+      for (let lane = PLAN_LANES - 1; lane >= 0; lane--) {
+        if (!widest[lane]) { axis[lane] = edge; continue; }
+        axis[lane] = edge - widest[lane] / 2;
+        edge -= widest[lane] + PLAN_GAP;
+      }
+      const seats = {};
+      bands.forEach(band => {
+        const byStage = blocks[band.stage];
+        if (!byStage) return;
+        const mid = (band.top + band.bottom) / 2;
+        byStage.lanes.forEach((lane, i) => {
+          if (!lane) return;
+          // Each lane centred independently in a band that was sized to hold
+          // the fullest of them, so no lane can overflow.
+          let y = mid - lane.height / 2;
+          lane.ids.forEach(id => {
+            seats[id] = { x: axis[i], y: y + measuredSize(id).h / 2 };
+            y += measuredSize(id).h + PLAN_ROW_GAP;
+          });
+        });
+      });
+      const lanes = axis.map((x, i) => widest[i]
+        ? { left: x - widest[i] / 2, right: x + widest[i] / 2 } : null);
+      const far = Math.min.apply(null,
+        lanes.filter(Boolean).map(l => l.left).concat([right]));
+      return { seats: seats, right: right, left: far, lanes: lanes, used: true };
+    }
+
+    // First pass, on nominal sizes: vis reports a real box only once it has
+    // drawn a card, and it cannot draw one without a position.
+    function layoutStages(list){
+      const place = {};
+      const byStage = new Map(STAGE_ORDER.map(s => [s, []]));
+      list.forEach(n => byStage.get(stageOf(n)).push(n));
+      const perRow = Math.max(1, Math.floor(BAND_WIDTH / LEVEL_SEPARATION));
+      let y = 0;
+      STAGE_ORDER.forEach(stage => {
+        // Inside a band the epistemic level orders the cards, then the index —
+        // question before hypothesis before method before observation.
+        const group = byStage.get(stage).sort((a, b) =>
+          ((a.level ?? 3) - (b.level ?? 3))
+          || ((a.index || 0) - (b.index || 0))
+          || String(a.id).localeCompare(String(b.id)));
+        group.forEach((n, i) => {
+          place[n.id] = { stage, order: i, track: n.track || "record",
+                          lane: n.lane || 0,
+                          x: (i % perRow) * LEVEL_SEPARATION,
+                          y: y + BAND_PAD + Math.floor(i / perRow) * NODE_PITCH };
+        });
+        y += Math.max(BAND_MIN_HEIGHT,
+                      Math.ceil(group.length / perRow) * NODE_PITCH + BAND_PAD * 2);
+      });
+      return place;
+    }
+
     // ── the research node card ────────────────────────────────────────────────
-    function researchNode(n){
-      const st = rStatus(n.status), c = st.c;
+    function researchNode(n, place){
+      const st = rStatus(n.status);
+      const c = R_KIND[n.kind] || st.c;
+      const slot = place && place[n.id];
       const node = {
         id: n.id, title: titleOf(n), shape: "box", label: researchLabel(n),
-        level: R_LEVEL[n.kind] != null ? R_LEVEL[n.kind] : 3,
-        color: { background: rgba(c, 0.14), border: c,
-                 highlight: { background: rgba(c, 0.22), border: c } },
+        color: { background: solid(c, 0.14), border: c,
+                 highlight: { background: solid(c, 0.22), border: c },
+                 // Without an explicit hover vis falls back to its OWN default
+                 // (#D2E5FF) and leaves the label at --ink #e8eaed: 1.07:1
+                 // contrast, so the card went blank under the cursor and read as
+                 // if the node had vanished.
+                 hover: { background: solid(c, 0.26), border: c } },
         font: { color: INK, size: 16, multi: "html",
-                face: "-apple-system, Segoe UI, sans-serif", align: "left" },
-        borderWidth: 2, shapeProperties: { borderRadius: 9 },
-        widthConstraint: { minimum: 230, maximum: 320 }, margin: 12,
+                face: "-apple-system, Segoe UI, sans-serif", align: "left",
+                // mod "bold" rather than the default "bold italic": the status
+                // word is set in the same weight as the type it follows, and
+                // only its colour differs.
+                boldital: { color: statusInk(n.status), size: 16, mod: "bold",
+                            face: "-apple-system, Segoe UI, sans-serif" } },
+        // Hovering must not re-typeset the label: labelHighlightBold redraws it
+        // bold, which re-runs the parser over the very string that can throw.
+        chosen: { node: true, label: false },
+        borderWidth: n.virtual ? 1 : 2, shapeProperties: { borderRadius: 9 },
+        widthConstraint: { minimum: 230, maximum: 340 }, margin: 12,
       };
+      if (n.virtual) node.shapeProperties.borderDashes = [4, 3];
+      // Every research card is pinned: the band it sits in is a fact about the
+      // study, not something a layout engine may optimise away.
+      if (slot) {
+        const seat = pinned[n.id] || slot;
+        node.x = seat.x; node.y = seat.y;
+        node.fixed = { x: true, y: true };
+      }
       return node;
     }
 
+    const CARD_GAP = 28;
+    //: `laying` holds the layout currently in flight, so a second poll can WAIT
+    //: on it instead of being told nothing changed. Without it, a poll arriving
+    //: while ELK was still working framed the study against the nominal
+    //: first-pass grid and latched `fitted`, and the real layout that landed a
+    //: moment later was never framed — the reader got a camera pointed at blank
+    //: canvas beside the study. The synchronous version could not lose this way.
+    let pinned = {}, pinnedFor = "", laying = null;
+    //: Which study the layout belongs to. ELK resolves a task boundary or more
+    //: after the call, so a reader can switch studies mid-layout; `hardReset`
+    //: bumps this, and a layout that comes back for a study nobody is looking
+    //: at writes nothing. Without it the abandoned run wrote its bands and its
+    //: seats over the new study and vis's `update` RE-ADDED every one of its
+    //: cards, because update() inserts what the set does not hold.
+    let studyGen = 0;
+    function measuredSize(id){
+      try {
+        const box = network.getBoundingBox(id);
+        // A card vis has not drawn yet reports {0,0,0,0} rather than nothing,
+        // and a zero-height card makes a column stack every one of its cards at
+        // the same point. A degenerate box is not a measurement.
+        if (box && box.right - box.left > 1 && box.bottom - box.top > 1)
+          return { w: box.right - box.left, h: box.bottom - box.top };
+      } catch (err) { /* not drawn yet */ }
+      return { w: LEVEL_SEPARATION - CARD_GAP, h: NODE_PITCH - CARD_GAP };
+    }
+
+    // Second pass, on the boxes vis measured: ask ELK where the cards go, and
+    // flow them by hand if it cannot answer. The fallback is not decoration —
+    // a 1.6MB script that fails to load must cost the study its ordering, not
+    // its drawing.
+    function reflowStages(place, signature, edgeList){
+      if (!place) return Promise.resolve(false);
+      // Same study state as the layout already running or already done: hand
+      // back that run's promise if it is still going, so the caller waits for
+      // the real coordinates rather than framing the first-pass grid.
+      if (pinnedFor === signature) return laying || Promise.resolve(false);
+      // Claimed BEFORE the await: ELK is asynchronous and a poll arrives every
+      // second, so two layouts of the same study would otherwise race and the
+      // loser would move every card again under the reader's cursor.
+      pinnedFor = signature;
+      laying = layOutStudy(place, edgeList);
+      laying.then(() => { laying = null; }, () => { laying = null; });
+      return laying;
+    }
+
+    async function layOutStudy(place, edgeList){
+      const gen = studyGen;
+      let laid = null;
+      try {
+        const box = await elkBoxes(place, measuredSize, edgeList);
+        if (box) laid = stackBands(place, box);
+      } catch (err) {
+        console.warn("ELK layout failed; flowing the bands instead", err);
+      }
+      // Checked AFTER the await and before any write: this is the whole point
+      // of the token. `pinnedFor` is left alone — hardReset already cleared it
+      // for the new study, and writing to it here would clobber that.
+      if (gen !== studyGen) return false;
+      try {
+        if (!laid) laid = flowSeats(place, measuredSize);
+        if (!laid) { pinnedFor = ""; return false; }
+        stageBands = laid.bands;
+        pinned = laid.seats;
+        nodes.update(Object.keys(laid.seats).map(id => ({ id: id, ...laid.seats[id] })));
+        routeEdges(laid.seats);
+        return true;
+      } catch (err) {
+        // The signature was claimed before the await, so a throw from here on
+        // would pin this graph state forever and the study would never be laid
+        // out again. Release the claim and let the next poll try.
+        console.warn("laying out the study failed", err);
+        pinnedFor = "";
+        return false;
+      }
+    }
+
+    // The fallback ordering, used when ELK is unavailable. Each band flows its
+    // own cards left to right, wraps at BAND_WIDTH, and the next band starts
+    // under the deepest row of this one. Right band, arbitrary order.
+    // With the cards finally placed, every link is checked against the cards it
+    // would run over. This is the complaint the layout engine alone does not
+    // answer: a hypothesis sits one band above its methods and the evidence one
+    // row below them, so the link from that evidence back up to the hypothesis
+    // has the whole row of methods in its way, and both cards are in bands that
+    // look adjacent. vis draws an edge as one curve between two anchors and
+    // takes no waypoints, so such a link cannot be routed AROUND a card — but
+    // it can be bowed past it, and it is bowed outwards, away from the crowded
+    // middle of the study.
+    //: edge id -> the `smooth` setting the geometry asked for. Re-applied by
+    //: the edge build on every poll, which would otherwise overwrite it.
+    let routed = {};
+    //: How far a bowed link may swing off its straight line, in canvas pixels.
+    //: About two thirds of a card: enough to get past one, not enough to leave
+    //: the neighbourhood.
+    const MAX_BOW = 220;
+    function routeEdges(seats){
+      routed = {};
+      const boxes = Object.keys(seats).map(id => {
+        const size = measuredSize(id), seat = seats[id];
+        return { id: id, left: seat.x - size.w / 2, right: seat.x + size.w / 2,
+                 top: seat.y - size.h / 2, bottom: seat.y + size.h / 2 };
+      });
+      let centre = 0;
+      boxes.forEach(b => { centre += (b.left + b.right) / 2; });
+      centre = boxes.length ? centre / boxes.length : 0;
+      // Sampled rather than solved: a card is at least 230 wide and about a
+      // hundred tall, so a step of twenty pixels cannot slip past one, and the
+      // exact intersection point is of no interest here.
+      const runsOver = (a, b, box) => {
+        const steps = Math.max(12, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 20));
+        for (let k = 1; k < steps; k++) {
+          const x = a.x + (b.x - a.x) * k / steps;
+          const y = a.y + (b.y - a.y) * k / steps;
+          if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)
+            return true;
+        }
+        return false;
+      };
+      const updates = [];
+      edges.get().forEach(e => {
+        const a = seats[e.from], b = seats[e.to];
+        if (!a || !b) return;
+        if (e.from === e.to) {
+          routed[e.id] = { type: "curvedCW", roundness: 0.6 };
+          updates.push({ id: e.id, smooth: routed[e.id] });
+          return;
+        }
+        const blocked = boxes.some(box =>
+          box.id !== e.from && box.id !== e.to && runsOver(a, b, box));
+        let smooth;
+        if (blocked) {
+          const mid = (a.x + b.x) / 2;
+          // vis swings the curve sideways by roughly `roundness` × the span, so
+          // the bow is budgeted in PIXELS and the roundness derived from it. A
+          // long link gets a gentle bend that clears the card next to it; a
+          // fixed fraction sent it looping through a band it has no business in.
+          const span = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+          smooth = { type: mid < centre ? "curvedCCW" : "curvedCW",
+                     roundness: Math.max(0.12, Math.min(0.55, MAX_BOW / span)) };
+        } else {
+          smooth = Math.abs(a.y - b.y) < 8
+            ? { type: "curvedCW", roundness: 0.22 } : false;
+        }
+        routed[e.id] = smooth;
+        updates.push({ id: e.id, smooth: smooth });
+      });
+      if (updates.length) edges.update(updates);
+    }
+
+    function flowSeats(place, sizeOf){
+      const byStage = new Map(STAGE_ORDER.map(s => [s, []]));
+      Object.keys(place).forEach(id => {
+        if (nodes.get(id) && place[id].track !== "plan")
+          byStage.get(place[id].stage).push(id);
+      });
+      const seats = {}, bands = [], blocks = planBlocks(place);
+      // The bands hug the widest row there actually is, not the wrap width: a
+      // study of six cards drawn inside 2160px of band ran the rows off the
+      // side of the screen with nothing in them.
+      let y = 0, widest = 0;
+      STAGE_ORDER.forEach(stage => {
+        const ids = byStage.get(stage)
+          .sort((a, b) => place[a].order - place[b].order);
+        const top = y;
+        // Flowed from a local origin, then moved as one block, so the record
+        // can be centred in a band that grew to fit the plan beside it.
+        const local = {};
+        let x = 0, rowTop = 0, rowHeight = 0, reach = 0;
+        ids.forEach(id => {
+          const { w, h } = sizeOf(id);
+          if (x > 0 && x + w > BAND_WIDTH) {        // wrap within the band
+            x = 0; rowTop += rowHeight + CARD_GAP; rowHeight = 0;
+          }
+          local[id] = { x: x + w / 2, y: rowTop + h / 2 };
+          x += w + CARD_GAP;
+          reach = Math.max(reach, x - CARD_GAP);
+          rowHeight = Math.max(rowHeight, h);
+        });
+        const recordH = ids.length ? rowTop + rowHeight : 0;
+        const planH = blocks[stage] ? blocks[stage].height : 0;
+        const inner = Math.max(BAND_MIN_HEIGHT, recordH, planH);
+        const height = inner + BAND_PAD * 2;
+        const offset = top + BAND_PAD + (inner - recordH) / 2;
+        ids.forEach(id => {
+          seats[id] = { x: local[id].x, y: local[id].y + offset };
+        });
+        widest = Math.max(widest, reach);
+        bands.push({ stage, top, bottom: top + height, count: ids.length });
+        y = top + height;
+      });
+      // One width for every band, so they read as stacked rows of one page
+      // rather than four unrelated boxes. At least one card wide even with
+      // nothing in the record track yet, or the five bands come out as slivers
+      // beside the plan.
+      widest = Math.max(widest, LEVEL_SEPARATION - CARD_GAP);
+      bands.forEach(b => { b.left = -BAND_PAD; b.right = widest + BAND_PAD; });
+      const plan = planColumn(bands, -BAND_PAD, blocks);
+      if (plan.used) {
+        Object.keys(plan.seats).forEach(id => { seats[id] = plan.seats[id]; });
+        bands.forEach(b => { b.left = plan.left - BAND_PAD; b.planRight = plan.right;
+                             b.planLanes = plan.lanes; });
+      }
+      addRail(bands);
+      return { seats: seats, bands: bands };
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
-    const seenEdges = new Set();
     const nodeData = {};
     let lastGraph = { nodes: [], edges: [] };
+    let fitted = false;
+    // At most one request per selected study/view. A reset increments
+    // `studyGen`, allowing the new selection to load immediately while the old
+    // request drains; its late answer is ignored below.
+    let pollInFlightFor = null;
     async function poll(){
+      const pollGeneration = studyGen;
+      if (pollInFlightFor === pollGeneration) return;
+      pollInFlightFor = pollGeneration;
       try {
         const params = new URLSearchParams(location.search);
         const userId = params.get("user_id") || "";
@@ -450,14 +1531,6 @@
         if (!userId || !sessionId) {
           throw new Error(t('graph.noSession'));
         }
-        // Slide view is a server-rendered SVG, not a node-link canvas.
-        const netBox = document.getElementById("net"), slideBox = document.getElementById("slide");
-        if (isSlide()) {
-          netBox.style.display = "none"; slideBox.style.display = "block";
-          await pollSlide(userId, sessionId);
-          return;
-        }
-        netBox.style.display = ""; slideBox.style.display = "none";
         // The same picker serves both views: a request in the log, a study in
         // the research graph. Its value is cleared on a view change, so one
         // view's selection can never be sent to the other.
@@ -466,9 +1539,23 @@
           + `/graph?view=${encodeURIComponent(document.getElementById("view").value)}`
           + (chosenTurn ? `&turn=${encodeURIComponent(chosenTurn)}` : "");
         const r = await fetch(url, { cache: "no-store" });
-        const g = await r.json(); lastGraph = g;
+        if (!r.ok) throw new Error(t('graph.error.http', { status: r.status }));
+        const g = await r.json();
+        if (pollGeneration !== studyGen) return;
+        lastGraph = g;
+        // The API answers ANY failure with HTTP 200 and {"nodes": [], "edges":
+        // [], "error": "..."} so it never breaks the page. Unread, that is
+        // indistinguishable from a study nobody has written to yet.
+        if (g.error) throw new Error(t('graph.error.server', { error: g.error }));
         const research = isResearch();
         lastPhases = research ? [] : (g.phases || []);
+        // Node reports belong to the research graph; the execution log has the
+        // agent summaries instead, and they have their own button.
+        const autoWrap = document.getElementById("autoReportWrap");
+        if (autoWrap) {
+          autoWrap.style.display = research ? "" : "none";
+          document.getElementById("autoReport").checked = autoNodeReports();
+        }
         // The log is drawn one request at a time; the payload lists the rest.
         const turnWrap = document.getElementById("turnWrap"),
               turnSel = document.getElementById("turn"),
@@ -494,18 +1581,13 @@
           }
           if (current) turnSel.value = current;
         } else { turnWrap.style.display = "none"; }
-        // The execution graph now carries only what ran: an agent node exists
-        // because the agent acted. The research graph, though, records the
-        // engineering around the science too — the budget, the datasets, the
-        // code — and drawn together they outnumber the findings and read as
-        // clutter to the scientist this page is for. The record stays whole in
-        // the store and in the report; only the drawing is narrowed.
-        const hidden = new Set();
-        if (research) {
-          (g.nodes || []).forEach(n => {
-            if (!RESEARCH_SHOWN.has(n.kind)) hidden.add(n.id);
-          });
-        }
+        // What gets drawn is the SERVER's decision now. The client used to hold
+        // its own allow-list of node kinds and drop the rest — and with them
+        // every edge that touched one. In a real session the whole structure of
+        // the research graph hung off dataset nodes that were not on that list,
+        // so 100% of the edges were discarded and the canvas drew a field of
+        // unconnected cards. The store folds those into the card they belong to
+        // instead, and re-points their edges, so nothing is lost either way.
         // Depth in the execution tree. Set explicitly rather than inferred from
         // the arrows: an agent node is shared by every turn that called it, so
         // inference would drag it to whatever depth the first caller had and
@@ -515,11 +1597,22 @@
         // Already ordered by (level, start time) upstream; siblings enter in the
         // order they ran, which is the order vis lays them out.
         const ordered = g.nodes || [];
+        // Decided once for the whole payload: placing a card needs to see how
+        // many others share its band, which a per-node call cannot.
+        const place = research ? layoutStages(ordered) : null;
+        // One update call per poll, not one per node: physics is off, so every
+        // single update() drags a full hierarchical re-layout and a synchronous
+        // redraw behind it.
+        const batchNodes = [], batchEdges = [];
+        const liveNodes = new Set(), liveEdges = new Set();
+        const working = new Set();
         ordered.forEach(n => {
-          if (hidden.has(n.id)) return;
-          nodeData[n.id] = n;
-          if (research) { nodes.update(researchNode(n)); }
-          else {
+          try {
+          nodeData[n.id] = n; liveNodes.add(n.id);
+          if (research) {
+            batchNodes.push(researchNode(n, place));
+            if (isPulsing(n)) working.add(n.id);
+          } else {
             // Cards, sized by what they are: the request opens the row, agents
             // carry it, calls are the detail. Status is the border, identity the
             // fill, so a failed call is visible without reading its label.
@@ -533,10 +1626,14 @@
               // (projection._CARD_WIDTH). If the two disagree the cards overlap.
               widthConstraint: { minimum: (n.card_width || 190) - 26,
                                  maximum: (n.card_width || 190) - 26 },
-              color:{ background: rgba(c, isGoal || isResult ? 0.22 : 0.16),
+              color:{ background: solid(c, isGoal || isResult ? 0.22 : 0.16),
                       border: borderOf(n) === "#20232a" ? c : borderOf(n),
-                      highlight: { background: rgba(c, 0.32), border: c } },
+                      highlight: { background: solid(c, 0.32), border: c },
+                      // Same default-hover trap as the research card: without
+                      // this the box turns pale blue under a near-white label.
+                      hover: { background: solid(c, 0.30), border: c } },
               borderWidth: 2,
+              chosen: { node: true, label: false },
               font:{ color:"#e8eaed", multi:false, align:"left",
                      size: isGoal?17:(isAgent?16:13), strokeWidth:0 } };
             // Position comes from the server: x from when the call started, y
@@ -548,7 +1645,18 @@
             }
             if (isGoal) { node.borderWidth = 3; node.font.color = "#ffffff"; }
             else if (isRoot) { node.borderWidth = 3; node.color.border = "#38bdf8"; }
-            nodes.update(node);
+            batchNodes.push(node);
+          }
+          } catch (err) {
+            // One card must never cost the drawing. Put it up under its own id
+            // so the reader can still see and click the node, and say what
+            // happened in its tooltip.
+            console.warn("graph node", n && n.id, err);
+            try {
+              liveNodes.add(n.id);
+              batchNodes.push({ id: n.id, label: String(n.id), shape: "box",
+                                title: String(err && err.message || err) });
+            } catch (ignored) { /* the id itself was unusable */ }
           }
         });
         // Only redraw the panel when the node it shows has actually changed.
@@ -562,23 +1670,152 @@
             showDetail(nodeData[selectedId]);
           }
         }
+        //: How many links each pair of cards has, and how many have been drawn
+        //: so far. Counted up front because the fan-out needs to know the total
+        //: before it places the first one.
+        const pairCount = {}, pairSeen = {};
         (g.edges || []).forEach(e => {
-          // An edge to a node that is not drawn has nothing to join.
-          if (hidden.has(e.src) || hidden.has(e.dst)) return;
+          if (!e || !e.src || !e.dst || e.src === e.dst) return;
+          const k = [e.src, e.dst].sort().join("\u0000");
+          pairCount[k] = (pairCount[k] || 0) + 1;
+        });
+        (g.edges || []).forEach(e => {
+          try {
+          if (!e.src || !e.dst) return;
           const id = e.src + "->" + e.dst + ":" + (e.type||"");
-          if (seenEdges.has(id) || !e.src || !e.dst) return;
-          seenEdges.add(id);
+          liveEdges.add(id);
           // human-readable edge label ("tested by", "criterion for", …) in research
           const ekey = "graph.edge." + e.type;
+          //: Which of the links between these two cards this one is. Both
+          //: directions count as the same pair: a link back the other way is
+          //: drawn over the same ground.
+          const pairKey = [e.src, e.dst].sort().join("\u0000");
+          const pairIndex = (pairSeen[pairKey] = (pairSeen[pairKey] || 0) + 1) - 1;
           const rlabel = research ? t(ekey, R_EDGE_NAME[e.type] || e.type || "") : (e.type || "");
-          const edge = { id, from:e.src, to:e.dst, label: e.provenance ? "" : rlabel };
-          if (e.synthetic) { edge.color={color:"#2c313a",highlight:"#3a4150"}; edge.dashes=true; edge.width=1; edge.arrows=""; edge.label=""; }
+          const edge = { id, from:e.src, to:e.dst,
+                         label: e.provenance ? ""
+                                : (research ? edgeLabel(rlabel) : rlabel) };
+          // A link inside one band joins two cards on the same row, and a
+          // bezier told to bend vertically between them draws a straight line
+          // straight through everything in between — the evidence that supports
+          // a hypothesis six cards to its left cut across four other cards. Arc
+          // those; keep the vertical bend for the links that really do travel
+          // down the page from one stage to the next.
+          // How the link is drawn: what `routeEdges` decided from the final
+          // coordinates if it has run, and otherwise a first-frame guess — a
+          // link inside one band joins two cards side by side and needs to arc,
+          // anything else starts straight. Re-applying the routing HERE is what
+          // makes it hold: this block runs on every poll, so a rebuild that
+          // used the guess would undo the routing a second after it was made
+          // and the study would go back to drawing lines through its own cards.
+          if (research && place) {
+            if (id in routed) {
+              edge.smooth = routed[id];
+            } else {
+              const a = place[e.src], b = place[e.dst];
+              if (a && b) edge.smooth = a.stage === b.stage
+                ? { type: "curvedCW", roundness: 0.22 } : false;
+            }
+          }
+          if (research && (e.type === "realises" || e.type === "elaborates")) {
+            edge.color = { color: EDGE_QUIET, highlight: EDGE_BRIGHT };
+            edge.dashes = [2, 4]; edge.width = 1.6;
+            edge.font = edgeFont(EDGE_QUIET, 12);
+          }
+          else if (e.synthetic) { edge.color={color:"#2c313a",highlight:"#3a4150"}; edge.dashes=true; edge.width=1; edge.arrows=""; edge.label=""; }
           else if (research) { const c=R_EDGE[e.type];
-            edge.color={color:c||"#4a5160",highlight:c||"#64748b"}; edge.width=c?3:1.5;
-            edge.font={color:c||"#aeb6c2",size:12,strokeWidth:4,strokeColor:"#14161a"}; }
-          edges.update(edge);
+            edge.color={color:c||EDGE_NEUTRAL,highlight:c||EDGE_BRIGHT};
+            edge.width=c?3:2.2;
+            edge.font=edgeFont(c||EDGE_NEUTRAL); }
+          // How the study MOVED: the verdict that retired one hypothesis and
+          // the change that produced the next. Without the label this is just
+          // an unexplained arrow between two look-alike cards.
+          if (research && e.type === "supersedes") {
+            const v = (e.attrs || {}).verdict || "other";
+            const c = v === "refuted" ? CRIT : v === "confirmed" ? GOOD : WARN;
+            edge.dashes = [5, 4]; edge.width = 2.2;
+            edge.color = { color: c, highlight: c, hover: c };
+            edge.font = edgeFont(c);
+            edge.label = edgeLabel(t('graph.edge.supersedes.' + v,
+                                     { reason: (e.attrs || {}).reason || "" }));
+          } else if (research && e.rerouted) {
+            // The link ran through something folded into a card. Drawn thinner
+            // so it reads as inferred, and the tooltip names what it went via.
+            edge.dashes = [2, 3]; edge.width = 1;
+            edge.title = t('graph.edge.via', { node: e.via || "" });
+          }
+          // Fanned out when there is more than one: index 0 keeps whatever
+          // curvature the rules above chose, and each further link is pushed
+          // a little further off the straight line, alternating sides. Done
+          // last so it overrides those rules rather than being overridden.
+          if ((pairCount[pairKey] || 0) > 1) {
+            const step = 0.18, rank = Math.floor(pairIndex / 2) + 1;
+            const sign = pairIndex % 2 ? -1 : 1;
+            const base = (edge.smooth && typeof edge.smooth.roundness === "number")
+              ? edge.smooth.roundness : 0;
+            edge.smooth = { enabled: true,
+                            type: sign > 0 ? "curvedCW" : "curvedCCW",
+                            roundness: Math.min(0.9, base + step * rank) };
+          }
+          batchEdges.push(edge);
+          } catch (err) { console.warn("graph edge", e && e.src, err); }
         });
-        if (research) renderHeader(g.nodes || []);
+        // Two calls instead of 2N, and only now — a throw above cost the whole
+        // drawing when each node updated the DataSet on its own.
+        if (batchNodes.length) nodes.update(batchNodes);
+        if (batchEdges.length) edges.update(batchEdges);
+        // After the cards are in: `getBoundingBox` has nothing to report for a
+        // node vis has not drawn yet, and the halo is measured off the box.
+        setPulsing(working);
+        // Reconciliation: what the server no longer sends must leave the canvas.
+        // Nothing was ever removed, so a node that changed id, moved into
+        // another card or belonged to a study the reader switched away from
+        // stayed on screen until the page was reloaded.
+        const goneNodes = nodes.getIds().filter(id => !liveNodes.has(id));
+        if (goneNodes.length) {
+          nodes.remove(goneNodes);
+          goneNodes.forEach(id => { delete nodeData[id]; });
+          if (selectedId && goneNodes.indexOf(selectedId) !== -1) closeDetail();
+        }
+        const goneEdges = edges.getIds().filter(id => !liveEdges.has(id));
+        if (goneEdges.length) edges.remove(goneEdges);
+        // Frame the study once it first has something to show. Research only:
+        // execution cards are pinned at server-given coordinates and a fit
+        // would drag the camera away from the part of the run in progress.
+        if (research && batchNodes.length) {
+          // Which cards there are, how they stand and which band they are in —
+          // and deliberately NOT how long their text is. Keying on the text
+          // meant a method whose procedure gained a clause re-placed the entire
+          // study under the reader's cursor; the card grows in place instead,
+          // and the next real change re-places it. The stage stays in: a method
+          // that moves to the literature band changes every band below it.
+          const signature = ordered
+            .map(n => [n.id, n.status, stageOf(n)].join(":"))
+            .join("|")
+            + "#" + (g.edges || []).length;
+          const seq = studyGen;
+          network.once("afterDrawing", () => {
+            if (seq !== studyGen) return;
+            reflowStages(place, signature, g.edges || []).catch(err => {
+              console.warn("layout rejected", err);
+              return false;
+            }).then(reflowed => {
+              // The abandoned study's continuation must not consume the
+              // one-shot latch: it used to claim `fitted`, frame the canvas
+              // against the other study's bands, and leave the study the reader
+              // actually picked unframed for the rest of the session.
+              if (seq !== studyGen || fitted) return;
+              fitted = true;
+              // The reflow moves every card, and the boxes frameStudy measures
+              // are a frame behind it — so the frame waits for the redraw the
+              // reflow just scheduled instead of measuring where cards used to
+              // be.
+              if (reflowed) network.once("afterDrawing", frameStudy);
+              else frameStudy();
+            });
+          });
+        }
+        if (research) renderHeader(g);
         else revealWantedCall();
         // A research graph outlives one prompt, so a session can be showing a
         // study that has not moved since yesterday. Say when it last changed;
@@ -592,20 +1829,181 @@
              : t('graph.age.date', { date: new Date(g.updated_at * 1000).toLocaleString() });
         }
         document.getElementById("status").textContent = t('graph.status', {
-          nodes: (g.nodes||[]).filter(n=>!hidden.has(n.id)).length,
-          edges: (g.edges||[]).filter(e=>!(hidden.has(e.src)||hidden.has(e.dst))).length
+          nodes: (g.nodes||[]).length, edges: (g.edges||[]).length
         }) + age;
-      } catch (err) { document.getElementById("status").textContent = t('graph.error', { error: err }); }
+      } catch (err) {
+        if (pollGeneration !== studyGen) return;
+        // Stale activity must not keep animating when the feed that could end
+        // it is unavailable. Keep the cards for inspection, but stop claiming
+        // that work is currently running.
+        setPulsing(new Set());
+        document.getElementById("status").textContent = t('graph.error', { error: err });
+      } finally {
+        if (pollInFlightFor === pollGeneration) pollInFlightFor = null;
+      }
+    }
+
+    // ── framing the study ─────────────────────────────────────────────────────
+    // A plain fit is not enough. vis stops drawing a label once fontSize ×
+    // scale falls under its scaling.label.drawThreshold of 5, so a study too
+    // big for the window came back as a field of blank boxes: the fit had
+    // zoomed to 0.21 and taken every word on the canvas with it. Below the
+    // readable floor the study is panned, not shrunk — it opens at its
+    // beginning, which is where a reader starts anyway, and the wheel is still
+    // there for anyone who wants the whole shape at a glance.
+    const MIN_READABLE_SCALE = 0.55;    // a 16px card font ≈ 9px on screen
+    function frameStudy(){
+      try {
+        const ids = nodes.getIds();
+        if (!ids.length) return;
+        // Cards, not centres: getPositions() returns the middle of a card, and
+        // a card is up to 340 wide and as tall as its text made it.
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        ids.forEach(id => {
+          let box = null;
+          try { box = network.getBoundingBox(id); } catch (err) { /* undrawn */ }
+          if (!box) return;
+          x0 = Math.min(x0, box.left); x1 = Math.max(x1, box.right);
+          y0 = Math.min(y0, box.top);  y1 = Math.max(y1, box.bottom);
+        });
+        // The bands are part of the picture — an empty "report" row is the
+        // answer to "how far has this got" — so the frame has to hold them too,
+        // or the camera centres on the cards and cuts the row off.
+        stageBands.forEach(b => {
+          x0 = Math.min(x0, b.railLeft != null ? b.railLeft : b.left);
+          x1 = Math.max(x1, b.right);
+          y0 = Math.min(y0, b.top);  y1 = Math.max(y1, b.bottom);
+        });
+        if (!(x1 > x0 && y1 > y0)) { network.fit({ animation: false }); return; }
+        const canvas = document.getElementById("net");
+        // The header floats over the canvas — by design, so the canvas stays
+        // draggable under it — so the study is framed into the band left below
+        // it. A plain fit() centres on the whole canvas and slides the first
+        // row of cards under the question.
+        const top = (document.getElementById("head").offsetHeight || 0) + 16;
+        const padX = 40, padY = 24;
+        const availW = Math.max(160, canvas.clientWidth - padX * 2);
+        const availH = Math.max(160, canvas.clientHeight - top - padY);
+        // Never past the point where vis stops drawing a label (fontSize ×
+        // scale under its drawThreshold of 5): a study bigger than the band is
+        // panned, not shrunk into eighteen blank boxes. Never magnified past
+        // 1:1 either — a two-card study blown up to fill the screen reads as a
+        // poster, not as a graph.
+        const scale = Math.max(MIN_READABLE_SCALE,
+          Math.min(1, availW / (x1 - x0), availH / (y1 - y0)));
+        // Hung from the top of the band, because a reader starts at the top.
+        // Across, the centre of the bounding box is right only while the whole
+        // study fits. Past that it used to be empty canvas — the layout puts the
+        // question wherever its children's barycentre falls — so the camera
+        // opened on the spine instead, the question and the hypothesis.
+        //
+        // The left edge is the better anchor now that there IS something there:
+        // the stage names in the rail, the study's general steps, and the
+        // experiment module's detailed tasks under them. That is where reading
+        // starts, it cannot be blank, and unlike a barycentre it does not move.
+        let cx = (x0 + x1) / 2;
+        if (scale <= MIN_READABLE_SCALE + 1e-6)
+          cx = x0 + availW / (2 * scale);
+        network.moveTo({ scale: scale, position: {
+          x: cx,
+          y: y0 + (canvas.clientHeight / 2 - top) / scale,
+        } });
+      } catch (err) { /* no nodes yet */ }
     }
 
     // ── header ────────────────────────────────────────────────────────────────
     // The question itself is the header. The status tiles that stood under it
     // were a second legend — a count per hypothesis state — and the states are
     // already on the nodes, in colour and in words.
-    function renderHeader(gnodes){
-      const q = gnodes.find(n => n.kind === "researchquestion");
-      document.getElementById("question").innerHTML = q
-        ? `<span class="q">❓ ${esc(q.id)}</span> · ${esc(rText(q))}` : "";
+    // The question, how its branches stand, and what the record is missing.
+    // The tally is the one thing a reader wants before reading any card: how
+    // much of this study is settled. The gaps line is the other half of that —
+    // an empty canvas used to mean three different things (nobody wrote
+    // anything / the writes were refused / the request failed) and looked
+    // identical in all three.
+    // What the study holds, by the type the cards are labelled with, plus the
+    // records folded into them — a dataset or a script is still part of the
+    // count even when it is drawn as a chip on its observation rather than as
+    // a card of its own.
+    function inventoryTiles(g){
+      const byKind = {}, word = {};
+      let folded = 0;
+      (g.nodes || []).forEach(n => {
+        byKind[n.kind] = (byKind[n.kind] || 0) + 1;
+        // rTypeName, so a tile is worded exactly like the cards it counts. The
+        // client's own table calls Evidence "Данные" where the server says
+        // "Свидетельство", and a header that renames what it counts reads as a
+        // second, different tally.
+        if (!word[n.kind]) word[n.kind] = rTypeName(n);
+        folded += (n.attachments || []).length + (n.chips || []).length;
+      });
+      const tiles = Object.keys(byKind)
+        .sort((a, b) => byKind[b] - byKind[a])
+        // "18 × Свидетельство" rather than "18 Свидетельство": the server
+        // words a type in the singular, and neither language declines it here.
+        .map(kind => `<span class="tile" style="color:${INK};border-color:${rgba(SLATE,.5)}">`
+          + `${R_ICON[kind] || "•"} ${byKind[kind]} × ${esc(word[kind] || kind)}</span>`);
+      if (folded)
+        tiles.push(`<span class="tile" style="color:${col('--ink2')};border-color:${rgba(SLATE,.5)}">`
+          + `📎 ${esc(t('graph.count.attached', { count: folded }))}</span>`);
+      return tiles.join("");
+    }
+    // Who produced the record, and over what stretch of time. A reader asking
+    // "where did this come from" is asking about the agent, and the answer was
+    // only ever visible one card at a time.
+    function contributorLine(g){
+      const list = g.nodes || [];
+      if (!list.length) return "";
+      const agents = {};
+      let from = Infinity, to = 0;
+      list.forEach(n => {
+        if (n.executor_agent) agents[n.executor_agent] = (agents[n.executor_agent] || 0) + 1;
+        if (n.t_start) from = Math.min(from, n.t_start);
+        if (n.t_end || n.t_start) to = Math.max(to, n.t_end || n.t_start);
+      });
+      const who = Object.keys(agents).sort((a, b) => agents[b] - agents[a])
+        .map(a => `${esc(shortAgent(a))} ${agents[a]}`).join("  ·  ");
+      const span = (from < Infinity && to > from)
+        ? t('graph.header.span', {
+            from: new Date(from * 1000).toLocaleString(),
+            mins: Math.max(1, Math.round((to - from) / 60)) }) : "";
+      return [who, esc(span)].filter(Boolean).join("　—　");
+    }
+    function renderHeader(g){
+      const head = (g && g.headline) || {};
+      const qText = head.question || "";
+      const qEl = document.getElementById("question");
+      // Clamped to three lines in CSS, so the whole question has to be reachable
+      // somewhere: the tooltip carries it verbatim.
+      qEl.title = qText;
+      qEl.innerHTML = qText
+        ? `<span class="q">❓ ${esc(head.root_id || "")}</span> · ${esc(qText)}` : "";
+
+      const c = (g && g.counters) || {};
+      let tiles = [["confirmed", "✓", GOOD], ["refuted", "✗", CRIT],
+                   ["under_verification", "⧗", WARN], ["inconclusive", "≈", ORANGE],
+                   ["formulated", "○", INFO], ["postponed", "⏸", SLATE]]
+        .filter(([key]) => c[key])
+        .map(([key, glyph, col]) =>
+          `<span class="tile" style="color:${col};border-color:${rgba(col,.35)}">`
+          + `${glyph} ${c[key]} ${esc(t('graph.counters.' + key))}</span>`).join("");
+      // The hypothesis tally is empty until a study has hypotheses, and a run
+      // that only gathered observations has none — so the header went blank and
+      // left the three orange "missing" chips as the only thing above the
+      // canvas. A study of eighteen observations is not an empty study: say
+      // what it does hold, counted by the type a reader sees on the cards.
+      if (!tiles) tiles = inventoryTiles(g);
+      document.getElementById("counters").innerHTML = tiles;
+
+      const meta = head.iterations
+        ? esc(t('graph.header.meta', { branches: head.branches || 1,
+                                       iterations: head.iterations }))
+        : contributorLine(g);
+      document.getElementById("meta").innerHTML = meta;
+
+      document.getElementById("gaps").innerHTML = ((g && g.gaps) || [])
+        .map(x => `<span class="gap">${esc(t('graph.gap.' + x.code,
+                                             { count: x.count }))}</span>`).join("");
     }
     function updateChrome(){
       const r = isResearch();
@@ -615,36 +2013,141 @@
 
     // ── detail panel (with provenance) ────────────────────────────────────────
     let selectedId = null;
+    // Opening a card is where the short line on the canvas becomes the account
+    // of a step: what it says, why it ended the way it did, how it got there,
+    // what it produced and what it connects to. The panel used to render the
+    // attributes flat (a nested object came out as "[object Object]"), showed
+    // provenance for evidence alone, and rewrote itself through innerHTML on
+    // every 1.5-second poll, so a long read snapped back to the top.
     function showDetail(n){
       if (!n) return;
       if (!isResearch() && !RESEARCH_KINDS.has(n.kind)) return showDetailClassic(n);
+      if (n.kind === "framing") return showFramingDetail(n);
       const st = rStatus(n.status);
-      const attrs = (n.input && typeof n.input === "object") ? n.input : {};
-      const rows = Object.keys(attrs).map(k =>
-        `<div class="attr"><span class="ak">${esc(k)}:</span> ${esc(attrs[k])}</div>`).join("");
-      const prov = Array.isArray(n.provenance) ? n.provenance : [];
-      // Only shown when there is a trace to show: a heading followed by "no
-      // tool-call trace captured" is a line of furniture on every other card.
-      const provHtml = (n.kind === "evidence" && prov.length)
-        ? `<div class="k">${t('graph.detail.provenance')}</div>` + prov.map(p => {
-                const jump = p.exec_id ? ` onclick="jumpToExecution('${esc(String(p.exec_id))}')" title="${esc(t('graph.detail.openInLog'))}"` : "";
-                return `<div class="prov"${jump}><span class="tool">🛠️ ${esc(p.tool||t('graph.detail.call'))}</span>`
-                  + (p.exec_id ? `<span class="jump">${esc(t('graph.detail.execLog'))}</span>` : "")
-                  + (p.result ? `<div class="res">${esc(p.result)}</div>` : "") + `</div>`;
-              }).join("")
-        : "";
-      document.getElementById("detail").innerHTML =
-        `<div class="dhead"><span class="close" onclick="closeDetail()">✕</span>`
-        + `<h3>${R_ICON[n.kind]||"•"} ${esc(rTypeName(n))}</h3>`
-        + `<div class="sub">${esc(n.id)}${n.executor_agent ? esc(" · " + t('graph.detail.by', { agent: n.executor_agent })) : ""}</div>`
-        + `<span class="badge" style="background:${rgba(st.c,.18)};color:${st.c};border:1px solid ${st.c}">${st.g} ${esc(rStatusWord(n))}</span></div>`
-        + `<div class="dbody">`
-        // The node's own sentence first: the panel used to open on a list of
-        // attributes, so the thing the node actually says was somewhere in it.
-        + (n.label ? `<div class="k">${t('graph.detail.says')}</div><pre>${esc(n.label)}</pre>` : "")
-        + (rows ? `<div class="k">${t('graph.detail.details')}</div>${rows}` : "")
-        + provHtml + `</div>`;
-      document.getElementById("detail").style.display = "block";
+      let body = "";
+      // A write-up card carries the whole document, not a line about itself, so
+      // the block is titled for what it is. `reportBlock` already renders
+      // markdown through marked + DOMPurify and scrolls.
+      const isWriteUp = n.kind === "report";
+      body += reportBlock(
+        isWriteUp ? t('graph.type.report') : t('graph.detail.says'),
+        n.output || n.label, isWriteUp);
+      if (n.why)
+        body += `<div class="k">${t('graph.why.title')}</div>${proseBlock(n.why)}`;
+      else if (n.why_missing)
+        body += `<div class="k">${t('graph.why.title')}</div>`
+              + `<div class="empty">${esc(t('graph.why.missing'))}</div>`;
+      // The research card's own fields: these keys are attribute codes the
+      // server sends for the browser to translate (i18n.js says so explicitly).
+      body += readable(t('graph.detail.details'), n.input, null, true, true);
+      body += nodeReportBlock(n);
+      body += historyBlock(n.status_history);
+      body += attachmentsBlock(n.chips, t('graph.chips.tools'));
+      body += attachmentsBlock(n.attachments, t('graph.attach.title'));
+      body += linksBlock(n.id);
+      body += provBlock(n.provenance);
+      body += contributorsBlock(n.contributors);
+      if (!body) body = `<div class="empty">${esc(t('graph.detail.empty'))}</div>`;
+      const head = `<div class="dhead"><span class="close" onclick="closeDetail()">✕</span>`
+        + `<h3>${R_ICON[n.kind]||"•"} ${esc(rTypeName(n))}${n.index ? " " + n.index : ""}</h3>`
+        + `<div class="sub">${esc(n.id)}${n.executor_agent ? esc(" · " + t('graph.detail.by', { agent: shortAgent(n.executor_agent) })) : ""}</div>`
+        // The same word must not be green on the card and amber in the
+        // panel, so the badge reads off the same three-way scale.
+        + (() => { const sc = statusInk(n.status); return `<span class="badge" style="background:${rgba(sc,.18)};color:${sc};border:1px solid ${sc}">${st.g} ${esc(rStatusWord(n))}</span></div>`; })();
+      paint(n, head + `<div class="dbody">${body}</div>`);
+    }
+    // How it got here: every move, who made it and what they gave as the reason.
+    function historyBlock(history){
+      if (!Array.isArray(history) || !history.length) return "";
+      return `<div class="k">${t('graph.history.title')}</div>`
+        + history.map(h => {
+            const line = h.from
+              ? t('graph.history.entry', { from: h.from_word || h.from,
+                                           to: h.to_word || h.to,
+                                           source: h.source || "" })
+              : t('graph.history.initial', { status: h.to_word || h.to || "" });
+            const when = h.at ? new Date(h.at * 1000).toLocaleString() : "";
+            return `<div class="prov"><span class="tool">${esc(line)}</span>`
+              + (when ? `<span class="jump">${esc(when)}</span>` : "")
+              + (h.reason ? `<div class="res">${esc(h.reason)}</div>` : "") + `</div>`;
+          }).join("");
+    }
+    // The engineering the card folded in: the tools it ran on, the datasets and
+    // code it produced. Drawn as boxes they buried the findings; dropped, they
+    // took their edges with them. Here they are, with a link where there is one.
+    function attachmentsBlock(list, title){
+      if (!Array.isArray(list) || !list.length) return "";
+      return `<div class="k">${esc(title)} <span class="chars">${list.length}</span></div>`
+        + list.map(a => {
+            const label = esc(a.label || a.id || "");
+            const name = a.href
+              ? `<a class="uri" href="${esc(a.href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+              : `<span class="uri">${label}</span>`;
+            return `<div class="art"><span class="ic">${R_ICON[a.kind] || "📦"}</span>${name}`
+              + (a.type_word ? `<span class="by">${esc(a.type_word)}</span>` : "") + `</div>`;
+          }).join("");
+    }
+    // What this card connects to, in words, and clickable — following a link by
+    // eye across a wide canvas is exactly what a graph should spare you.
+    function linksBlock(id){
+      const rows = (lastGraph.edges || []).filter(e => e.src === id || e.dst === id)
+        .map(e => {
+          const out = e.src === id, other = out ? e.dst : e.src;
+          if (!nodeData[other]) return "";
+          const verb = t("graph.edge." + e.type, R_EDGE_NAME[e.type] || e.type || "");
+          // The arrow carries the direction, so the row reads as one phrase.
+          // It used to print "приходит из · проверяется": the dot separated a
+          // direction from an edge name and read as a typo, and worse, made
+          // "проверяется" look like this node's state rather than the LINK's
+          // name.
+          const arrow = out ? "→" : "←";
+          return `<div class="prov" onclick="focusNode('${esc(String(other))}')">`
+            + `<span class="tool">${arrow} ${esc(verb)}</span>`
+            + `<span class="jump">${esc(rTypeName(nodeData[other]))} ${esc(other)}</span>`
+            + `<div class="res">${esc(firstSentence(rText(nodeData[other]), 110))}</div></div>`;
+        }).filter(Boolean).join("");
+      return rows ? `<div class="k">${t('graph.links.title')}</div>${rows}` : "";
+    }
+    // Which tool calls back this record. No longer gated on evidence: a method
+    // and a conclusion are judged on their trace too.
+    function provBlock(prov){
+      if (!Array.isArray(prov) || !prov.length) return "";
+      return `<div class="k">${t('graph.detail.provenance')}</div>` + prov.map(p => {
+        const jump = p.exec_id ? ` onclick="jumpToExecution('${esc(String(p.exec_id))}')" title="${esc(t('graph.detail.openInLog'))}"` : "";
+        return `<div class="prov"${jump}><span class="tool">🛠️ ${esc(p.tool||t('graph.detail.call'))}</span>`
+          + (p.exec_id ? `<span class="jump">${esc(t('graph.detail.execLog'))}</span>` : "")
+          + (p.result ? `<div class="res">${esc(p.result)}</div>` : "") + `</div>`;
+      }).join("");
+    }
+    // Who took part, and on what basis we say so.
+    //
+    // The difference is load-bearing. A PLANNED assignee is who the plan named;
+    // nothing observed that they did the work, and until now that was the only
+    // thing recorded about a plan step. Everything else here — wrote it, moved
+    // it, delegated it, took it under a work order, ran it — is something the
+    // system watched happen. Drawing the two alike is exactly how a reader ends
+    // up certain that the wrong agent did something, so the planned ones sit
+    // last, dimmed, and say so in words.
+    function contributorsBlock(list){
+      if (!Array.isArray(list) || !list.length) return "";
+      return `<div class="k">${esc(t('graph.contrib.title'))} <span class="chars">${list.length}</span></div>`
+        + list.map(c => {
+            const basis = esc(t('graph.basis.' + c.basis, c.basis || ""));
+            const jump = c.exec_id
+              ? ` onclick="jumpToExecution('${esc(String(c.exec_id))}')" title="${esc(t('graph.detail.openInLog'))}"`
+              : "";
+            const mark = c.observed ? "●" : "○";
+            return `<div class="prov${c.observed ? "" : " dim"}"${jump}>`
+              + `<span class="tool">${mark} ${esc(c.agent ? shortAgent(c.agent) : "")}</span>`
+              + `<span class="jump">${basis}</span></div>`;
+          }).join("");
+    }
+    function focusNode(id){
+      if (!nodeData[id]) return;
+      selectedId = id; lastDetailStamp = JSON.stringify(nodeData[id]);
+      try { network.selectNodes([id]); network.focus(id, { scale: 1.0, animation: true }); }
+      catch (err) { /* the node may not be on the canvas yet */ }
+      showDetail(nodeData[id]);
     }
     // ── readable values ──────────────────────────────────────────────────────
     // What an agent or a tool was given and what it returned is recorded three
@@ -727,8 +2230,23 @@
       return repaired ? `<div class="empty" style="margin-top:6px">${esc(t('graph.detail.cutShort'))}</div>` : "";
     }
     // Bookkeeping fields nobody reads, and values already said once.
+    // Execution-graph bookkeeping. Research field codes share this namespace
+    // now, so a node attribute named e.g. `verdict` would be dropped from the
+    // panel without a word — no schema type declares one today, and nothing on
+    // disk carries one, but do not add such an attribute without renaming here.
     const NOISE_KEYS = new Set(["is_root", "routing", "run_id", "semantic", "verdict",
                                 "parent_ids", "turn_id"]);
+    // The server sends attribute CODES, and for the framing card's members
+    // `type:<kind>`; both are turned into the reader's words here. An unknown
+    // code degrades to itself with the underscores opened up, never to a blank.
+    function fieldLabel(k){
+      const s = String(k);
+      if (s.indexOf("type:") === 0) {
+        const kind = s.slice(5);
+        return t('graph.type.' + kind, kind);
+      }
+      return t('graph.field.' + s, s.replace(/_/g, " "));
+    }
     const isScalar = x => x === null || typeof x !== "object";
     const isEmpty = v => v === null || v === undefined || v === ""
       || (Array.isArray(v) && !v.length)
@@ -744,42 +2262,79 @@
       }
       return out;
     }
-    function kvRows(obj, depth){
+    // `fields` opts into translating the keys, and ONLY the research card does.
+    // This is the single renderer for both panels, and the execution log's rows
+    // are raw tool ARGUMENT names: `write_file(file_path, content, overwrite)`
+    // records an argument literally called `content`, and `graph.field.content`
+    // means "Finding". Translating unconditionally captioned the file body it
+    // was about to write as «Результат», next to the real result block.
+    // A DOI is an address, not prose. The panel printed `10.1021/acs.jafc.2c05393`
+    // as escaped text, so the one thing a reader wants to do with it — open the
+    // paper — took a copy-paste out of the page. Linkified only where `fields`
+    // is on, i.e. the research card: the execution log's rows are raw tool
+    // arguments and must stay literal.
+    const DOI_RE = /^(?:doi:\s*|https?:\/\/(?:dx\.)?doi\.org\/)?(10\.\d{4,9}\/[^\s"<>]+)$/i;
+    const URL_RE = /^https?:\/\/[^\s"<>]+$/;
+    function anchor(href, label){
+      return `<a class="uri" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
+    }
+    function scalarValue(text, fields){
+      if (!fields) return esc(text);
+      const trimmed = String(text).trim();
+      // Not encodeURIComponent: a DOI's slash is part of the identifier, and
+      // escaping it produces a doi.org link that resolves to nothing.
+      const doi = trimmed.match(DOI_RE);
+      if (doi) return anchor("https://doi.org/" + doi[1], trimmed);
+      if (URL_RE.test(trimmed)) return anchor(trimmed, trimmed);
+      return esc(text);
+    }
+    function kvRows(obj, depth, fields){
       return `<div class="kv">` + Object.entries(obj).map(([k, v]) => {
-        const key = `<span class="key">${esc(k)}</span>`;
+        const key = `<span class="key">${esc(fields ? fieldLabel(k) : k)}</span>`;
         if (!isScalar(v)) {
           if (Array.isArray(v) && v.every(x => isScalar(x) && String(x).length <= 40))
             return `<div class="row">${key}<span class="val">`
-              + v.map(x => `<span class="pill">${esc(x)}</span>`).join("") + `</span></div>`;
+              + v.map(x => `<span class="pill">${scalarValue(x, fields)}</span>`).join("") + `</span></div>`;
           const count = Array.isArray(v) ? t('graph.count.item', { count: v.length })
                                          : t('graph.count.field', { count: Object.keys(v).length });
           return `<div class="row">${key}<span class="val dim">${count}</span>`
-            + `<div class="nested">${nestedValue(v, depth + 1)}</div></div>`;
+            + `<div class="nested">${nestedValue(v, depth + 1, fields)}</div></div>`;
         }
         const text = String(v);
         const long = text.length > 90 || text.includes("\n");
-        return `<div class="row">${key}<span class="val${long ? " block" : ""}">${esc(text)}</span></div>`;
+        // A card's long field is the agent's prose, and that is markdown.
+        const html = long && fields ? markdown(text) : null;
+        if (html) return `<div class="row">${key}<div class="val block report">${html}</div></div>`;
+        return `<div class="row">${key}<span class="val${long ? " block" : ""}">${scalarValue(text, fields)}</span></div>`;
       }).join("") + `</div>`;
     }
-    function nestedValue(v, depth){
+    function nestedValue(v, depth, fields){
       if (depth > 4) return `<pre>${esc(JSON.stringify(v, null, 2))}</pre>`;
       if (Array.isArray(v))
         return `<ol class="items">` + v.map(x =>
-          `<li>${isScalar(x) ? esc(x) : nestedValue(x, depth)}</li>`).join("") + `</ol>`;
-      return kvRows(v, depth);
+          `<li>${isScalar(x) ? scalarValue(x, fields) : nestedValue(x, depth, fields)}</li>`).join("") + `</ol>`;
+      return kvRows(v, depth, fields);
     }
     // A titled block: labelled rows for a mapping, a list for a list, the text
     // itself for prose, and nothing at all when there is nothing to show.
-    function readable(title, value, ctx){
+    // Prose from an agent or a person, rendered as markdown; plain text when
+    // the markdown libraries did not load.
+    function proseBlock(text){
+      const html = markdown(text);
+      return html ? `<div class="report">${html}</div>` : `<pre>${esc(String(text))}</pre>`;
+    }
+    // `prose`: a plain string here is words, not a tool's arguments or output,
+    // so it is rendered as markdown rather than kept verbatim.
+    function readable(title, value, ctx, fields, prose){
       const v = parseValue(value), repaired = salvaged;
       if (v === null) return "";
       let body;
-      if (Array.isArray(v)) body = nestedValue(v, 0);
+      if (Array.isArray(v)) body = nestedValue(v, 0, fields);
       else if (typeof v === "object") {
         const t = tidy(v, ctx);
         if (!Object.keys(t).length) return "";
-        body = kvRows(t, 0);
-      } else body = `<pre>${esc(String(v))}</pre>`;
+        body = kvRows(t, 0, fields);
+      } else body = prose ? proseBlock(String(v)) : `<pre>${esc(String(v))}</pre>`;
       const raw = typeof value === "string" ? value.length : 0;
       const size = raw > 900 ? ` <span class="chars">${esc(t('graph.chars', { count: raw.toLocaleString() }))}</span>` : "";
       return `<div class="k">${title}${size}</div>${body}${truncationNote(value, repaired)}`;
@@ -807,7 +2362,9 @@
     function paint(n, html){
       const box = document.getElementById("detail");
       const top = paintedId === n.id ? box.scrollTop : 0;
+      box.classList.toggle("framing-detail", n.kind === "framing");
       box.innerHTML = html; box.style.display = "block"; box.scrollTop = top;
+      document.getElementById("dgrip").style.display = "block";
       paintedId = n.id;
       if (focusCallId) {
         const el = box.querySelector(`.call[data-call="${CSS.escape(focusCallId)}"]`);
@@ -816,12 +2373,25 @@
       }
     }
     const KIND_WORD = { goal:"request", result:"answer", agent:"agent", agent_call:"agent",
-                        tool_call:"tool call", system:"system" };
+                        tool_call:"tool call", system:"system", decision:"decision" };
     const kindWord = n => {
       const key = "graph.kind." + n.kind;
       return t(key, KIND_WORD[n.kind] || n.kind || "");
     };
-    function headOf(n, title){
+    // Which of the two tabs an agent's panel opens on; remembered per browser.
+    const TAB_KEY = "graph.panelTab";
+    let panelTab = "report";
+    try { panelTab = localStorage.getItem(TAB_KEY) === "more" ? "more" : "report"; } catch (e) {}
+    function setPanelTab(tab){
+      panelTab = tab === "more" ? "more" : "report";
+      try { localStorage.setItem(TAB_KEY, panelTab); } catch (e) {}
+      if (selectedId && nodeData[selectedId]) showDetail(nodeData[selectedId]);
+    }
+    function tabsHtml(){
+      const tab = (id, label) => `<span class="tab${panelTab === id ? " on" : ""}" onclick="setPanelTab('${id}')">${esc(label)}</span>`;
+      return `<div class="tabs">${tab("report", t('graph.tab.report'))}${tab("more", t('graph.tab.more'))}</div>`;
+    }
+    function headOf(n, title, tabs){
       const c = statusColor(n), at = clockOf(n), dur = secsOf(n);
       const sub = [kindWord(n),
                    n.runs > 1 ? t('graph.detail.runOf', { run: n.run, runs: n.runs }) : "",
@@ -829,7 +2399,7 @@
       return `<div class="dhead"><span class="close" onclick="closeDetail()">✕</span>`
         + `<h3>${esc(title)}</h3><div class="sub">${esc(sub)}</div>`
         + (n.status ? `<span class="badge" style="background:${rgba(c,.18)};color:${c};border:1px solid ${c}">${esc(n.status)}</span>` : "")
-        + `</div>`;
+        + (tabs || "") + `</div>`;
     }
     function callRow(c){
       const when = [clockOf(c), secsOf(c)].filter(Boolean).join(" · ");
@@ -855,52 +2425,301 @@
     }
     // An agent's final words, rendered as the document they are. Plain text
     // when the markdown libraries did not load.
-    function reportBlock(title, text){
+    function reportBlock(title, text, full){
       if (!text) return "";
       const raw = String(text);
-      let html;
-      if (window.marked && window.DOMPurify) {
-        try { html = DOMPurify.sanitize(marked.parse(raw), { ADD_ATTR: ["target"] })
-                .replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" '); }
-        catch (e) { html = null; }
-      }
+      const html = markdown(raw);
       const size = raw.length > 900 ? ` <span class="chars">${esc(t('graph.chars', { count: raw.length.toLocaleString() }))}</span>` : "";
+      // A quoted answer sits in a 52vh box beside the rest of the card. A
+      // write-up IS the card, and boxing a document inside a panel that already
+      // scrolls gives the reader two scrollbars and half a screen to read in.
+      const cls = full ? "report full" : "report";
       return `<div class="k">${title}${size}</div>`
-        + (html ? `<div class="report">${html}</div>` : `<pre>${esc(raw)}</pre>`)
+        + (html ? `<div class="${cls}">${html}</div>` : `<pre>${esc(raw)}</pre>`)
         + truncationNote(raw, false);
     }
-    // What the agent left behind: files its tools wrote and links its report names.
+    // ── files and pictures ───────────────────────────────────────────────────
+    // An s3:// reference is not something a browser can open; the server's
+    // artifact endpoint redirects to a fresh signed URL for it, so every such
+    // reference becomes a link there. Anything that looks like a picture is
+    // shown, not just named.
+    const S3_RE = /s3:\/\/([^\/\s"'<>()\[\]]+)\/([^\s"'<>()\[\]]+)/g;
+    function artifactHref(uri){
+      const m = String(uri).match(/^s3:\/\/([^\/]+)\/(.+)$/);
+      if (!m) return String(uri);
+      return "/api/artifact/" + encodeURIComponent(m[1]) + "/"
+        + m[2].split("/").map(encodeURIComponent).join("/");
+    }
+    const isImage = uri => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(String(uri).split(/[?#]/)[0]);
+    function picture(href, alt){
+      return `<a class="pic" href="${esc(href)}" target="_blank" rel="noopener noreferrer">`
+        + `<img src="${esc(href)}" alt="${esc(alt || "")}" loading="lazy"></a>`;
+    }
+    // Rendered markdown, with s3:// references turned into links, s3:// image
+    // and link targets rewritten, and a preview under every picture link.
+    function enrich(html){
+      const box = document.createElement("div");
+      box.innerHTML = html;
+      const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+      const texts = [];
+      for (let n = walker.nextNode(); n; n = walker.nextNode())
+        if (S3_RE.test(n.nodeValue) && !n.parentNode.closest("a, code, pre")) texts.push(n);
+      S3_RE.lastIndex = 0;
+      for (const n of texts) {
+        const span = document.createElement("span");
+        span.innerHTML = esc(n.nodeValue).replace(S3_RE, m =>
+          `<a href="${esc(artifactHref(m))}" data-uri="${esc(m)}" target="_blank" rel="noopener noreferrer">${esc(m)}</a>`);
+        n.replaceWith(...span.childNodes);
+      }
+      box.querySelectorAll("code").forEach(c => {
+        const m = c.textContent.trim().match(/^s3:\/\/[^\s]+$/);
+        if (m && !c.closest("a, pre")) {
+          const a = document.createElement("a");
+          a.href = artifactHref(m[0]); a.dataset.uri = m[0]; a.target = "_blank"; a.rel = "noopener noreferrer";
+          c.replaceWith(a); a.appendChild(c);
+        }
+      });
+      box.querySelectorAll("img[src^='s3://']").forEach(img => { img.src = artifactHref(img.getAttribute("src")); });
+      box.querySelectorAll("a[href^='s3://']").forEach(a => {
+        a.dataset.uri = a.getAttribute("href"); a.href = artifactHref(a.getAttribute("href")); });
+      box.querySelectorAll("a").forEach(a => {
+        a.target = "_blank"; a.rel = "noopener noreferrer";
+        const href = a.getAttribute("href") || "";
+        // The picture test looks at the reference the agent wrote, not only
+        // at the address it was rewritten to.
+        if ((isImage(href) || isImage(a.dataset.uri || "")) && !a.querySelector("img") && !a.closest(".pic")) {
+          const wrap = document.createElement("span");
+          wrap.innerHTML = picture(href, a.textContent);
+          a.after(wrap.firstChild);
+        }
+      });
+      return box.innerHTML;
+    }
+    function markdown(text){
+      if (!(window.marked && window.DOMPurify)) return null;
+      try { return enrich(DOMPurify.sanitize(marked.parse(String(text)), { ADD_ATTR: ["target"] })); }
+      catch (e) { return null; }
+    }
+    // What the agent left behind: files its tools wrote and links its report
+    // names. Every one is a link; pictures are shown.
     function artifactsBlock(list){
       if (!Array.isArray(list) || !list.length) return "";
       return `<div class="k">${t('graph.detail.artifacts')} <span class="chars">${list.length}</span></div>` + list.map(a => {
-        const file = a.kind === "file";
-        const name = file ? `<span class="uri">${esc(a.uri)}</span>`
-          : `<a class="uri" href="${esc(a.uri)}" target="_blank" rel="noopener noreferrer">${esc(a.uri)}</a>`;
-        return `<div class="art"><span class="ic">${file ? "📦" : "🔗"}</span>${name}`
-          + (a.tool ? `<span class="by">${esc(a.tool)}</span>` : "") + `</div>`;
+        // `uri` is the durable reference and stays what the reader sees; the
+        // anchor goes to the server's href when the projection minted one,
+        // else through /api/artifact/ for an s3:// key. Pictures are shown.
+        const file = a.kind === "file", href = a.href || artifactHref(a.uri), img = isImage(a.uri);
+        return `<div class="art"><span class="ic">${img ? "🖼" : file ? "📦" : "🔗"}</span>`
+          + `<a class="uri" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(a.uri)}</a>`
+          + (a.tool ? `<span class="by">${esc(a.tool)}</span>` : "")
+          + (img ? picture(href, a.uri) : "") + `</div>`;
       }).join("");
     }
+    // ── the on-request summary ───────────────────────────────────────────────
+    // A button until the reader asks; then a small model reads the agent's
+    // trace and writes a few lines. Kept per node across redraws, so a live
+    // poll does not take the summary away or ask the model again.
+    const summaries = {};   // node id -> { loading } | { text, model, cached, stamp } | { error, stamp }
+    // What the summary was written from; when it changes, the summary is old.
+    const stampOf = n => [n.status, (n.calls || []).length, String(n.output || "").length,
+                          String(n.input || "").length].join("|");
+    const isRunning = n => n.status === "running";
+    function summaryBlock(n){
+      const st = summaries[n.id];
+      const again = `<a onclick="requestSummary('${esc(n.id)}', true)">↻ ${esc(t('graph.summary.again'))}</a>`;
+      let inner;
+      if (!st) {
+        // Written on its own once the agent is done; while it runs, the trace
+        // is still growing and a summary of it would be out of date at once.
+        if (isRunning(n)) inner = `<div class="ask"><div class="hint">${esc(t('graph.summary.waiting'))}</div>`
+          + `<div class="meta" style="justify-content:center;border:0"><a onclick="requestSummary('${esc(n.id)}')">${esc(t('graph.summary.now'))}</a></div></div>`;
+        else { setTimeout(() => requestSummary(n.id), 0);
+               inner = `<div class="ask"><button class="sumbtn" disabled>⏳ ${esc(t('graph.summary.loading'))}</button></div>`; }
+      }
+      else if (st.loading) inner = `<div class="ask"><button class="sumbtn" disabled>⏳ ${esc(t('graph.summary.loading'))}</button></div>`;
+      else if (st.error) inner = `<div class="err">${esc(t('graph.summary.failed', { error: st.error }))}</div><div class="meta">${again}</div>`;
+      else {
+        const html = markdown(st.text);
+        const stale = st.stamp !== stampOf(n) ? `<span class="stale">${esc(t('graph.summary.stale'))}</span>` : "";
+        inner = (html ? `<div class="mdoc">${html}</div>` : `<pre>${esc(st.text)}</pre>`)
+          + `<div class="meta">${stale}${st.model ? `<span>${esc(t('graph.summary.by', { model: st.model }))}</span>` : ""}${again}</div>`;
+      }
+      return `<div class="sumbox">${inner}</div>`;
+    }
+    // ── a research node's own write-up ───────────────────────────────────────
+    // What the execution log's summary is to an agent, this is to a node: what
+    // it establishes, what it rests on, who took part and where the files are.
+    // The body arrives inlined in the payload (the browser cannot fetch an
+    // artifact's text), so this map only holds what is in flight.
+    const nodeReports = {};
+    const REPORTABLE = new Set(["evidence", "planstep", "experimenttask",
+                                "verificationmethod"]);
+
+    function nodeReportBlock(n){
+      if (!REPORTABLE.has(String(n.kind || ""))) return "";
+      const st = nodeReports[n.id] || {};
+      const again = `<a onclick="requestNodeReport('${esc(n.id)}', true)">↻ ${esc(t('graph.nodeReport.again'))}</a>`;
+      const title = `<div class="k">${esc(t('graph.nodeReport.title'))}</div>`;
+      if (st.loading)
+        return title + `<div class="sumbox"><div class="ask"><button class="sumbtn" disabled>⏳ ${esc(t('graph.nodeReport.writing'))}</button></div></div>`;
+      if (st.error)
+        return title + `<div class="sumbox"><div class="err">${esc(st.error)}</div><div class="meta">${again}</div></div>`;
+      if (n.report) {
+        const html = markdown(n.report);
+        // Stale is worth saying, never worth hiding the report over: what it
+        // records still happened.
+        //
+        // The verdict comes from the server (`report_stale`), which is the only
+        // side that can reach it. This compared `st.stamp` — the stamp the write
+        // RETURNED — against `n.report_stamp`, the stamp that same write stored
+        // on the node: one value against itself, true only if publishing had
+        // failed. A node that moved went on showing an account of what it used
+        // to be, silently.
+        const stale = n.report_stale
+          ? `<span class="stale">${esc(t('graph.nodeReport.stale'))}</span>` : "";
+        // And with auto-writing on, a stale one is brought up to date — once:
+        // `nodeReports[id]` is set by the request itself, which is what stops a
+        // node that keeps moving buying a model call on every render.
+        if (n.report_stale && autoNodeReports() && isSettled(n))
+          queueNodeReport(n.id);
+        return title + `<div class="sumbox">`
+          + (html ? `<div class="mdoc">${html}</div>` : `<pre>${esc(n.report)}</pre>`)
+          + `<div class="meta">${stale}${again}</div></div>`;
+      }
+      if (autoNodeReports() && isSettled(n) && worthReporting(n)) {
+        queueNodeReport(n.id);
+        return title + `<div class="sumbox"><div class="ask"><button class="sumbtn" disabled>⏳ ${esc(t('graph.nodeReport.writing'))}</button></div></div>`;
+      }
+      return title + `<div class="sumbox"><div class="ask">`
+        + `<button class="sumbtn" onclick="requestNodeReport('${esc(n.id)}')">${esc(t('graph.nodeReport.ask'))}</button></div></div>`;
+    }
+
+    // A node still moving will be described wrongly, and a node with nothing
+    // recorded on it has nothing to describe — asking the model either way
+    // spends a call to say so.
+    const UNSETTLED = new Set(["todo", "in_progress", "formulated",
+                               "under_verification", "draft", "planned",
+                               // A method that has only been offered is the
+                               // same case as a `planned` task: nothing has
+                               // been done with it yet to describe.
+                               "proposed"]);
+    function isSettled(n){ return !UNSETTLED.has(String(n.status || "")); }
+    function worthReporting(n){
+      return (n.contributors || []).length > 0
+        || (n.attachments || []).length > 0
+        || (n.chips || []).length > 0;
+    }
+
+    // One at a time. A study has forty cards and the toggle defaults to on, so
+    // an unqueued auto-run would open the page with forty model calls at once.
+    const reportQueue = [];
+    let reportRunning = false;
+    function queueNodeReport(nodeId){
+      if (nodeReports[nodeId] || reportQueue.includes(nodeId)) return;
+      reportQueue.push(nodeId);
+      drainReportQueue();
+    }
+    async function drainReportQueue(){
+      if (reportRunning) return;
+      reportRunning = true;
+      try {
+        while (reportQueue.length) await requestNodeReport(reportQueue.shift());
+      } finally { reportRunning = false; }
+    }
+
+    async function requestNodeReport(nodeId, again){
+      const n = nodeData[nodeId];
+      if (!n || (nodeReports[nodeId] && nodeReports[nodeId].loading)) return;
+      nodeReports[nodeId] = { loading: true };
+      if (selectedId === nodeId) showDetail(n);
+      const q = new URLSearchParams(location.search);
+      const url = `/api/users/${encodeURIComponent(q.get("user_id") || "")}/sessions/${encodeURIComponent(q.get("session_id") || "")}/graph/node_report`;
+      try {
+        const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ node_id: nodeId, turn: document.getElementById("turn").value || null,
+                                 lang: (typeof currentLang === "string" ? currentLang : "ru"), again: !!again }) });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || data.error || ("HTTP " + r.status));
+        nodeReports[nodeId] = { stamp: data.stamp || "" };
+        // The body comes back on the node itself with the next poll; show it now.
+        if (nodeData[nodeId]) nodeData[nodeId].report = String(data.report || "");
+      } catch (e) {
+        nodeReports[nodeId] = { error: String(e.message || e) };
+      }
+      if (selectedId === nodeId && nodeData[nodeId]) showDetail(nodeData[nodeId]);
+    }
+
+    // The setting decides, and the reader may overrule it for this browser.
+    function autoNodeReports(){
+      try {
+        const own = localStorage.getItem("graph.autoNodeReports");
+        if (own === "0") return false;
+        if (own === "1") return true;
+      } catch (err) { /* private window */ }
+      return lastGraph && lastGraph.auto_node_reports !== false;
+    }
+    function toggleAutoNodeReports(el){
+      try { localStorage.setItem("graph.autoNodeReports", el.checked ? "1" : "0"); }
+      catch (err) { /* nothing to remember it with */ }
+      if (el.checked && selectedId && nodeData[selectedId]) showDetail(nodeData[selectedId]);
+    }
+
+    async function requestSummary(nodeId, again){
+      const n = nodeData[nodeId];
+      if (!n || (summaries[nodeId] && summaries[nodeId].loading)) return;
+      summaries[nodeId] = { loading: true };
+      if (selectedId === nodeId) showDetail(n);
+      const q = new URLSearchParams(location.search);
+      const url = `/api/users/${encodeURIComponent(q.get("user_id") || "")}/sessions/${encodeURIComponent(q.get("session_id") || "")}/graph/agent_summary`;
+      try {
+        const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ node_id: nodeId, turn: document.getElementById("turn").value || null,
+                                 lang: (typeof currentLang === "string" ? currentLang : "ru"), again: !!again }) });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || data.error || ("HTTP " + r.status));
+        summaries[nodeId] = { text: String(data.summary || ""), model: data.model || "", cached: !!data.cached,
+                              stamp: stampOf(nodeData[nodeId] || n) };
+      } catch (e) {
+        summaries[nodeId] = { error: String(e.message || e), stamp: stampOf(nodeData[nodeId] || n) };
+      }
+      if (selectedId === nodeId && nodeData[nodeId]) showDetail(nodeData[nodeId]);
+    }
+
     // An agent opens on its task and its report, then what it produced, then
     // the tool calls it made, folded, in the order they ran. A request opens
     // on the prompt, an answer on the answer, and a call nobody owns on itself.
     function showDetailClassic(n){
       const isAgent = n.kind === "agent" || n.kind === "agent_call";
-      const name = String(n.executor_agent || n.label || t('graph.detail.agent'));
+      const name = n.executor_agent ? shortAgent(n.executor_agent) : String(n.label || t('graph.detail.agent'));
       const title = isAgent ? (n.stage ? n.stage + ". " : "") + name
         : n.kind === "goal" ? "❯ " + t('graph.detail.request') : n.kind === "result" ? "✔ " + t('graph.detail.answer')
         : String(n.label || n.kind || "");
       let body;
-      if (n.kind === "goal") body = readable(t('graph.detail.whatAsked'), n.label);
+      if (n.kind === "goal") body = readable(t('graph.detail.whatAsked'), n.label, null, false, true);
       else if (n.kind === "result") body = reportBlock(t('graph.detail.answer'), n.output || n.label);
-      else if (isAgent) {
+      else if (isAgent && panelTab === "report") {
+        // The summary alone: what a reader came for. Everything recorded is
+        // one tab away.
+        body = summaryBlock(n);
+      } else if (isAgent) {
         const where = n.io_source === "delegation" ? t('graph.detail.ioDelegation')
           : n.io_source === "request" ? t('graph.detail.ioRequest') : "";
         body = reportBlock(t('graph.detail.report'), n.output)
           + artifactsBlock(n.artifacts)
-          + readable(t('graph.detail.task'), n.input, { agent: n.executor_agent })
+          + readable(t('graph.detail.task'), n.input, { agent: n.executor_agent }, false, true)
           + (where ? `<div class="note">${esc(where)}</div>` : "");
+      } else if (n.kind === "decision") {
+        // A decision carries the thing decided, not a call's arguments. The
+        // Experiment Module's plan opens on the plan itself, then the outcome
+        // the human gave it.
+        body = readable(n.input && n.input.kind === "experiment_plan"
+                          ? t('graph.detail.plan') : t('graph.detail.decision'),
+                        n.input, null, false, true)
+          + (n.verdict ? `<div class="k">${t('graph.detail.outcome')}</div>`
+                         + `<div class="attr">${esc(n.verdict)}</div>` : "")
+          + readable(t('graph.detail.note'), n.output, null, false, true);
       } else body = readable(t('graph.detail.arguments'), n.input) + readable(t('graph.detail.result'), n.output);
-      if (isAgent) {
+      if (isAgent && panelTab === "more") {
         // Older snapshots recorded nothing on the agent itself; say so, or
         // the panel opening on the call list reads as a missing section.
         if (!body) body = `<div class="k">${t('graph.detail.taskReport')}</div><div class="empty">${t('graph.detail.notRecorded')}</div>`;
@@ -912,11 +2731,12 @@
           : `<div class="k">${t('graph.detail.toolCalls')}</div><div class="empty">${t('graph.detail.noneRecorded')}</div>`;
       }
       if (!body) body = `<div class="empty">${t('graph.detail.empty')}</div>`;
-      paint(n, headOf(n, title) + `<div class="dbody">${body}</div>`);
+      paint(n, headOf(n, title, isAgent ? tabsHtml() : "") + `<div class="dbody">${body}</div>`);
     }
     function closeDetail(){ selectedId=null; lastDetailStamp=null; paintedId=null;
       focusCallId=null; focusPending=false;
-      document.getElementById("detail").style.display="none"; }
+      document.getElementById("detail").style.display="none";
+      document.getElementById("dgrip").style.display="none"; }
 
     // Jump from an Evidence's provenance to the exact tool call in the
     // execution log. The call is folded into its agent's card, so the agent is
@@ -992,9 +2812,46 @@
       lastDetailStamp = JSON.stringify(nodeData[host]);
       showDetail(nodeData[host]);
     }
+    // ── panel width: drag the left edge, remembered per browser ─────────────
+    const DW_KEY = "graph.detailWidth", DW_DEFAULT = 480, DW_MIN = 340;
+    function setDetailWidth(px, save){
+      const max = Math.max(DW_MIN, Math.round(window.innerWidth * 0.85));
+      const w = Math.min(max, Math.max(DW_MIN, Math.round(px)));
+      document.documentElement.style.setProperty("--dw", w + "px");
+      if (save) { try { localStorage.setItem(DW_KEY, String(w)); } catch (e) {} }
+      return w;
+    }
+    (() => {
+      let saved = null;
+      try { saved = parseInt(localStorage.getItem(DW_KEY), 10); } catch (e) {}
+      if (saved) setDetailWidth(saved, false);
+      const grip = document.getElementById("dgrip");
+      grip.addEventListener("pointerdown", e => {
+        e.preventDefault(); grip.setPointerCapture(e.pointerId); grip.classList.add("on");
+        document.body.classList.add("resizing");
+        const move = ev => setDetailWidth(window.innerWidth - ev.clientX, false);
+        const up = ev => {
+          grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up);
+          grip.removeEventListener("pointercancel", up); grip.classList.remove("on");
+          document.body.classList.remove("resizing");
+          setDetailWidth(window.innerWidth - ev.clientX, true);
+        };
+        grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
+        grip.addEventListener("pointercancel", up);
+      });
+      grip.addEventListener("dblclick", () => setDetailWidth(DW_DEFAULT, true));
+      window.addEventListener("resize", () => setDetailWidth(
+        parseInt(getComputedStyle(document.documentElement).getPropertyValue("--dw"), 10) || DW_DEFAULT, false));
+    })();
+
     // ── wiring ────────────────────────────────────────────────────────────────
     let lastDetailStamp = null;
-    function hardReset(){ nodes.clear(); edges.clear(); seenEdges.clear(); lastDetailStamp = null;
+    function hardReset(){ nodes.clear(); edges.clear(); lastDetailStamp = null;
+      fitted = false; lastPhases = []; lastGraph = { nodes: [], edges: [] };
+      // `routed` too: an edge id is "src->dst:type", which two studies can
+      // share, so a stale routing would be applied to the new study for the
+      // frames before its first layout.
+      pinned = {}; pinnedFor = ""; stageBands = []; routed = {}; studyGen += 1;
       for (const k in nodeData) delete nodeData[k]; closeDetail(); }
     document.getElementById("refresh").onclick = poll;
     document.getElementById("view").onchange = () => {
@@ -1041,5 +2898,6 @@
       poll(); loop();
     })();
   </script>
+  <script src="/static/js/framing_panel.js"></script>
 </body>
 </html>

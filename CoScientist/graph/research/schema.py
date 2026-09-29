@@ -87,7 +87,14 @@ NODE_TYPES: Dict[str, NodeTypeSpec] = {s.name: s for s in [
                            "here if it is a stand-in for what the hypothesis names "
                            "(e.g. 'local reimplementation; upstream repo 404')",
             "reliability": "weight / reliability estimate",
-            "source_ref": "paper DOI, dataset, run id, …",
+            "result_kind": "reader-facing classification such as a partial "
+                           "result or execution error; not a hypothesis verdict",
+            "failure_reason": "why an attempted execution failed; execution "
+                              "errors must not be linked as scientific support/refutation",
+            "source_ref": "paper DOI, PMC id, dataset, run id, … — one per "
+                          "source, separated by ';' when there are several",
+            "doi": "set by the graph when a cited paper is matched to a stored file",
+            "pmcid": "same, for a PubMed Central id",
         },
         subtypes=("literature", "experimental", "computational", "expert", "meta"),
         subtype_required=True,
@@ -98,28 +105,171 @@ NODE_TYPES: Dict[str, NodeTypeSpec] = {s.name: s for s in [
         "Conclusion", "CL", 1,
         statuses=("draft", "approved"), creatable=("draft",),
         attr_docs={
-            "synthesis": "the synthesized finding",
-            "validity_bounds": "limits of validity",
+            # The conclusion is what a reader takes AWAY from the study, and
+            # what the next study starts from — so it carries the chain, not
+            # just the answer. One paragraph of prose was all it used to hold,
+            # which meant the reader had to re-walk the graph to learn how the
+            # answer had been reached, and a follow-up study had nothing to
+            # begin with.
+            "synthesis": "THE ANSWER, in one or two sentences — this is the "
+                         "card's headline, so it must stand alone",
+            "how_established": "the chain that produced it, by stage: what the "
+                               "reading established, what was run, with which "
+                               "instrument, and the numbers it returned",
+            "against_criteria": "each ConfirmationCriteria by id, the value "
+                                "measured against it, and whether it was met",
+            "validity_bounds": "limits of validity: the population, the "
+                               "conditions, the model, what it does NOT cover",
+            "open_questions": "what the next study should do first — the "
+                              "measurement that was missing, the bar that was "
+                              "not reached, the branch nobody tested",
             "new_question": "optional follow-up question text",
         },
     ),
+    # ── Derived, never written ───────────────────────────────────────────────
+    # Two cards the reader needs that no agent authors: the framing the study
+    # started from, and the story its verdicts add up to. Both are projected by
+    # store.to_view from nodes that already exist (the context star, and the
+    # hypothesis/conclusion chain), so materializing them would create a second
+    # source of truth that goes stale on the next Constraint. They are declared
+    # here anyway, so the type name, the id prefix and the display words live in
+    # the one table everything else reads — and `creatable=()` plus their
+    # absence from every AgentPerm.create makes validate_node_draft refuse any
+    # agent that tries to write one.
+    NodeTypeSpec(
+        "Framing", "F", 1,
+        statuses=("derived",), creatable=(),
+        attr_docs={"_": "DERIVED — projected from the context star "
+                        "(Constraint/Resource/EmpiricalBase/ConfirmationCriteria/"
+                        "CostModel) by store.to_view; no agent may create it"},
+    ),
+    NodeTypeSpec(
+        "Outcome", "OC", 1,
+        statuses=("derived",), creatable=(),
+        attr_docs={"_": "DERIVED — the chain of hypothesis verdicts, assembled "
+                        "by store.to_view; no agent may create it"},
+    ),
     # ── Layer 2 — methodological frame ───────────────────────────────────────
+    # The PLAN, as opposed to the record. A plan step is an intention: what is
+    # to be done, in what order, by whom. A VerificationMethod is the answer to
+    # a different question — by WHAT MEANS was this established, and against
+    # which bar — and it can only exist once there is a claim to test.
+    #
+    # They were the same node until now, and that is the single biggest thing
+    # wrong with the graph the operator reads: the mirror wrote the planner's
+    # task list as `VerificationMethod`, so "Метод проверки 2" hung off the
+    # research QUESTION, carried no instrument, and could not be told apart
+    # from a method an agent had actually designed. A step and a method are
+    # linked by `realises`, and a reader can now see both the intention and
+    # what was made of it.
+    NodeTypeSpec(
+        "PlanStep", "PS", 2,
+        # The task tracker's own vocabulary, lowercased. A step the mirror first
+        # sees already finished is created finished, so every status is creatable.
+        statuses=("todo", "in_progress", "done", "blocked"),
+        creatable=("todo", "in_progress", "done", "blocked"),
+        attr_docs={
+            "title": "the step as the plan words it — the card's headline",
+            "description": "what the step asks for",
+            "plan_task_id": "the id the plan gave it (TASK-n)",
+            "assignee": "the agent the plan assigned it to",
+            "notes": "anything the plan attached to the step",
+        },
+    ),
+    # One task of the experiment module's own plan: the detailed grain under a
+    # general step. Prefix "XT" rather than "ET" — the E space is already
+    # crowded (E, EB, EJ, EM) and "ET3" reads as an Evidence variant to a
+    # person even though the code is unambiguous.
+    NodeTypeSpec(
+        "ExperimentTask", "XT", 2,
+        # The runtime's own vocabulary, collapsed to what a reader needs:
+        # pending/ready → planned, running/retry_pending/fallback_pending →
+        # running, done/done_with_warnings → done. All creatable, for
+        # PlanStep's reason: a re-publish after a replan may first meet a task
+        # that has already finished.
+        statuses=("planned", "running", "done", "failed", "skipped"),
+        creatable=("planned", "running", "done", "failed", "skipped"),
+        attr_docs={
+            "title": "the task as the plan names it — the card's headline",
+            "description": "what the task asks for",
+            "rationale": "why the plan included it",
+            "experiment_task_id": "the id the experiment plan gave it (EXP-n)",
+            "plan_task_id": "the OUTER plan's step it elaborates (TASK-n)",
+            "plan_id": "which experiment plan, and which revision of it",
+            "plan_revision": "the revision number the human approved",
+            "experiment_run_id": "the run the plan belongs to (EXRUN-…)",
+            "route": "how it will be executed — react_tools / fedot_mas / "
+                     "coder / alembic_build / research / medical",
+            "question": "the experimental question this task answers",
+            "hypothesis_refs": "the claims it tests, as the plan names them "
+                               "(the graph link itself is on the method)",
+            "operation_ref": "the framing operation it covers (OP-n)",
+            "dataset": "the data it runs on, and where that lives",
+            "baselines": "what the result is compared against",
+            "metrics": "what is measured, and which direction is better",
+            "success_criteria": "the bar, as the plan set it: metric, "
+                                "comparison and target",
+            "expected_artifacts": "what it must produce to count as done",
+            "tools": "the MCP servers and tools it will call, 'server:tool'",
+            "input_data": "what it consumes, including which earlier task "
+                          "produced it",
+            "depends_on": "the tasks that must finish first",
+            "cost": "the plan's own estimate of how long it takes",
+            "limitations": "what the plan already knows is wrong with it",
+            "optional": "written only when the plan marked it optional",
+            "failure_reason": "why it failed — required when you move it to "
+                              "failed, or the card says a thing went wrong "
+                              "and not what",
+        },
+    ),
     NodeTypeSpec(
         "VerificationMethod", "VM", 2,
-        statuses=("planned", "running", "done", "failed"), creatable=("planned",),
+        # A method is not work, and it cannot be "запланирован" or "выполнен":
+        # those are states of a TASK. A method is the MEANS — the list of
+        # instruments a claim is to be settled by — so the only thing that can
+        # be said about it is whether it was offered, whether the study
+        # actually leaned on it, and whether it was left aside. `not_used`
+        # covers both "nobody ran it" and "it was run and settled nothing":
+        # from the reader's side those are the same fact about the method, and
+        # `failure_reason` says which of the two it was.
+        statuses=("proposed", "used", "not_used"), creatable=("proposed",),
         attr_docs={
-            "method_type": "computational / laboratory / analytical / statistical / expert",
+            "method_type": "computational / laboratory / analytical / statistical "
+                           "/ expert / literature_review",
+            "description": "WHAT this method is, in one line — it is the card's "
+                           "headline, so two methods that differ must differ here",
+            # The point of the card. A method that names no instrument is a
+            # restated task: it says a thing will be checked and never says by
+            # what, which is precisely what a reader comes to a method for.
+            "instruments": "REQUIRED — WHAT IT IS RUN WITH, named exactly and "
+                           "listed one per entry, separated by ';': MCP tools "
+                           "as 'server:tool', agents by their name, libraries "
+                           "and services by theirs. Not a description — a list",
+            "procedure": "HOW it is run: the concrete steps, tools and settings",
             "inputs": "what it needs",
             "outputs": "what it yields",
             "cost": "estimated cost",
             "limitations": "known weaknesses",
+            # Written by the plan mirror (agents/callbacks/tool_callbacks.py), not
+            # by a model, and undeclared until now — which is why a reader could
+            # not tell two methods mirrored from two plan steps apart.
+            "plan_task_id": "the plan step this method mirrors (TASK-n)",
+            "assignee": "the agent the plan assigned the step to",
+            # A method set aside with no reason is indistinguishable from one
+            # nobody got to, which is exactly how a run reads when it is over.
+            "failure_reason": "WHY it settled nothing — the error, the missing "
+                              "input, the limit hit, or plainly that the study "
+                              "never reached it. Required when you move it to "
+                              "`not_used`",
         },
     ),
     NodeTypeSpec(
         "ConfirmationCriteria", "CC", 2,
         statuses=("not_met", "met"), creatable=("not_met",),
         attr_docs={
-            "threshold": "quantitative/qualitative bar",
+            "threshold": "quantitative/qualitative bar — FROZEN once evidence "
+                         "is aimed at the hypothesis; to revise the standard, "
+                         "write a new criterion saying what it replaces",
             "confirmations_needed": "number of independent confirmations",
             "reproducibility": "reproducibility requirement",
         },
@@ -139,6 +289,8 @@ NODE_TYPES: Dict[str, NodeTypeSpec] = {s.name: s for s in [
             # the library it was supposed to build on.
             "location": "WHERE it is: repo URL, local path, MCP server or API "
                         "endpoint — required for anything the coder must read or run",
+            "failure_reason": "WHY building it failed. Required when you move "
+                              "it to `creation_failed`",
         },
     ),
     NodeTypeSpec(
@@ -210,10 +362,29 @@ STATUS_TRANSITIONS: Dict[str, FrozenSet[Tuple[str, str]]] = {
                              ("postponed", "formulated")}),
     "Evidence": frozenset({("obtained", "validated"), ("obtained", "rejected")}),
     "Conclusion": frozenset({("draft", "approved")}),
-    "VerificationMethod": frozenset({("planned", "running"), ("planned", "failed"),
-                                     ("running", "done"), ("running", "failed"),
-                                     ("failed", "planned")}),
+    # Offered → leaned on, or left aside. `not_used → used` is the retry: a
+    # method the study first gave up on can still turn out to be the one that
+    # settles the claim. There is no way back out of `used`, because a method
+    # that produced evidence stays a method the study was built on.
+    "VerificationMethod": frozenset({("proposed", "used"),
+                                     ("proposed", "not_used"),
+                                     ("not_used", "used")}),
     "ConfirmationCriteria": frozenset({("not_met", "met"), ("met", "not_met")}),
+    # The tracker's own moves. A finished step can be reopened, because a
+    # re-plan may put a step back in play, and a blocked one can be released.
+    "PlanStep": frozenset({("todo", "in_progress"), ("todo", "done"),
+                           ("todo", "blocked"), ("in_progress", "done"),
+                           ("in_progress", "blocked"), ("in_progress", "todo"),
+                           ("blocked", "in_progress"), ("blocked", "todo"),
+                           ("done", "in_progress")}),
+    # `failed → planned` is not cosmetic: retry_task and fallback_task put the
+    # runtime status back to ready, and a card stuck on "failed" would then
+    # contradict a task that is running again.
+    "ExperimentTask": frozenset({("planned", "running"), ("planned", "skipped"),
+                                 ("planned", "failed"), ("planned", "done"),
+                                 ("running", "done"), ("running", "failed"),
+                                 ("running", "skipped"), ("failed", "planned"),
+                                 ("failed", "skipped"), ("done", "running")}),
     "Tool": frozenset({("needs_adaptation", "available"),
                        ("needs_adaptation", "being_created"),
                        ("being_created", "available"),
@@ -229,7 +400,12 @@ _ARTIFACT_TYPES = ("CodeArtifact", "GeneratedData", "Report", "Publication",
 
 EDGE_TYPES: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "motivates": (("ResearchQuestion", "Hypothesis"),),
-    "tested_by": (("Hypothesis", "VerificationMethod"),),
+    # A plan arrives before the hypotheses do: the deterministic plan mirror
+    # writes one method per registered task, and at that moment there may be
+    # nothing to hang it on but the question itself. A method floating with no
+    # parent reads as a bug, so the question may be what a method tests.
+    "tested_by": (("Hypothesis", "VerificationMethod"),
+                  ("ResearchQuestion", "VerificationMethod")),
     "requires": (("Hypothesis", "Tool"),),
     "uses": (("VerificationMethod", "Tool"),),
     "consumes": (("VerificationMethod", "Resource"),),
@@ -238,17 +414,54 @@ EDGE_TYPES: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "supports": (("Evidence", "Hypothesis"),),
     "refutes": (("Evidence", "Hypothesis"),),
     "refines": (("Evidence", "Hypothesis"),),
+    # How a study actually moves: a hypothesis is judged, and a modified one
+    # takes its place. Without this edge the iterations sit side by side under
+    # the question and the reader cannot tell a second attempt from a second
+    # branch. `from` is the hypothesis that was judged, `to` the one that
+    # replaced it — the arrow points the way the research went. attrs carry
+    # {"verdict": confirmed|refuted|inconclusive, "reason": what changed}.
+    "supersedes": (("Hypothesis", "Hypothesis"),),
+    # Execution dependency, deliberately separate from provenance-oriented
+    # supersedes.  The successor stays dormant until the predecessor reaches
+    # attrs.required_status (v1 supports only refuted).
+    "conditional_successor": (("Hypothesis", "Hypothesis"),),
     "based_on": (("Conclusion", "Evidence"),),
     "determines_sufficiency": (("ConfirmationCriteria", "Conclusion"),),
     # Not in the spec's edge table, but the docx says criteria are "formulated
     # for a hypothesis" and the closable-path trigger needs the linkage.
     "formulated_for": (("ConfirmationCriteria", "Hypothesis"),),
+    # What a plan step turned into. The arrow runs from the RECORD to the
+    # INTENTION — "this method realises that step" — so a reader following the
+    # research forward never walks into the plan by accident, and a step with
+    # nothing pointing at it is visibly unrealised. A step can be realised by
+    # more than the method: "formulate a testable hypothesis" is realised by the
+    # hypothesis itself, and "write the report" by the conclusion.
+    # A finer intention under a coarser one. Deliberately NOT `realises`:
+    # that one means record → intention ("this work carried out that"), and an
+    # ExperimentTask is not a record. Reusing it would rebuild the very
+    # conflation the PlanStep type exists to undo.
+    "elaborates": (("ExperimentTask", "PlanStep"),),
+    "realises": (("VerificationMethod", "PlanStep"),
+                 ("Hypothesis", "PlanStep"),
+                 ("Evidence", "PlanStep"),
+                 ("Conclusion", "PlanStep"),
+                 # …and the record may attach to the detailed task instead of
+                 # the general step, which is where it actually came from.
+                 ("VerificationMethod", "ExperimentTask"),
+                 ("Evidence", "ExperimentTask")),
     "regulates": (("Constraint", "VerificationMethod"),
                   ("Constraint", "ConfirmationCriteria")),
     "constrains": (("Constraint", "Hypothesis"),
                    ("Constraint", "VerificationMethod")),
+    # A study that reached no Conclusion still produced a write-up, and it has
+    # to hang off something — otherwise the one node a reader most wants is the
+    # one node with no edge to find it by.
+    # A Spec written BEFORE the study — the техническое задание the framing
+    # stage issues — has no conclusion and no evidence to derive from, and the
+    # question is the only thing it is about.
     "derived_from": tuple((a, t) for a in _ARTIFACT_TYPES
-                          for t in ("Conclusion", "Evidence")),
+                          for t in ("Conclusion", "Evidence"))
+    + (("Report", "ResearchQuestion"), ("Spec", "ResearchQuestion")),
     "contextualizes": (("Constraint", "ResearchQuestion"),),
     "defines_scope": (("ResearchQuestion", "EmpiricalBase"),),
     "relates_to": (("Evidence", "ResearchQuestion"), ("Evidence", "Hypothesis")),
@@ -267,6 +480,7 @@ RU_ALIASES: Dict[str, str] = {
     "свидетельство": "Evidence",
     "заключение": "Conclusion",
     "метод_проверки": "VerificationMethod", "методы_проверки": "VerificationMethod",
+    "задача_эксперимента": "ExperimentTask", "шаг_эксперимента": "ExperimentTask",
     "условия_подтверждения": "ConfirmationCriteria", "условие_подтверждения": "ConfirmationCriteria",
     "инструмент": "Tool",
     "ресурс": "Resource",
@@ -290,6 +504,7 @@ RU_ALIASES: Dict[str, str] = {
     "поддерживает": "supports",
     "опровергает": "refutes",
     "уточняет": "refines",
+    "условный_преемник": "conditional_successor",
     "основано_на": "based_on",
     "определяет_достаточность": "determines_sufficiency",
     "сформулировано_для": "formulated_for", "формулируется_для": "formulated_for",
@@ -308,6 +523,11 @@ RU_ALIASES: Dict[str, str] = {
     "черновик": "draft", "утверждено": "approved",
     "запланирован": "planned", "выполняется": "running",
     "выполнен": "done", "провален": "failed",
+    # A method's own words. Kept apart from the task vocabulary above on
+    # purpose: «выполнен» must keep meaning a task that ran, so a model that
+    # writes it about a method is refused rather than quietly understood.
+    "предложен": "proposed", "использован": "used",
+    "не_использован": "not_used", "неиспользован": "not_used",
     "не_выполнены": "not_met", "выполнены": "met",
     "доступен": "available", "нужна_адаптация": "needs_adaptation",
     "создаётся": "being_created", "создается": "being_created",
@@ -407,6 +627,24 @@ INIT_SEED_TYPES = frozenset({"ResearchQuestion", "Tool", "Resource",
                              "EmpiricalBase", "Constraint",
                              "ConfirmationCriteria", "CostModel"})
 
+# Attributes the graph writes ABOUT a node, never accepts as a claim IN it.
+#
+# `research_commit` puts no whitelist on attribute names, and a worker sees a
+# node's attrs in its context slice — so an agent can, and in time will, send
+# one of these back. The attrs merge is a shallow `{**stored, **incoming}`
+# (`_commit_locked`), which replaces a key wholesale: one partial write and an
+# append-only participation record is down to whatever that agent happened to
+# say. The key is dropped rather than the commit refused, because the commit is
+# worth more than the key, and the caller is warned.
+#
+# `_provenance` is deliberately NOT here: `agent_tools._enrich_evidence` writes
+# it through the ordinary create path before the commit, so reserving it would
+# silently throw away every piece of evidence's provenance.
+RESERVED_ATTRS = frozenset({
+    "contributors", "contributors_more",
+    "report_artifact_id", "report_stamp", "report_lang",
+})
+
 
 # Spec §2 roles mapped onto the agents that actually exist in system.yaml:
 # init-agent + validator/critic duties → OrchestratorAgent; hypothesis
@@ -433,10 +671,18 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
             ("Conclusion", "draft", "approved"),               # approval
             ("Hypothesis", "formulated", "under_verification"),  # start verification
             ("Hypothesis", "formulated", "postponed"),
-            ("Hypothesis", "postponed", "formulated")),          # scheduling only
+            ("Hypothesis", "postponed", "formulated"),           # scheduling only
+            # `inconclusive` is in the lifecycle but nothing held the way OUT of
+            # it, so a branch the judge could not settle was parked there for
+            # good. The background validator now WRITES that verdict whenever a
+            # confirmation is refused, which makes a dead end that used to be
+            # nearly unreachable ordinary. Reopening one is scheduling, same as
+            # reviving a postponed branch: new evidence arrived, put it back
+            # under verification and let the judge look again.
+            ("Hypothesis", "inconclusive", "under_verification")),
         edges=_edges("contextualizes", "defines_scope", "derived_from", "applies_to",
                      "motivates", "regulates", "constrains",
-                     "relates_to", "supports", "refutes", "refines",
+                     "relates_to", "supports", "refutes", "refines", "supersedes",
                      ("produces", "Conclusion", "ResearchQuestion")),
         # It decides what gets tested, so it is the one that can say why a
         # branch was not. Only that: the formulation and the verdict stay with
@@ -475,27 +721,51 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
                           "Tool"}),
         update_attrs=frozenset(),
         transitions=_transitions(("Hypothesis", "formulated", "postponed")),
+        # It writes the modified hypothesis, so it is the one that can say which
+        # hypothesis that modification replaces.
         edges=_edges("motivates", "tested_by", "requires", "formulated_for",
-                     "uses", "consumes"),
+                     "uses", "consumes", "supersedes", "conditional_successor"),
     ),
     "ResearchAgent": AgentPerm(
-        create=frozenset({"Evidence", "EmpiricalBase"}),
+        # The same hole the coder and the experimenter had, on the literature
+        # side. It gathered the sources and wrote the Evidence, but could
+        # neither open the method that gathered them nor say that the method
+        # produced them: `produces` was not in its edges and VerificationMethod
+        # was not in its create. So a literature finding could only hang off the
+        # question by `relates_to` — and with no hypotheses yet, that was its
+        # ONLY legal attachment — while the "collect the literature" method the
+        # plan mirror had written stayed `planned` forever, with the evidence it
+        # produced floating beside it. A literature review IS a verification
+        # method, so it gets the node, the lifecycle and the produces edge.
+        create=frozenset({"Evidence", "EmpiricalBase", "VerificationMethod"}),
         update_attrs=frozenset({"EmpiricalBase"}),
-        transitions=_transitions("Evidence"),
-        edges=_edges("relates_to", "supports", "refutes", "refines", "defines_scope"),
+        transitions=_transitions("Evidence", "VerificationMethod"),
+        edges=_edges("relates_to", "supports", "refutes", "refines",
+                     "defines_scope", "tested_by", "uses",
+                     ("produces", "VerificationMethod", "Evidence")),
     ),
     "MedicalAgent": AgentPerm(
-        create=frozenset({"Evidence"}),
+        # Same as the ResearchAgent above: a PubMed review is a method, and the
+        # findings it returns belong to it and not to the bare question.
+        create=frozenset({"Evidence", "VerificationMethod"}),
         update_attrs=frozenset(),
-        transitions=_transitions("Evidence"),
-        edges=_edges("relates_to", "supports", "refutes", "refines"),
+        transitions=_transitions("Evidence", "VerificationMethod"),
+        edges=_edges("relates_to", "supports", "refutes", "refines",
+                     "tested_by", "uses",
+                     ("produces", "VerificationMethod", "Evidence")),
     ),
     "CoderAgent": AgentPerm(
-        create=frozenset({"Tool", "CodeArtifact", "GeneratedData", "Evidence"}),
+        # It already owned the VerificationMethod lifecycle (transitions below)
+        # but could not open one, so work the plan never named ran with no
+        # method to point at and its evidence hung off the hypothesis with
+        # nothing in between.
+        create=frozenset({"Tool", "CodeArtifact", "GeneratedData", "Evidence",
+                          "VerificationMethod"}),
         update_attrs=frozenset({"Tool"}),
         transitions=_transitions("Tool", "VerificationMethod"),
         edges=_edges("uses", "consumes", "derived_from", "supports", "refutes",
-                     "refines", "relates_to", ("produces", "VerificationMethod", "Evidence")),
+                     "refines", "relates_to", "tested_by",
+                     ("produces", "VerificationMethod", "Evidence")),
     ),
     "DatasetCollectorAgent": AgentPerm(
         create=frozenset({"GeneratedData", "EmpiricalBase"}),
@@ -504,12 +774,120 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
         edges=_edges("derived_from", "defines_scope", "relates_to"),
     ),
     "ExperimentAgent": AgentPerm(
-        create=frozenset({"Evidence", "GeneratedData"}),
+        # Same hole as the coder's: it ran the method and could move it through
+        # planned→running→done/failed, but could not create the node it was
+        # moving. Creating a type also carries the right to enrich it
+        # (_stage_merge), so `failure_reason` needs no separate grant.
+        create=frozenset({"Evidence", "GeneratedData", "VerificationMethod"}),
         update_attrs=frozenset(),
         transitions=_transitions("VerificationMethod"),
         edges=_edges("uses", "consumes", "supports", "refutes", "refines",
-                     "relates_to", "derived_from",
+                     "relates_to", "derived_from", "tested_by",
                      ("produces", "VerificationMethod", "Evidence")),
+    ),
+    # NOT an agent: the deterministic mirror that turns each registered plan
+    # task into a planned VerificationMethod (agents/callbacks/tool_callbacks.py).
+    # It is named as its own write-source rather than borrowing the planner's or
+    # the orchestrator's, because a reader who sees "plan-mirror" on a method
+    # knows no model chose it — it is the roadmap, one card per step. It writes
+    # methods and attaches them; it never runs or judges anything.
+    "plan-mirror": AgentPerm(
+        create=frozenset({"PlanStep"}),
+        update_attrs=frozenset({"PlanStep"}),
+        # It follows the tracker, so it moves a step through the tracker's own
+        # states. It still judges nothing and runs nothing.
+        transitions=_transitions("PlanStep"),
+        edges=_edges("realises"),
+    ),
+    # The same idea one grain down: the experiment module's approved plan,
+    # mirrored task by task. A source of its own, so a reader who sees it knows
+    # no model chose these cards.
+    "experiment-plan-mirror": AgentPerm(
+        create=frozenset({"ExperimentTask"}),
+        update_attrs=frozenset({"ExperimentTask"}),
+        # …and the one thing it may say about the step ABOVE its tasks: that
+        # work on it has begun. Usually that is a step nobody has started. A
+        # retry may also resume a block that these same experiment tasks caused;
+        # graph_bridge checks the block's source and reason before asking for
+        # that move, so operator/replan/report blocks remain protected. The
+        # outer plan's own mirror only runs on an orchestrator tick, and by then
+        # the tracker has usually moved the step from «не начат» straight to
+        # «выполнен» — so a step that was being worked on for minutes was never
+        # once drawn as being worked on. The module knows the moment a task
+        # starts; this lets it say so, and nothing else about the step.
+        transitions=_transitions("ExperimentTask",
+                                 ("PlanStep", "todo", "in_progress"),
+                                 ("PlanStep", "blocked", "in_progress")),
+        edges=_edges("elaborates",
+                     ("realises", "VerificationMethod", "ExperimentTask"),
+                     ("realises", "Evidence", "ExperimentTask")),
+    ),
+    # The module's own deterministic writes — the methods, tools, evidence and
+    # data it records once a task has actually run. Those commits go through the
+    # privileged path (`enforce_permissions=False`), so this entry is mostly
+    # documentation — except that `_stage_merge` consults the table whatever the
+    # flag says, so WITHOUT it the bridge's re-approval path (an id-only attrs
+    # merge onto the method it already wrote) is refused on every replan, and
+    # refused silently, because the bridge swallows the error by contract.
+    "ExperimentModule": AgentPerm(
+        create=frozenset({"VerificationMethod", "Tool", "Evidence",
+                          "GeneratedData"}),
+        update_attrs=frozenset({"VerificationMethod"}),
+        transitions=_transitions("VerificationMethod", "Tool",
+                                 ("Hypothesis", "formulated", "postponed"),
+                                 ("Hypothesis", "postponed", "formulated")),
+        edges=_edges("tested_by", "uses", "produces", "relates_to",
+                     "derived_from"),
+    ),
+    # The final write-up, published by code rather than by a model. The
+    # aggregator that produces the text holds the READ-ONLY research surface,
+    # and widening an LLM's rights to record something deterministic buys
+    # nothing — `finalize_report` already has the markdown in hand. Same shape
+    # as the plan mirrors above: a named source with exactly the rights it uses.
+    # `update_attrs` matters because re-running finalize must enrich the node it
+    # already wrote instead of adding a second one, and `_stage_merge` consults
+    # this table even when enforcement is off.
+    "report-writer": AgentPerm(
+        create=frozenset({"Report"}),
+        update_attrs=frozenset({"Report"}),
+        transitions=frozenset(),
+        edges=_edges("derived_from"),
+    ),
+    # NOT an agent: the deterministic writer behind a node's own write-up. It
+    # stamps ONE attribute family onto the node it summarised and nothing else —
+    # no status, no edges, no new nodes — so its rights are stated a (type,
+    # attribute) pair at a time rather than by owning the type. The body lives
+    # in the session's artifact store; only its id is on the node, because
+    # `_truncate_attrs` caps an ordinary attribute at 2 000 characters and a
+    # write-up would reach the page as its first two paragraphs.
+    "node-report": AgentPerm(
+        create=frozenset(),
+        update_attrs=frozenset(),
+        transitions=frozenset(),
+        edges=frozenset(),
+        update_fields=frozenset(
+            (node_type, attribute)
+            for node_type in ("Evidence", "PlanStep", "ExperimentTask",
+                              "VerificationMethod")
+            for attribute in ("report_artifact_id", "report_stamp", "report_lang")
+        ),
+    ),
+    # NOT an agent: the code that turns a DOI or a PMC id an agent cited into
+    # the file this session holds. It stamps the citation's own attributes onto
+    # the Evidence that carried it and nothing else — no status, no edges, no
+    # new nodes — so its rights are stated one (type, attribute) pair at a time
+    # rather than by owning the type. Matched on identifiers, never on a title:
+    # two papers share a title far more often than they share a DOI.
+    "paper-linker": AgentPerm(
+        create=frozenset(),
+        update_attrs=frozenset(),
+        transitions=frozenset(),
+        edges=frozenset(),
+        update_fields=frozenset({
+            ("Evidence", "session_artifact_id"), ("Evidence", "doi"),
+            ("Evidence", "pmcid"), ("Evidence", "paper_title"),
+            ("Evidence", "paper_year"),
+        }),
     ),
     # The pre-stage context-initialization agent seeds the framing frame at the
     # start of a run. It writes the whole context star through the PRIVILEGED
@@ -517,11 +895,17 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
     # matter only if it ever writes through research_commit directly; they are
     # kept aligned with INIT_SEED_TYPES for clarity and for schema tests.
     "ContextInitAgent": AgentPerm(
+        # `Spec` is the техническое задание, written after the frame is
+        # confirmed — through an ordinary commit, not through `init_research`,
+        # which starts a NEW study and would archive the graph it was just
+        # seeded into. So this grant is load-bearing, not decorative.
         create=frozenset({"ResearchQuestion", "Constraint", "Tool", "Resource",
-                          "EmpiricalBase", "ConfirmationCriteria", "CostModel"}),
-        update_attrs=frozenset({"ResearchQuestion"}),
+                          "EmpiricalBase", "ConfirmationCriteria", "CostModel",
+                          "Spec"}),
+        update_attrs=frozenset({"ResearchQuestion", "Spec"}),
         transitions=frozenset(),
-        edges=_edges("contextualizes", "defines_scope", "applies_to"),
+        edges=_edges("contextualizes", "defines_scope", "applies_to",
+                     "derived_from"),
     ),
     # The human writes through the HITL bridge (web endpoint / approval flow),
     # never through an LLM toolset. Expert evidence is the human's own layer-1

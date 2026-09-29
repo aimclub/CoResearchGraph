@@ -5,16 +5,150 @@
       const options = knownUsers.map(user =>
         `<option value="${escHtml(user.id)}" ${activeUser && activeUser.id === user.id ? 'selected' : ''}>${escHtml(user.nickname)}</option>`
       ).join('');
-      document.getElementById('user-select').innerHTML = options || `<option value="">${t('identity.noUsers')}</option>`;
       document.getElementById('identity-user-select').innerHTML = options;
       document.getElementById('existing-user-block').classList.toggle('hidden', knownUsers.length === 0);
     }
 
-    function populateSessionSelector() {
-      document.getElementById('session-select').innerHTML = knownSessions.map(session =>
-        `<option value="${escHtml(session.id)}" ${activeSession && activeSession.id === session.id ? 'selected' : ''}>${escHtml(session.title)}</option>`
-      ).join('') || `<option value="">${t('identity.noSessions')}</option>`;
+    function showHiddenSessions() {
+      try { return localStorage.getItem(SHOW_HIDDEN_SESSIONS_KEY) === '1'; } catch (_) { return false; }
     }
+
+    // Sessions the picker offers: hidden ones only when asked for, and the
+    // active one always, so the picker never lies about what is on screen.
+    function visibleSessions(sessions = knownSessions) {
+      if (showHiddenSessions()) return sessions;
+      return sessions.filter(item => !item.hidden || (activeSession && activeSession.id === item.id));
+    }
+
+    function populateSessionSelector() {
+      renderSessionTitle();
+      document.getElementById('session-select').innerHTML = visibleSessions().map(session => {
+        const label = session.hidden ? `${session.title} ${t('sessions.hiddenMark')}` : session.title;
+        return `<option value="${escHtml(session.id)}" ${activeSession && activeSession.id === session.id ? 'selected' : ''}>${escHtml(label)}</option>`;
+      }).join('') || `<option value="">${t('identity.noSessions')}</option>`;
+      renderHiddenSessionControls();
+    }
+
+    function renderHiddenSessionControls() {
+      const count = knownSessions.filter(item => item.hidden).length;
+      const showBtn = document.getElementById('session-show-hidden-btn');
+      if (showBtn) {
+        const on = showHiddenSessions();
+        showBtn.setAttribute('aria-checked', String(on));
+        showBtn.querySelector('.material-symbols-outlined').textContent = on ? 'check_box' : 'check_box_outline_blank';
+        document.getElementById('session-hidden-count').textContent = count ? String(count) : '';
+      }
+      const unhideBtn = document.getElementById('session-unhide-all-btn');
+      if (unhideBtn) unhideBtn.classList.toggle('hidden', count === 0);
+    }
+
+    function toggleShowHiddenSessions() {
+      try { localStorage.setItem(SHOW_HIDDEN_SESSIONS_KEY, showHiddenSessions() ? '0' : '1'); } catch (_) { }
+      populateSessionSelector();
+    }
+
+    // Hides every session in one go so only sessions started from now on
+    // are listed. Nothing is deleted. The open session stays in the picker
+    // while it is open (visibleSessions), and a still-empty one is kept
+    // visible, since it is the "new" one. The server never hides a running
+    // session.
+    async function hideOldSessions() {
+      if (!activeUser) return openIdentityModal();
+      try {
+        // A fresh list: `empty` on the cached copy goes stale after the first message.
+        const fresh = activeSession ? (await loadSessions(activeUser)).find(item => item.id === activeSession.id) : null;
+        const keep = fresh && fresh.empty ? [fresh.id] : [];
+        const data = await apiJson(`/api/users/${encodeURIComponent(activeUser.id)}/sessions/hide-old`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keep })
+        });
+        try { localStorage.setItem(SHOW_HIDDEN_SESSIONS_KEY, '0'); } catch (_) { }
+        await loadSessions(activeUser);
+        if (activeSession) activeSession = knownSessions.find(item => item.id === activeSession.id) || activeSession;
+        populateSessionSelector();
+        addSystemMsg(data.hidden
+          ? t('sessions.hiddenOld', { count: data.hidden })
+          : t('sessions.nothingToHide'));
+      } catch (error) { addSystemMsg(t('sessions.hideError', { error: error.message })); }
+    }
+
+    async function unhideAllSessions() {
+      if (!activeUser) return;
+      try {
+        await apiJson(`/api/users/${encodeURIComponent(activeUser.id)}/sessions/unhide-all`, { method: 'POST' });
+        await loadSessions(activeUser);
+        if (activeSession) activeSession = knownSessions.find(item => item.id === activeSession.id) || activeSession;
+        populateSessionSelector();
+      } catch (error) { addSystemMsg(t('sessions.hideError', { error: error.message })); }
+    }
+
+    // The session's name in the top bar, after "Orchestrator /": which run
+    // this page is showing, readable without opening the picker.
+    function renderSessionTitle() {
+      const el = document.getElementById('session-title');
+      if (!el) return;
+      const title = activeSession && activeSession.title ? activeSession.title : '';
+      el.textContent = title;
+      el.title = title;
+      el.parentElement.classList.toggle('hidden', !title);
+    }
+
+    // The session menu beside the picker: new, rename, save, restore,
+    // export, import. A menu, not six unlabelled icons in a row.
+    function setSessionMenuOpen(open) {
+      const menu = document.getElementById('session-menu');
+      const button = document.getElementById('session-menu-btn');
+      if (!menu || !button) return;
+      menu.classList.toggle('hidden', !open);
+      button.setAttribute('aria-expanded', String(open));
+      if (open) {
+        const first = menu.querySelector('[role^="menuitem"]');
+        if (first) first.focus();
+      }
+    }
+
+    function toggleSessionMenu() {
+      const menu = document.getElementById('session-menu');
+      setSessionMenuOpen(!!menu && menu.classList.contains('hidden'));
+    }
+
+    function runSessionMenu(action) {
+      setSessionMenuOpen(false);
+      action();
+    }
+
+    document.addEventListener('click', event => {
+      if (!event.target.closest('#session-menu, #session-menu-btn')) setSessionMenuOpen(false);
+    });
+
+    document.addEventListener('keydown', event => {
+      const menu = document.getElementById('session-menu');
+      if (!menu || menu.classList.contains('hidden')) return;
+      const items = [...menu.querySelectorAll('[role^="menuitem"]')];
+      const index = items.indexOf(document.activeElement);
+      if (event.key === 'Escape') {
+        setSessionMenuOpen(false);
+        document.getElementById('session-menu-btn').focus();
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        items[(index + step + items.length) % items.length].focus();
+      }
+    });
+
+    // The avatar is the nickname's first letter, kept in step with the name
+    // wherever the name is written (sign-in, switch, language change).
+    (function watchNickname() {
+      const name = document.getElementById('active-nickname');
+      const avatar = document.getElementById('active-avatar');
+      if (!name || !avatar) return;
+      const paint = () => {
+        const known = typeof activeUser !== 'undefined' && activeUser && activeUser.nickname;
+        avatar.textContent = known ? activeUser.nickname.trim().charAt(0).toUpperCase() || '?' : '?';
+      };
+      new MutationObserver(paint).observe(name, { childList: true, characterData: true, subtree: true });
+      paint();
+    })();
 
     function openIdentityModal() {
       populateUserSelectors();
@@ -50,21 +184,21 @@
       return created.session;
     }
 
-    // startFresh: the remembered session belongs to a previous server run, so
-    // do not reopen it. Prefer a session that is running right now, then an
-    // untouched one (so restarts do not pile up empty sessions), else create.
+    // startFresh creates a new session (or reuses the newest one if it has no messages yet).
     async function ensureUserSession(user, preferredSessionId = null, { startFresh = false } = {}) {
       activeUser = user;
       const sessions = await loadSessions(user);
-      let selected = sessions.find(item => item.id === preferredSessionId);
+      let selected = preferredSessionId ? sessions.find(item => item.id === preferredSessionId) : null;
+      // Fallback picks come from what the picker shows, not from hidden sessions.
+      const shown = showHiddenSessions() ? sessions : sessions.filter(item => !item.hidden);
       if (!selected && startFresh) {
-        selected = sessions.find(item => item.status === 'processing')
-          || sessions.find(item => item.empty)
+        selected = shown.find(item => item.status === 'processing')
+          || (shown.length > 0 && shown[0].empty ? shown[0] : null)
           || await createBlankSession(user);
       }
       if (!selected) {
-        selected = sessions.find(item => item.id === user.last_session_id)
-          || sessions[0]
+        selected = shown.find(item => item.id === user.last_session_id)
+          || shown[0]
           || await createBlankSession(user);
       }
       await activateSession(user, selected);
@@ -83,7 +217,7 @@
         knownUsers.push(data.user);
         nicknameInput.value = '';
         populateUserSelectors();
-        await ensureUserSession(data.user);
+        await ensureUserSession(data.user, null, { startFresh: true });
         closeIdentityModal();
       } catch (error) { showIdentityError(error); }
     }
@@ -93,14 +227,14 @@
       const user = knownUsers.find(item => item.id === userId);
       if (!user) return;
       try {
-        await ensureUserSession(user, localStorage.getItem(SESSION_STORAGE_KEY));
+        await ensureUserSession(user, null, { startFresh: true });
         closeIdentityModal();
       } catch (error) { showIdentityError(error); }
     }
 
     async function onUserSelected(userId) {
       const user = knownUsers.find(item => item.id === userId);
-      if (user) await ensureUserSession(user);
+      if (user) await ensureUserSession(user, null, { startFresh: true });
     }
 
     async function onSessionSelected(sessionId) {
@@ -203,12 +337,16 @@
       document.getElementById('active-nickname').textContent = user.nickname;
       document.getElementById('graph-link').href =
         `/graph?user_id=${encodeURIComponent(user.id)}&session_id=${encodeURIComponent(session.id)}`;
+      const agentTreeLink = document.getElementById('agent-tree-link');
+      if (agentTreeLink) agentTreeLink.href =
+        `/agent-tree?user_id=${encodeURIComponent(user.id)}&session_id=${encodeURIComponent(session.id)}`;
       populateUserSelectors();
       populateSessionSelector();
       clearChat();
       // Drop the previous session's attachment; the snapshot brings the new one.
       applyDatasetUrl('');
       applyReportLanguage('');
+      if (typeof loadSettings === 'function') await loadSettings();
       connect();
     }
 
@@ -221,7 +359,20 @@
         populateUserSelectors();
         const savedUserId = localStorage.getItem(USER_STORAGE_KEY);
         let savedUser = knownUsers.find(item => item.id === savedUserId);
-        if (data.defaultUsername) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlSessionId = urlParams.get('session_id');
+
+        const navEntry = (typeof performance !== 'undefined' && performance.getEntriesByType)
+          ? performance.getEntriesByType('navigation')[0]
+          : null;
+        const isReload = navEntry
+          ? navEntry.type === 'reload'
+          : (typeof performance !== 'undefined' && performance.navigation && performance.navigation.type === 1);
+
+        const preferredSessionId = urlSessionId || (isReload ? localStorage.getItem(SESSION_STORAGE_KEY) : null);
+        // A reload (or a session link) keeps the user it was on: imported and
+        // restored sessions belong to ITMO_DEV, not to the env default user.
+        if (data.defaultUsername && !(savedUser && preferredSessionId)) {
           const envNick = data.defaultUsername.trim().toLowerCase();
           const envUser = knownUsers.find(item => item.nickname && item.nickname.trim().toLowerCase() === envNick);
           if (envUser) {
@@ -240,19 +391,43 @@
           openIdentityModal();
           return;
         }
-        // Reopen the remembered session only if it was opened under this
-        // server process (a plain page reload); after a restart start fresh.
-        const sameServerRun = !!serverBootId && localStorage.getItem(BOOT_STORAGE_KEY) === serverBootId;
+        const startFresh = !preferredSessionId;
+
         await ensureUserSession(
           savedUser,
-          sameServerRun ? localStorage.getItem(SESSION_STORAGE_KEY) : null,
-          { startFresh: true },
+          preferredSessionId,
+          { startFresh },
         );
       } catch (error) {
         addSystemMsg(t('sessions.initError', { error: error.message }));
         openIdentityModal();
       }
     }
+
+    // The pill in the top bar. The run flag says whether anything is running;
+    // the status line's phase (body[data-run-phase], set by status_indicator)
+    // says whether it is running or stopped on a question for the user, which
+    // is the one state worth a colour of its own.
+    const STATUS_BADGE_TONES = {
+      run: 'bg-primary/10 text-primary',
+      wait: 'bg-tertiary/10 text-tertiary',
+      fail: 'bg-error/10 text-error',
+      idle: 'bg-surface-container-high text-on-surface-variant',
+    };
+
+    function renderStatusBadge() {
+      const el = document.getElementById('status-badge');
+      if (!el) return;
+      const phase = document.body.dataset.runPhase || 'idle';
+      let tone = runActive ? 'run' : 'idle';
+      let key = runActive ? 'topbar.processing' : 'topbar.idle';
+      if (phase === 'waiting' || phase === 'waiting_frame') { tone = 'wait'; key = 'topbar.waiting'; }
+      else if (phase === 'error') { tone = 'fail'; key = 'topbar.failed'; }
+      else if (phase === 'offline') { tone = 'idle'; key = 'topbar.offline'; }
+      el.className = 'status-pill ' + STATUS_BADGE_TONES[tone];
+      el.innerHTML = `<span class="status-pill-dot" aria-hidden="true"></span>${escHtml(t(key))}`;
+    }
+    window.renderStatusBadge = renderStatusBadge;
 
     function applyRunStatus(status, version = null) {
       if (version !== null && version !== undefined) {
@@ -261,25 +436,27 @@
         if (Number.isFinite(parsedVersion)) runStatusVersion = parsedVersion;
       }
       const processing = status === 'processing';
-      runActive = processing;
-      document.getElementById('status-badge').textContent =
-        t(processing ? 'topbar.processing' : 'topbar.idle');
-      document.getElementById('send-btn').disabled = processing;
+      const paused = status === 'paused';
+      runActive = processing || paused;
+      renderStatusBadge();
+      document.getElementById('send-btn').disabled = processing || paused;
       // The language also drives the report, and the server rejects a mid-run
       // change. Re-render the settings panel so its language radio locks.
       if (typeof renderSettings === 'function'
           && !document.getElementById('settings-modal').classList.contains('hidden')) {
         renderSettings();
       }
-      document.getElementById('stop-btn').classList.toggle('hidden', !processing);
+      document.getElementById('stop-btn').classList.toggle('hidden', !processing && !paused);
       if (processing) {
         showTyping();
         if (typeof RunTimer !== 'undefined') RunTimer.start();
+      } else if (paused) {
+        // A pause keeps pending approvals, active tasks and the same run timer.
+        hideTyping();
       } else {
         hideTyping();
         resetAgents();
         activityMarkIdle();
-        document.getElementById('hitl-panel').classList.add('hidden');
         currentPlannerHitlRequest = null;
         updateRoadmapModalButtons();
         if (typeof RunTimer !== 'undefined') RunTimer.finish();
@@ -305,12 +482,14 @@
       eventCount = 0;
       renderEventCount();
       feed.innerHTML = '';
+      if (window.resetHitlUiState) resetHitlUiState();
 
       // Cost is cumulative per session, so the snapshot carries the current
       // figure directly — clear first, or a session switch would show the
       // previous session's spend until the next push.
       resetMetrics();
       renderMetrics(snapshot.metrics);
+      if (window.CheckpointsModal) CheckpointsModal.onSnapshot(snapshot.checkpoints || []);
 
       // The attachment belongs to the session the snapshot describes.
       applyDatasetUrl(snapshot.dataset_url);
@@ -328,6 +507,9 @@
       if (snapshot.active_tasks && Array.isArray(snapshot.active_tasks)) {
         StatusIndicator.feed({ type: 'session_snapshot', active_tasks: snapshot.active_tasks }, true);
       }
+      // The ТЗ panel shows the session's latest ТЗ; a pending ТЗ form is
+      // redelivered right after this snapshot.
+      if (window.TZPanel) TZPanel.restore(snapshot.tz || null, activeSession && activeSession.id);
 
       for (const message of messages) {
         // Quiet replay: the indicator recomputes its state from the history so
@@ -337,8 +519,9 @@
           addUserMsg(message.message, message.timestamp);
         } else if (message.type === 'agent_event') {
           activityTouchAgent(message.author, message.timestamp);
-          if (hasText(message.content)) {
-            addAgentMsg(message.author || 'system', message.content, message.timestamp);
+          CallGraph.feedAgentEvent(message);
+          if (hasText(message.content) && !isChatNoise(message)) {
+            addAgentMsg(message.author || 'system', message.content, message.timestamp, message);
             const foundUrl = extractSandboxUrlFromText(message.content);
             if (foundUrl) updateCoderSandboxButton(foundUrl);
           }
@@ -350,9 +533,12 @@
           });
         } else if (message.type === 'agent_output') {
           activityTouchAgent(message.agent, message.timestamp);
-          addAgentOutputMsg(message.agent, message.content, message.timestamp, message.caller);
+          if (!PLAN_AGENTS.includes(message.agent)) {
+            addAgentOutputMsg(message.agent, message.content, message.timestamp, message.caller, message);
+          }
         } else if (message.type === 'tool_activity') {
           applyToolActivity(message, true);
+          if (window.PlanTracker) PlanTracker.feed(message);
         } else if (message.type === 'hitl_request') {
           // Drawn locked; a request that is still open is redelivered by the
           // server right after the snapshot and unlocks its card in place.
@@ -365,15 +551,23 @@
           addSystemMsg(t('common.errorPrefix', { error: message.message }), message.timestamp);
         }
       }
+      // A different session is a different store: its documents have different
+      // ids, and anything cached from the last one is now about nothing.
+      if (window.resetDocuments) resetDocuments();
+      if (window.refreshSessionDocuments) refreshSessionDocuments();
+
       if (!messages.length) clearChat();
+      resetPlanGate(messages);
       eventCount = messages.length;
       renderEventCount();
 
       applyRunStatus(snapshot.status, snapshot.run_status_version);
+      CallGraph.loadSession(activeUser && activeUser.id, activeSession && activeSession.id);
       if (typeof RunTimer !== 'undefined') {
         RunTimer.restoreFromSnapshot(snapshot);
       }
       StatusIndicator.feed({ type: 'status', status: snapshot.status });
+      if (window.RunControl) RunControl.feed(snapshot);
       populateUserSelectors();
       populateSessionSelector();
     }

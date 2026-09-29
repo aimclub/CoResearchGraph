@@ -14,7 +14,9 @@ REQUEST_TIMEOUT = 60
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def retrosynthesis_result(smiles: str, mode: str = "fast", max_routes: int = 5) -> Dict[str, Any]:
+def retrosynthesis_result(
+    smiles: str, mode: str = "fast", max_routes: int = 5, timeout: float = REQUEST_TIMEOUT
+) -> Dict[str, Any]:
     """
     Proxy request to the Retrosynthesis service tree-search endpoint
 
@@ -22,6 +24,8 @@ def retrosynthesis_result(smiles: str, mode: str = "fast", max_routes: int = 5) 
         smiles (str): Target molecule SMILES.
         mode (str): One of "fast", "balanced", "deep".
         max_routes (int): Maximum number of routes to return.
+        timeout (float): Seconds to wait; a "balanced" or "deep" tree search
+            can take longer than the default.
     Returns:
         response (Dict[str, Any]): Retrosynthesis result payload with:
             - target (str | None): input target SMILES returned by ASKCOS.
@@ -57,7 +61,7 @@ def retrosynthesis_result(smiles: str, mode: str = "fast", max_routes: int = 5) 
             api_url,
             json={"smiles": smiles},
             params={"mode": mode},
-            timeout=REQUEST_TIMEOUT,
+            timeout=timeout,
         )
         if response.status_code != 200:
             error_msg = f"Retrosynthesis API returned status {response.status_code}: {response.text[:500]}"

@@ -8,14 +8,24 @@ schema permissions for the new ContextInitAgent writer.
 from collections import Counter
 
 from CoScientist.context_init.agent import (
+    FRAME_COMPLETED_STATE_KEY,
+    FRAME_STATE_KEY,
+    ContextInitSessionAgent,
     apply_form_values,
+    apply_review_response,
     coerce_frame,
+    frame_is_initialized,
     frame_to_form,
 )
 from CoScientist.context_init.commit import frame_to_init_kwargs, seed_frame
 from CoScientist.context_init.models import CANONICAL_FRAME_BLOCKS, ResearchFrame
 from CoScientist.graph.research import schema
 from CoScientist.graph.research.store import ResearchGraphStore
+from CoScientist.hitl.models import (
+    HITLAction,
+    HITLDecisionSource,
+    HITLResponse,
+)
 
 
 def _filled_frame() -> ResearchFrame:
@@ -91,10 +101,41 @@ def test_apply_form_values_none_is_noop():
     assert apply_form_values(f, None).model_dump() == f.normalized().model_dump()
 
 
+def test_auto_review_does_not_forge_operator_provenance():
+    frame = ResearchFrame.blank("q")
+    domain = next(
+        field for field in frame.block("Вопрос исследования").fields
+        if field.name == "domain"
+    )
+    domain.value = "physics"
+    domain.status = "предложено агентом"
+    response = HITLResponse(
+        action=HITLAction.APPROVE,
+        approved=True,
+        form_values={"Вопрос исследования": {
+            "domain": "physics",
+            "trl": "Не задано",
+        }},
+        decision_source=HITLDecisionSource.MODE_AUTO,
+    )
+
+    reviewed = apply_review_response(frame, response)
+    fields = {field.name: field for field in reviewed.block("Вопрос исследования").fields}
+    assert fields["domain"].status == "предложено агентом"
+    assert fields["trl"].status == "не задано"
+
+
 def test_coerce_frame_accepts_dict_and_json():
     f = _filled_frame()
     assert isinstance(coerce_frame(f.model_dump()), ResearchFrame)
     assert isinstance(coerce_frame(f.model_dump_json()), ResearchFrame)
+
+
+def test_frame_is_initialized_only_after_completion_marker():
+    # A drafted frame alone may belong to an interrupted first turn, so it
+    # cannot suppress the retry.  Only the post-seeding marker does.
+    assert frame_is_initialized({"research_frame": _filled_frame().model_dump()}) is False
+    assert frame_is_initialized({FRAME_COMPLETED_STATE_KEY: True}) is True
 
 
 # ── privileged graph seeding ──────────────────────────────────────────────────
@@ -163,3 +204,33 @@ def test_context_init_agent_cannot_write_others_nodes():
         "ContextInitAgent", "Hypothesis", "formulated", {})
     assert schema.validate_edge(
         "ContextInitAgent", "supports", "Evidence", "Hypothesis")
+
+
+def test_post_final_events_seeds_graph_and_emits_no_chat_message(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    store = ResearchGraphStore(directory=str(tmp_path))
+    monkeypatch.setattr("CoScientist.context_init.agent.get_research_graph", lambda _ctx: store)
+
+    frame = _filled_frame()
+    agent = ContextInitSessionAgent(name="ContextInitSessionAgent", output_key="research_frame")
+    ctx = SimpleNamespace(
+        session=SimpleNamespace(state={"research_frame": frame.model_dump()}),
+        invocation_id="inv-42",
+        branch="main",
+    )
+
+    events = list(agent._post_final_events(ctx, ""))
+    assert len(events) == 1
+    event = events[0]
+
+    # Verify state delta is populated correctly
+    assert event.actions.state_delta[FRAME_STATE_KEY] == frame.model_dump()
+    assert event.actions.state_delta[FRAME_COMPLETED_STATE_KEY] is True
+    assert event.actions.state_delta["orchestrator_root_goal"] == frame.original_request
+
+    # Verify graph is seeded
+    g = store.full_graph()
+    assert len(g.nodes) > 0
+
+    # Verify no visible chat text is emitted
+    assert event.content is None

@@ -59,10 +59,10 @@ _L = {
            "backlog": "Отложенный бэклог ({n})",
            "completion": "завершение: {v}",
            "no_method": "метод не определён — гипотеза отложена",
-           "no_ev": {"planned": "метод ещё не запускался — свидетельств нет",
-                     "running": "метод выполняется — свидетельств пока нет",
-                     "failed": "метод завершился ошибкой — свидетельств нет",
-                     "done": "метод отработал, но свидетельство не записано",
+           "no_ev": {"proposed": "метод предложен, но не использован — "
+                                 "свидетельств нет",
+                     "not_used": "метод не использован — свидетельств нет",
+                     "used": "метод использован, но свидетельство не записано",
                      "": "свидетельств пока нет"},
            "no_cl": "свидетельств нет — выводить не из чего",
            "no_cl2": "свидетельства есть, вывод ещё не сформулирован",
@@ -79,10 +79,9 @@ _L = {
            "stats": "{h} hypotheses · {e} evidence · {c} conclusions · {n} nodes",
            "backlog": "Postponed backlog ({n})",
            "completion": "completion: {v}", "no_method": "no method — hypothesis postponed",
-           "no_ev": {"planned": "method not started — no evidence",
-                     "running": "method running — no evidence yet",
-                     "failed": "method failed — no evidence",
-                     "done": "method finished without recording evidence",
+           "no_ev": {"proposed": "method proposed, not used — no evidence",
+                     "not_used": "method not used — no evidence",
+                     "used": "method used without recording evidence",
                      "": "no evidence yet"},
            "no_cl": "no evidence — nothing to conclude from",
            "no_cl2": "evidence on file, conclusion not written yet",
@@ -571,6 +570,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     src = argv[0]
     out_svg = argv[1] if len(argv) > 1 else "research_slide.svg"
     data = json.load(open(src, encoding="utf-8"))
+    # Straight off the disk, so the store's loader never saw it: a study
+    # recorded before methods got their own vocabulary would otherwise reach
+    # `_row_layout` speaking a task's, and every one of its methods would fall
+    # to the generic "свидетельств пока нет" line.
+    from CoScientist.graph.research.store import _respeak_method_status
+    for node in (data.get("nodes") or []):
+        _respeak_method_status(node)
     svg = render_slide(data)
     with open(out_svg, "w", encoding="utf-8") as f:
         f.write(svg)

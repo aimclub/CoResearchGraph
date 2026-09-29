@@ -26,7 +26,30 @@
     // reconnecting tab gets the whole picture in one snapshot instead of having
     // to add up a stream. Rows are agents; a sandbox run shows as the child of
     // the agent that started it, because that is who spent the money.
+    //
+    // The panel is folded by default — the spend is checked now and then, not
+    // watched — and the two numbers worth watching (total and elapsed) stay on
+    // the summary row either way. Whether a reader keeps it open is a per-
+    // browser habit, so it is remembered here rather than reset every reload.
     // =========================================================================
+    const USAGE_PANEL_KEY = 'coscientist.usage_open';
+
+    (function restoreUsagePanel() {
+      const panel = document.getElementById('usage-panel');
+      if (!panel) return;
+      try {
+        panel.open = localStorage.getItem(USAGE_PANEL_KEY) === 'true';
+      } catch (_) { /* private mode: the default (folded) stands */ }
+      panel.addEventListener('toggle', () => {
+        try { localStorage.setItem(USAGE_PANEL_KEY, String(panel.open)); } catch (_) { }
+      });
+    })();
+
+    // The agent's human name where the status indicator knows one.
+    function agentName(name) {
+      return (window.StatusIndicator && StatusIndicator.agentName) ? StatusIndicator.agentName(name) : name;
+    }
+
     function fmtUsd(value) {
       const n = Number(value) || 0;
       if (n && n < 0.0001) return '<$0.0001';
@@ -38,6 +61,15 @@
       if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
       if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
       return String(n);
+    }
+
+    const USAGE_TOP_N = 5;
+    let usageShowAll = false;
+    let lastMetrics = null;
+
+    function toggleUsageAll() {
+      usageShowAll = !usageShowAll;
+      if (lastMetrics) renderMetrics(lastMetrics);
     }
 
     function renderMetrics(data) {
@@ -57,21 +89,43 @@
       }
       summaryEl.textContent = summary.join(' · ');
 
-      const rows = (data.agents || []).map(agent => {
+      // Most expensive first, a bar for each relative to the top one, and the
+      // long tail folded into one line: the question is "who spent it", which
+      // the first few rows answer.
+      const agents = (data.agents || []).slice()
+        .sort((a, b) => (Number(b.cost_usd) || 0) - (Number(a.cost_usd) || 0));
+      const top = Number(agents.length && agents[0].cost_usd) || 0;
+      const shown = usageShowAll ? agents : agents.slice(0, USAGE_TOP_N);
+      const rows = shown.map(agent => {
+        const cost = Number(agent.cost_usd) || 0;
+        const width = top ? Math.max(2, Math.round((cost / top) * 100)) : 0;
         const box = agent.sandbox;
         const child = box ? `
-          <div class="flex justify-between text-outline-variant/60 pl-3">
-            <span class="truncate">└ sandbox · ${Math.round(box.agent_seconds || 0)}s</span>
-            <span>${fmtUsd(box.total_cost_usd)}</span>
-          </div>` : '';
+            <div class="flex justify-between gap-2 pl-3 text-outline-variant">
+              <span class="truncate">sandbox · ${Math.round(box.agent_seconds || 0)}s</span>
+              <span class="tabular-nums">${fmtUsd(box.total_cost_usd)}</span>
+            </div>` : '';
         return `
           <div>
-            <div class="flex justify-between gap-2">
-              <span class="truncate text-on-surface/80" title="${escHtml(agent.agent)}">${escHtml(agent.agent)}</span>
-              <span class="text-outline-variant whitespace-nowrap">${fmtTokens(agent.llm.total_tokens)} · ${fmtUsd(agent.cost_usd)}</span>
+            <div class="flex items-baseline gap-2">
+              <span class="flex-1 min-w-0 truncate text-on-surface-variant" title="${escHtml(agent.agent)}" translate="no">${escHtml(agentName(agent.agent))}</span>
+              <span class="text-outline-variant tabular-nums whitespace-nowrap">${fmtTokens(agent.llm.total_tokens)}</span>
+              <span class="w-16 text-right text-on-surface tabular-nums whitespace-nowrap">${fmtUsd(agent.cost_usd)}</span>
+            </div>
+            <div class="mt-1 h-[3px] rounded-full bg-surface-container-high overflow-hidden" aria-hidden="true">
+              <div class="h-full rounded-full bg-outline-variant/50" style="width:${width}%"></div>
             </div>${child}
           </div>`;
       });
+      const rest = agents.slice(USAGE_TOP_N);
+      if (rest.length) {
+        const restCost = rest.reduce((sum, agent) => sum + (Number(agent.cost_usd) || 0), 0);
+        rows.push(`
+          <button type="button" onclick="toggleUsageAll()" class="text-primary hover:underline">${escHtml(usageShowAll
+            ? t('usage.showFewer')
+            : t('usage.showRest', { n: rest.length, cost: fmtUsd(restCost) }))}</button>`);
+      }
+      lastMetrics = data;
       document.getElementById('metrics-agents').innerHTML =
         rows.join('') || '<div class="text-outline-variant">—</div>';
 
@@ -142,7 +196,15 @@
       isRunning: false,
 
       start(timestamp) {
-        const parsed = timestamp ? new Date(timestamp).getTime() : Date.now();
+        const parsed = timestamp != null ? new Date(timestamp).getTime() : NaN;
+        if (this.isRunning && this.startedAt !== null) {
+          // Status/usage notifications are not new runs. A server timestamp
+          // may correct the optimistic client start, but an untimed update
+          // must never reset the origin or replace the ticking interval.
+          if (Number.isFinite(parsed)) this.startedAt = parsed;
+          this.tick();
+          return;
+        }
         this.startedAt = Number.isFinite(parsed) ? parsed : Date.now();
         this.finishedAt = null;
         this.isRunning = true;
@@ -152,17 +214,15 @@
         if (dot) dot.classList.remove('hidden');
 
         const durEl = document.getElementById('metrics-duration');
-        if (durEl) {
-          durEl.classList.add('text-primary');
-          durEl.classList.remove('text-outline-variant');
-        }
+        if (durEl) durEl.classList.remove('text-outline-variant');
 
         this.tick();
         this.timerId = setInterval(() => this.tick(), 1000);
       },
 
       finish(timestamp) {
-        if (!this.isRunning && this.finishedAt) return;
+        // In particular, preserve a duration restored from session history.
+        if (!this.isRunning) return;
         this.stopInterval();
         const parsed = timestamp ? new Date(timestamp).getTime() : Date.now();
         this.finishedAt = Number.isFinite(parsed) ? parsed : Date.now();
@@ -174,10 +234,9 @@
         const durEl = document.getElementById('metrics-duration');
         if (durEl) {
           durEl.classList.remove('text-primary');
-          durEl.classList.add('text-on-surface/90');
         }
 
-        const elapsedMs = this.startedAt ? Math.max(0, this.finishedAt - this.startedAt) : this.lastElapsedMs;
+        const elapsedMs = this.startedAt !== null ? Math.max(0, this.finishedAt - this.startedAt) : this.lastElapsedMs;
         this.lastElapsedMs = elapsedMs;
         this.render(elapsedMs, false);
       },
@@ -185,6 +244,8 @@
       setDuration(elapsedMs) {
         this.stopInterval();
         this.isRunning = false;
+        this.startedAt = null;
+        this.finishedAt = null;
         this.lastElapsedMs = Math.max(0, Number(elapsedMs) || 0);
 
         const dot = document.getElementById('metrics-duration-dot');
@@ -193,7 +254,6 @@
         const durEl = document.getElementById('metrics-duration');
         if (durEl) {
           durEl.classList.remove('text-primary');
-          durEl.classList.add('text-on-surface/90');
         }
 
         this.render(this.lastElapsedMs, false);
@@ -221,6 +281,8 @@
           const isRu = typeof currentLang !== 'undefined' && currentLang === 'ru';
           wrap.title = isRu ? 'Время выполнения' : 'Run duration';
         }
+        const topEl = document.getElementById('topbar-elapsed');
+        if (topEl) topEl.classList.add('hidden');
       },
 
       stopInterval() {
@@ -231,7 +293,7 @@
       },
 
       tick() {
-        if (!this.startedAt) return;
+        if (this.startedAt === null) return;
         const elapsedMs = Math.max(0, Date.now() - this.startedAt);
         this.lastElapsedMs = elapsedMs;
         this.render(elapsedMs, true);
@@ -241,6 +303,11 @@
         const durEl = document.getElementById('metrics-duration');
         if (durEl) {
           durEl.textContent = fmtDuration(ms);
+        }
+        const topEl = document.getElementById('topbar-elapsed');
+        if (topEl) {
+          topEl.textContent = `${t('topbar.elapsed')} ${fmtDuration(ms)}`;
+          topEl.classList.toggle('hidden', !running);
         }
         const wrap = document.getElementById('metrics-duration-wrap');
         if (wrap) {
@@ -258,8 +325,15 @@
 
       restoreFromSnapshot(snapshot) {
         if (!snapshot) return;
-        if (snapshot.status === 'processing') {
-          const start = (snapshot.run_times && snapshot.run_times.started_at)
+        const control = snapshot.run_control;
+        const ongoing = control
+          ? ['running', 'pause_requested', 'paused'].includes(control.state)
+          : ['processing', 'paused'].includes(snapshot.status);
+        if (ongoing) {
+          // Wall time includes operator/budget pauses, just as it does before
+          // reconnecting. The durable origin also survives server restarts.
+          const start = control?.started_at
+            || (snapshot.run_times && snapshot.run_times.started_at)
             || this._findLastUserMessageTimestamp(snapshot.messages)
             || Date.now();
           this.start(start);
@@ -320,4 +394,3 @@
       }
     };
     window.RunTimer = RunTimer;
-

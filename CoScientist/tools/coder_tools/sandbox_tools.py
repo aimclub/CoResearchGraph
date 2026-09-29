@@ -420,9 +420,40 @@ async def list_sandbox_files(
     }
 
 
+
+async def fetch_sandbox_artifact(
+    path: str,
+    tool_context: ToolContext = None,
+) -> Dict[str, Any]:
+    """
+    Bring a file OUT of the sandbox so it can be opened, reported and kept.
+
+    `list_sandbox_files` only says a file exists; this copies it into durable
+    storage and answers with a link that stays valid. Use it for anything the
+    run should be able to show afterwards — a plot, a trained checkpoint, a
+    results table, a generated dataset — including files the sandbox agent did
+    not upload itself.
+
+    A directory arrives as a single ZIP, so `/workspace` in one call is fine.
+
+    Args:
+        path: Absolute path inside the sandbox, under `/workspace`.
+
+    Returns:
+        Dict with status, url (put this in your report — the reader opens it),
+        remote_path, size_bytes and the durable bucket/key.
+    """
+    from CoScientist.tools.coder_tools.sandbox_artifacts import transfer_sandbox_artifact
+
+    return await asyncio.to_thread(
+        transfer_sandbox_artifact, path,
+        session_id=_session(tool_context), tool_context=tool_context,
+    )
+
 def get_sandbox_tools() -> list:
     """The sandbox tools, or an empty list when no sandbox URL is configured."""
     if not sandbox_configured():
         logger.info("Sandbox URL not configured — sandbox tools not attached.")
         return []
-    return [run_sandbox_task, check_sandbox_task, list_sandbox_files]
+    return [run_sandbox_task, check_sandbox_task, list_sandbox_files,
+            fetch_sandbox_artifact]

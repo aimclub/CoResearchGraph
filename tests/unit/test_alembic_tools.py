@@ -8,12 +8,14 @@ deterministically.
 import asyncio
 import time
 
+import pytest
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import CoScientist.assembly.bindings  # noqa: E402,F401  (registration side effect)
 from CoScientist.assembly.registry import REGISTRY  # noqa: E402
+from CoScientist.config import get_settings  # noqa: E402
 
 from CoScientist.tools import alembic_tools  # noqa: E402
 from CoScientist.tools.alembic_tools import (  # noqa: E402
@@ -26,6 +28,11 @@ from CoScientist.tools.alembic_tools import (  # noqa: E402
 
 def setup_function():
     alembic_tools._JOBS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _enable_alembic_for_tool_mechanics(monkeypatch):
+    monkeypatch.setattr(get_settings().experiments, "route_alembic", True)
 
 
 def _noop_runner(rec):
@@ -54,6 +61,14 @@ def test_build_mcp_server_rejects_invalid_repo_url():
     assert result["status"] == "error"
     assert "repo_url" in result["error"]
     assert alembic_tools._JOBS == {}  # no job was started
+
+
+def test_build_mcp_server_refuses_a_direct_call_when_capability_is_off(monkeypatch):
+    monkeypatch.setattr(get_settings().experiments, "route_alembic", False)
+    result = asyncio.run(build_mcp_server("https://github.com/whitead/synspace"))
+    assert result["status"] == "error"
+    assert result["error_code"] == "capability_disabled"
+    assert alembic_tools._JOBS == {}
 
 
 # ── build_mcp_server: reuse instead of rebuilding ────────────────────────────
@@ -90,6 +105,29 @@ def test_repeated_build_reuses_done_job():
     assert len(alembic_tools._JOBS) == 1  # reused, not rebuilt
 
 
+def test_keyed_build_reuses_done_job_for_same_repo(monkeypatch):
+    """A new EM run_id must not rebuild a repo whose MCP is already served."""
+    monkeypatch.setattr(alembic_tools, "_runner", _noop_runner)
+    monkeypatch.setattr(alembic_tools, "_load_jobs_from_disk", lambda merge=True: None)
+    repo_url = "https://github.com/ingcoder/unomd"
+    rec = _make_rec(
+        "unomd-abc123", repo_url, status="done",
+        mcp_url="http://localhost:21147/mcp",
+        image="alembic-tool:unomd", container="alembic-serve-unomd-old",
+        idempotency_key="old-run:EXP-1:https://github.com/ingcoder/unomd",
+    )
+    alembic_tools._JOBS[rec["job_id"]] = rec
+
+    result = asyncio.run(build_mcp_server(
+        repo_url,
+        idempotency_key="new-run:EXP-1:https://github.com/ingcoder/unomd",
+    ))
+    assert result["job_id"] == rec["job_id"]
+    assert result["status"] == "done"
+    assert result["mcp_url"] == "http://localhost:21147/mcp"
+    assert len(alembic_tools._JOBS) == 1
+
+
 def test_force_rebuild_starts_a_new_job(monkeypatch):
     monkeypatch.setattr(alembic_tools, "_runner", _noop_runner)
     repo_url = "https://github.com/whitead/synspace"
@@ -114,7 +152,7 @@ def test_finalize_parses_url_image_container_and_stage(tmp_path):
         "STAGE 5 — serve\n"
         "url: http://localhost:9001/mcp\n"
         "image: alembic-tool:demo\n"
-        "container: demo_container_abc\n",
+        "container: alembic-serve-demo_container_abc\n",
         encoding="utf-8",
     )
     rec = {
@@ -129,13 +167,13 @@ def test_finalize_parses_url_image_container_and_stage(tmp_path):
     assert rec["status"] == "done"
     assert rec["mcp_url"] == "http://localhost:9001/mcp"
     assert rec["image"] == "alembic-tool:demo"
-    assert rec["container"] == "demo_container_abc"
+    assert rec["container"] == "alembic-serve-demo_container_abc"
 
     snap = alembic_tools._snapshot(rec)
     assert snap["stage"] == "5/5 serve"
     assert snap["mcp_url"] == "http://localhost:9001/mcp"
     assert snap["image"] == "alembic-tool:demo"
-    assert snap["container"] == "demo_container_abc"
+    assert snap["container"] == "alembic-serve-demo_container_abc"
 
 
 def test_finalize_marks_failed_on_nonzero_returncode(tmp_path):

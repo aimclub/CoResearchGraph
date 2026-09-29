@@ -23,8 +23,8 @@ class OpenAlexClient:
         api_key: str = None,
         s3_service: S3BucketService = None,
     ) -> None:
-        self.email = email
-        self.api_key = api_key
+        self.email = email or OPENALEX_EMAIL or os.environ.get("SERVICES__OPENALEX_EMAIL")
+        self.api_key = api_key or os.environ.get("OPENALEX_API_KEY") or os.environ.get("SERVICES__OPENALEX_API_KEY")
 
     def request_with_retry(
         self,
@@ -37,6 +37,9 @@ class OpenAlexClient:
         """Make an HTTP GET request with retry logic for rate limits and server errors."""
         url = endpoint if endpoint.startswith("http") else urljoin(self.BASE_URL, endpoint)
         request_params = dict(params or {})
+        # Credentials go to OpenAlex and nowhere else: this method also takes
+        # absolute URLs (and streams), so an unguarded `api_key` would ride
+        # along to whatever host a PDF happens to be served from.
         if urlparse(url).netloc in {"api.openalex.org", "content.openalex.org"}:
             if self.email:
                 request_params.setdefault("mailto", self.email)
@@ -53,7 +56,7 @@ class OpenAlexClient:
                 )
                 if response.status_code == 200:
                     return response
-                if response.status_code == 403 or response.status_code >= 500:
+                if response.status_code == 403 or response.status_code == 429 or response.status_code >= 500:
                     wait_time = 2 ** attempt
                     time.sleep(wait_time)
                 else:
@@ -157,7 +160,7 @@ class OpenAlexClient:
 
 
 if __name__ == "__main__":
-    client = OpenAlexClient(email=OPENALEX_EMAIL)
+    client = OpenAlexClient(email=OPENALEX_EMAIL, api_key=os.environ.get("OPENALEX_API_KEY"))
     # Example works search:
     result = client.search_works(
         institution_id="i173089394",  # Replace with a valid institution ID

@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CoScientist hypotheses — a BENCH for the hypothesis generator, overlaying the
+# experiments profile.
+#
+# Why it exists. Judging a hypothesis means judging it against the instruments
+# that would settle it, and those are known only inside a configured run: the
+# planner writes the plan, the retriever fills the inventory, and only then does
+# the generator speak. Reproducing that by hand is guesswork.
+#
+# It runs the WHOLE study, execution lane included. An earlier revision stood
+# the Experiment Module down to make a turn of the prompt cheap, and that cut
+# off exactly what a hypothesis is judged by: which experiments it caused, what
+# they measured, and the verdict they carried. A claim nobody runs cannot be
+# told apart from a claim that merely reads well. So the only thing this
+# profile changes is the generator itself; the path
+#   ContextInit → TZSpec → Planner → ToolRetriever → Hypotheses
+#   → Experiment Module → validator → report
+# is the experiments profile's, unchanged.
+#
+# Read the result in the research graph: Hypothesis nodes with their
+# VerificationMethod / ConfirmationCriteria, the PlanStep and Tool nodes they
+# were written against, and the Evidence and Conclusion the experiments left on
+# them. `hypothesis_brief` (agents/callbacks/hypothesis_brief.py) is what carried
+# the inventory, the plan and the background into the prompt; its line in the
+# log — "гипотезы: режим tools:N, шагов плана M" — says how much of each arrived.
+#
+# Run:      COSCIENTIST_CONFIG=hypotheses python -m CoScientist
+# Validate: COSCIENTIST_CONFIG=hypotheses python -m CoScientist.assembly
+# ─────────────────────────────────────────────────────────────────────────────
+
+extends: experiments
+
+agents:
+  # ── The generator under test ──────────────────────────────────────────────
+  HypothesesAgent:
+    # Full reasoning regardless of what the ambient profile sets: the bench
+    # exists to see the agent at its best, and a cheap run here measures the
+    # dial rather than the prompt.
+    reasoning: high
+    # Inherited from the experiments profile and deliberately left intact:
+    # bootstrap_research_question_if_empty → before_get_task →
+    # inject_research_context → brief_hypotheses_regime → user_links.
+    # brief_hypotheses_regime must stay LAST of the context hooks — it reads the
+    # inventory and the plan that the ones before it refreshed.

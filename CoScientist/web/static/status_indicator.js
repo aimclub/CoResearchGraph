@@ -22,6 +22,19 @@
  *   StatusIndicator.markStopped()      — the user pressed Stop
  *   StatusIndicator.reset()            — session switch / clear
  *   StatusIndicator.demo(file, speed)  — replay a saved bundle's events
+ *   StatusIndicator.stages()           — linear pipeline stages with their state
+ *   StatusIndicator.stageOf(agent)     — index of the stage an agent works in
+ *
+ * A LINEAR pipeline (config `pipeline.linear`, e.g. the microfluidics profile)
+ * sends its stages with the session snapshot. The line then leads with the
+ * stage — "Этап 3 из 10 · План исследования" — and the current activity moves
+ * to the sub-line: in such a run most tools look alike, the stage does not.
+ * The same stages, each with its state, are the plan tracker's list
+ * (plan_tracker.js), which is re-rendered whenever one of them changes.
+ *
+ * While the microfluidics ТЗ agents fill or edit the ТЗ cards, the line is the
+ * card count instead — "Заполнено карточек ТЗ: 7 из 16" — read from the ТЗ
+ * panel's own `tz_snapshot` stream; no tool or agent names at all.
  */
 (function () {
   'use strict';
@@ -55,6 +68,7 @@
   // Categories are deliberately coarse: the user cares about the KIND of work,
   // not which of four search backends answered.
   const CATEGORIES = {
+    tz: { icon: 'assignment', ru: 'Заполняю карточки ТЗ', en: 'Filling in the specification cards' },
     web_search: { icon: 'travel_explore', ru: 'Ищу информацию в интернете', en: 'Searching the web' },
     papers: { icon: 'menu_book', ru: 'Читаю научные статьи', en: 'Reading scientific papers' },
     rag: { icon: 'database', ru: 'Проверяю архивы', en: 'Searching the knowledge base' },
@@ -62,7 +76,7 @@
     data: { icon: 'dataset', ru: 'Обрабатываю данные', en: 'Preparing the data' },
     chem: { icon: 'science', ru: 'Считаю свойства молекул', en: 'Computing molecular properties' },
     plot: { icon: 'insert_chart', ru: 'Строю графики', en: 'Building charts' },
-    graph_write: { icon: 'hub', ru: 'Дополняю граф знаний', en: 'Recording findings in the knowledge graph' },
+    graph_write: { icon: 'hub', ru: 'Дополняю граф исследований', en: 'Recording findings in the research graph' },
     graph_read: { icon: 'account_tree', ru: 'Сверяюсь с картой исследования', en: 'Checking the research map' },
     mcp_build: { icon: 'construction', ru: 'Собираю новый инструмент', en: 'Building a new tool' },
     mcp_find: { icon: 'extension', ru: 'Подбираю инструменты для задачи', en: 'Picking tools for the task' },
@@ -76,6 +90,8 @@
   // contains the substring "search", so it has to be decided long before the
   // catch-all search rule at the bottom, or half the run reads as web search.
   const RULES = [
+    // The microfluidics ТЗ tools, before anything their names could match.
+    [/fill_tz_section|fill_agent_fields|edit_tz_section/, 'tz'],
     [/(build|check)_mcp|mcp_build|alembic/, 'mcp_build'],
     [/search_mcp|register_mcp|mcp_server|tool_retriev|rerank|prepare_tool/, 'mcp_find'],
     [/create_plan|task_status|active_tasks|roadmap|todo/, 'tasks'],
@@ -97,37 +113,64 @@
   const GENERIC_RULE = [/search|query|lookup|find|browse/, 'web_search'];
 
   // Agent roles, as a user would name them. Anything missing falls back to the
-  // Agent roles, as a user would name them. Anything missing falls back to the
-  // bare class name with the "Agent" suffix stripped.
+  // "агент-" + the bare class name with the "Agent" suffix stripped.
   const AGENTS = {
-    OrchestratorAgent: { ru: 'агент-оркестратор', en: 'orchestrator agent' },
-    PlannerAgent: { ru: 'агент-планировщик', en: 'planner agent' },
-    PlanningPipelineAgent: { ru: 'агент-планировщик', en: 'planner agent' },
-    PlanCriticAgent: { ru: 'агент-критик', en: 'plan critic agent' },
-    ContextInitAgent: { ru: 'агент рамки исследования', en: 'research frame agent' },
-    ContextInitSessionAgent: { ru: 'агент рамки исследования', en: 'research frame agent' },
-    HypothesesAgent: { ru: 'агент генерации гипотез', en: 'hypotheses agent' },
-    ResearchAgent: { ru: 'агент-исследователь', en: 'researcher agent' },
-    TaskExecutorAgent: { ru: 'агент-исполнитель', en: 'executor agent' },
-    ToolPipelineAgent: { ru: 'агент подбора инструментов', en: 'tool pipeline agent' },
-    CoderAgent: { ru: 'агент-инженер', en: 'engineer agent' },
-    DatasetCollectorAgent: { ru: 'агент сбора данных', en: 'data collector agent' },
-    MedicalAgent: { ru: 'агент медицинского анализа', en: 'medical analyst agent' },
-    McpBuilderAgent: { ru: 'агент сборки инструментов', en: 'tool builder agent' },
-    ToolPreparerAgent: { ru: 'агент подготовки инструментов', en: 'tool preparer agent' },
+    // Microfluidics profile: keep the stable runtime ids, but show the role
+    // a researcher actually needs to understand.
+    RootOrchestrator: { ru: 'Оркестратор', en: 'Research lead' },
+    ModuleA_TZLiterature: { ru: 'Постановка задачи и литература', en: 'Specification & literature' },
+    TZAgent: { ru: 'Подготовка технического задания', en: 'Specification preparation' },
+    // Its workers (TZSpecAgent_task, …) fill the ТЗ part by part.
+    TZSpecAgent: { ru: 'Техническое задание', en: 'Technical specification', worker: 'Агент технического задания' },
+    TZQueryGenAgent: { ru: 'Составление поисковых запросов', en: 'Literature queries' },
+    LiteratureOrchestrator: { ru: 'Анализ литературы', en: 'Literature analysis' },
+    LiteratureSynthesisAgent: { ru: 'Итоги литературного анализа', en: 'Literature summary' },
+    EvidenceVerifierAgent: { ru: 'Агент-верификатор', en: 'Verifier agent' },
+    RouteSelectionAgent: { ru: 'Выбор маршрута синтеза', en: 'Route selection' },
+    ModuleB_Design: { ru: 'Молекула и экономика', en: 'Molecule & economics' },
+    MolDesignAgent: { ru: 'Подбор молекулы', en: 'Molecule selection' },
+    SynthRouteAgent: { ru: 'Маршруты синтеза', en: 'Synthesis routes' },
+    EconomicsAgent: { ru: 'Расчёт стоимости', en: 'Cost estimate' },
+    ModuleC_Optimization: { ru: 'Оптимизация условий синтеза', en: 'Synthesis condition optimization' },
+    OptimizationAgent: { ru: 'Оптимизация условий синтеза', en: 'Synthesis condition optimization' },
+    ModuleC_Reactor: { ru: 'Эксперименты на реакторе', en: 'Reactor experiments' },
+    ReactorAgent: { ru: 'Эксперименты на реакторе', en: 'Reactor experiments' },
+    ReportAgent: { ru: 'Итоговый отчёт', en: 'Final report' },
+    OrchestratorAgent: { ru: 'Агент-оркестратор', en: 'Orchestrator agent' },
+    PlannerAgent: { ru: 'Агент-планировщик', en: 'Planner agent' },
+    PlanningPipelineAgent: { ru: 'Агент-планировщик', en: 'Planner agent' },
+    PlanCriticAgent: { ru: 'Агент-критик', en: 'Plan critic agent' },
+    ContextInitAgent: { ru: 'Агент рамки исследования', en: 'Research frame agent' },
+    ContextInitSessionAgent: { ru: 'Агент рамки исследования', en: 'Research frame agent' },
+    HypothesesAgent: { ru: 'Агент генерации гипотез', en: 'Hypotheses agent' },
+    ResearchAgent: { ru: 'Агент-исследователь', en: 'Researcher agent' },
+    PaperRetriever: { ru: 'Агент-исследователь', en: 'Researcher agent' },
+    TaskExecutorAgent: { ru: 'Агент-исполнитель', en: 'Executor agent' },
+    ToolPipelineAgent: { ru: 'Агент подбора инструментов', en: 'Tool pipeline agent' },
+    CoderAgent: { ru: 'Агент-инженер', en: 'Engineer agent' },
+    DatasetCollectorAgent: { ru: 'Агент сбора данных', en: 'Data collector agent' },
+    MedicalAgent: { ru: 'Агент медицинского анализа', en: 'Medical analyst agent' },
+    McpBuilderAgent: { ru: 'Агент сборки MCP', en: 'Tool builder agent' },
+    ToolPreparerAgent: { ru: 'Агент подготовки инструментов', en: 'Tool preparer agent' },
     // The tool pipeline fans out into half a dozen internal agents. Naming each
     // one tells a user nothing — they are all the same activity to them.
-    ParallelToolSearcherAgent: { ru: 'агент подбора инструментов', en: 'tool search agent' },
-    LocalToolsExtractorAgent: { ru: 'агент подбора инструментов', en: 'tool search agent' },
-    ToolRetrieverAgent: { ru: 'агент подбора инструментов', en: 'tool search agent' },
-    ToolWebSearcherAgent: { ru: 'агент подбора инструментов', en: 'tool search agent' },
-    ToolReranker: { ru: 'агент подбора инструментов', en: 'tool search agent' },
-    FullSetToolReranker: { ru: 'агент подбора инструментов', en: 'tool search agent' },
-    WebToolsDeployerAgent: { ru: 'агент подключения инструментов', en: 'tool deployer agent' },
-    ResultAggregatorAgent: { ru: 'агент составления отчёта', en: 'report writer agent' },
-    ExperimentAgent: { ru: 'агент экспериментов', en: 'experiment agent' },
-    FedotAgent: { ru: 'агент AutoML', en: 'AutoML agent' },
-    system: { ru: 'система', en: 'system' },
+    ParallelToolSearcherAgent: { ru: 'Агент подбора инструментов', en: 'Tool search agent' },
+    LocalToolsExtractorAgent: { ru: 'Агент подбора инструментов', en: 'Tool search agent' },
+    ToolRetrieverAgent: { ru: 'Агент подбора инструментов', en: 'Tool search agent' },
+    ToolWebSearcherAgent: { ru: 'Агент подбора инструментов', en: 'Tool search agent' },
+    ToolReranker: { ru: 'Агент подбора инструментов', en: 'Tool search agent' },
+    FullSetToolReranker: { ru: 'Агент подбора инструментов', en: 'Tool search agent' },
+    WebToolsDeployerAgent: { ru: 'Агент подключения инструментов', en: 'Tool deployer agent' },
+    ResultAggregatorAgent: { ru: 'Агент составления отчёта', en: 'Report writer agent' },
+    ExperimentAgent: { ru: 'Агент экспериментов', en: 'Experiment agent' },
+    // The Experiment Module runs as four named stages, and a user watching the
+    // rail should be able to tell planning from execution from acceptance.
+    ExperimentModuleAgent: { ru: 'Модуль экспериментов', en: 'Experiment module' },
+    ExperimentPlannerAgent: { ru: 'Агент планирования эксперимента', en: 'Experiment planner agent' },
+    ExperimentExecutorAgent: { ru: 'Агент проведения эксперимента', en: 'Experiment executor agent' },
+    ExperimentResultReviewAgent: { ru: 'Агент приёмки результатов', en: 'Result review agent' },
+    FedotAgent: { ru: 'Агент AutoML', en: 'AutoML agent' },
+    system: { ru: 'Система', en: 'System' },
   };
 
   // What the agent is doing with what just came back. The gap between a tool
@@ -135,6 +178,7 @@
   // and up to a minute — and "thinking" wastes it: the useful thing to say is
   // what it is thinking *about*, which is whatever just finished.
   const REVIEW = {
+    tz: { ru: 'Сверяю карточки ТЗ', en: 'Checking the specification cards' },
     web_search: { ru: 'Изучаю найденное в интернете', en: 'Reading what the search returned' },
     papers: { ru: 'Разбираю найденные статьи', en: 'Going through the papers' },
     rag: { ru: 'Сверяюсь с базой знаний', en: 'Cross-checking the knowledge base' },
@@ -184,6 +228,10 @@
     recentActivity: { ru: 'Недавние действия', en: 'Recent activity' },
     openTools: { ru: 'Журнал инструментов', en: 'Tools viewer' },
     moreTasks: { ru: 'ещё %d шагов в плане', en: '%d more steps in plan' },
+    stage: { ru: 'Этап %d из %d', en: 'Stage %d of %d' },
+    tzFilled: { ru: 'Заполнено карточек ТЗ: %d из %d', en: 'Specification cards filled: %d of %d' },
+    tzEdited: { ru: 'Отредактировано карточек ТЗ: %d из %d', en: 'Specification cards edited: %d of %d' },
+    stagesHeader: { ru: 'Этапы', en: 'Stages' },
     reviewTool: { ru: 'Разбираю ответ инструмента «%s»', en: 'Reading the answer from tool «%s»' },
     collapse: { ru: 'Свернуть', en: 'Collapse' },
     expand: { ru: 'Развернуть', en: 'Expand' },
@@ -191,16 +239,23 @@
 
   // Colour + iconography per phase, in the page's own Tailwind tokens.
   const TONES = {
-    work: { bar: 'bg-primary', icon: 'text-primary', card: 'border-primary/25 bg-primary/[0.06]', text: 'text-on-surface' },
-    wait: { bar: 'bg-tertiary', icon: 'text-tertiary', card: 'border-tertiary/40 bg-tertiary/[0.08]', text: 'text-on-surface' },
-    done: { bar: 'bg-secondary', icon: 'text-secondary', card: 'border-secondary/30 bg-secondary/[0.06]', text: 'text-on-surface' },
-    fail: { bar: 'bg-error', icon: 'text-error', card: 'border-error/40 bg-error/[0.08]', text: 'text-on-surface' },
-    mute: { bar: 'bg-outline-variant', icon: 'text-outline-variant', card: 'border-outline-variant/25 bg-surface-container-high/40', text: 'text-on-surface-variant' },
+    // One neutral card for every phase; only the rule on its left edge and the
+    // icon take the phase colour. A tinted fill per phase put a yellow or red
+    // slab under the composer that competed with the card it was pointing at.
+    work: { bar: 'bg-primary', icon: 'text-primary', card: 'border-outline-variant/15 bg-surface-container-low', text: 'text-on-surface' },
+    wait: { bar: 'bg-tertiary', icon: 'text-tertiary', card: 'border-outline-variant/15 bg-surface-container-low', text: 'text-on-surface' },
+    done: { bar: 'bg-secondary', icon: 'text-secondary', card: 'border-outline-variant/15 bg-surface-container-low', text: 'text-on-surface' },
+    fail: { bar: 'bg-error', icon: 'text-error', card: 'border-error/30 bg-surface-container-low', text: 'text-on-surface' },
+    mute: { bar: 'bg-outline-variant', icon: 'text-outline-variant', card: 'border-outline-variant/15 bg-surface-container-low', text: 'text-on-surface-variant' },
   };
 
   const PHASE_TONE = {
     waiting: 'wait', waiting_frame: 'wait', done: 'done', error: 'fail', stopped: 'fail', offline: 'mute',
   };
+
+  // Phases in which the system is working (as opposed to waiting or finished).
+  const LIVE_PHASES = ['working', 'thinking', 'starting', 'delegating', 'reviewing',
+    'finalizing', 'long_thinking', 'framing'];
 
   const EXPAND_KEY = 'coscientist.status_expanded';
   const PLAN_EXPAND_KEY = 'coscientist.status_plan_expanded';
@@ -217,9 +272,19 @@
 
   const st = newState();
 
+  // The stages of a linear pipeline. Config, not run state: `reset()` on a
+  // session switch keeps them, the next session snapshot replaces them.
+  let pipeline = { stages: [], index: new Map() };  // index: agent -> stage no.
+
+  // The ТЗ cards' progress, as the ТЗ panel last reported it (`tz_snapshot`).
+  // Kept outside the run state for the same reason: a session snapshot
+  // carries the latest one, and the replay that follows restarts the run.
+  let tzProgress = null;  // {phase, agent, filled, total, editDone, editTotal}
+
   function newState() {
     return {
       phase: 'idle',
+      controlPaused: false, // authoritative durable pause, not a finished run
       category: null,
       agent: null,
       detail: null,
@@ -247,6 +312,15 @@
       tasks: [],           // task-tracker items, kept so a status update lands
       plan: null,
       sandboxPlan: null,
+      // Linear pipeline position: the stage being worked on (-1: none yet) and
+      // whether its own agent has already finished.
+      stage: -1,
+      stageEnded: false,
+      // How the run ended ('done' | 'error' | 'stopped'), null while it runs.
+      // Unlike `phase` it outlives the terminal linger, so the plan tracker
+      // still shows the failed stage after the card has hidden.
+      outcome: null,
+      lastAuthor: null,    // the agent behind the latest tool/agent event
       note: null,          // transient sub-line (a failed tool, …)
       hideAt: 0,           // when a terminal phase should disappear
     };
@@ -264,13 +338,21 @@
     return entry[lang] || entry.en || entry.ru || fallback || '';
   }
 
+  /** Agents are always named in Russian, whatever the interface language.
+   *  Workers built at run time are named after the one that spawns them
+   *  (TZSpecAgent_task_fill → TZSpecAgent) and take its `worker` label,
+   *  or its own name when it has none. */
   function agentLabel(name, capitalize = false) {
     if (!name) return '';
-    const known = AGENTS[name];
-    let label = known ? pick(known, name) : '';
+    let candidate = String(name);
+    while (!AGENTS[candidate] && candidate.lastIndexOf('_') > 0) {
+      candidate = candidate.slice(0, candidate.lastIndexOf('_'));
+    }
+    const known = AGENTS[candidate];
+    const isWorker = candidate !== String(name);
+    let label = known ? ((isWorker && known.worker) || known.ru || known.en || '') : '';
     if (!label) {
-      const bare = String(name).replace(/Agent$/, '');
-      label = (lang === 'ru') ? ('агент-' + bare.toLowerCase()) : (bare + ' agent');
+      label = 'Агент-' + String(name).replace(/Agent$/, '').toLowerCase();
     }
     if (capitalize && label) {
       return label.charAt(0).toUpperCase() + label.slice(1);
@@ -551,6 +633,8 @@
         window.RoadmapModal.updateTasks(st.tasks, false);
       }
     }
+    // Same rule once the terminal phase has lingered out into idle.
+    if (!(phase === 'done' && st.outcome)) st.outcome = phase;
     st.hideAt = Date.now() + linger;
     setPhase(phase, {}, true);
     setTimeout(() => {
@@ -745,12 +829,174 @@
     };
   }
 
+  // ── Linear pipeline stages ────────────────────────────────────────────────
+  // Each stage is `{agent, title, members}`: the stage's own agent and every
+  // agent working inside it. The run is linear, so being at stage k means the
+  // k-1 before it are done.
+
+  function setPipeline(stages) {
+    const list = Array.isArray(stages) ? stages.filter(stage => stage && stage.agent) : [];
+    const index = new Map();
+    list.forEach((stage, i) => {
+      [stage.agent].concat(stage.members || []).forEach(name => {
+        if (!index.has(name)) index.set(name, i);
+      });
+    });
+    pipeline = { stages: list, index: index };
+  }
+
+  /** The stage an agent works in, or -1. Agents built at run time are named
+   *  after the one that spawns them (TZSpecAgent_task_fill → TZSpecAgent). */
+  function stageOf(name) {
+    let candidate = String(name || '');
+    while (candidate) {
+      if (pipeline.index.has(candidate)) return pipeline.index.get(candidate);
+      const cut = candidate.lastIndexOf('_');
+      if (cut <= 0) return -1;
+      candidate = candidate.slice(0, cut);
+    }
+    return -1;
+  }
+
+  /** An agent started (or finished) — move the pipeline position. A start
+   *  may go back (a stage run again); a tool call only ever moves forward, it
+   *  is just the fallback for a start trimmed from the replay history. */
+  function touchStage(name, how) {
+    if (!pipeline.stages.length) return;
+    const index = stageOf(name);
+    if (index < 0) return;
+    if (how === 'end') {
+      // Workers and subordinates finish many times inside a stage; only the
+      // stage's own agent finishing ends it.
+      if (index === st.stage && pipeline.stages[index].agent === name) st.stageEnded = true;
+      return;
+    }
+    if (how === 'call' && index <= st.stage) return;
+    if (index !== st.stage) {
+      st.stage = index;
+      st.stageEnded = false;
+    } else if (how === 'start') {
+      st.stageEnded = false;
+    }
+  }
+
+  /** {position, total, done, title} of the current stage, or null. */
+  function stageInfo() {
+    const total = pipeline.stages.length;
+    if (!total || st.stage < 0 || st.stage >= total) return null;
+    const stage = pipeline.stages[st.stage];
+    return {
+      position: st.stage + 1,
+      total: total,
+      done: st.stage + (st.stageEnded ? 1 : 0),
+      title: stage.title || stage.agent,
+    };
+  }
+
+  /** How a delegation's target is named. In a linear pipeline: the title of
+   *  the stage it works in, or null for a module (a container of stages, not
+   *  work of its own — the stages say it better); otherwise the agent. */
+  function delegationLabel(target) {
+    if (!pipeline.stages.length) return agentLabel(target);
+    const index = stageOf(target);
+    return index >= 0 ? (pipeline.stages[index].title || agentLabel(target)) : null;
+  }
+
+  function stageCounter(info) {
+    return pick(TEXT.stage).replace('%d', info.position).replace('%d', info.total);
+  }
+
+  /** Every stage with its state — the plan tracker's list for a linear run:
+   *  `[{agent, title, status}]`, status as the roadmap spells it (done /
+   *  in_progress / error / todo). A stopped run leaves its stage pending. */
+  function stageStates() {
+    return pipeline.stages.map((stage, i) => {
+      let status = 'todo';
+      if (i < st.stage) {
+        status = 'done';
+      } else if (i === st.stage) {
+        if (st.stageEnded || st.outcome === 'done') status = 'done';
+        else if (st.outcome === 'error') status = 'error';
+        else if (st.outcome !== 'stopped') status = 'in_progress';
+      }
+      return { agent: stage.agent, title: stage.title || stage.agent, status: status };
+    });
+  }
+
+  // The plan tracker renders from stageStates(); tell it only when they change
+  // — this runs after every websocket frame.
+  let stagesSignature = '';
+  function notifyStages() {
+    const signature = JSON.stringify(stageStates());
+    if (signature === stagesSignature) return;
+    stagesSignature = signature;
+    if (window.PlanTracker) window.PlanTracker.render();
+  }
+
+  // ── ТЗ cards ──────────────────────────────────────────────────────────────
+
+  function readTz(msg) {
+    if (!msg || typeof msg !== 'object') { tzProgress = null; return; }
+    const progress = msg.progress || {};
+    const fill = msg.agent_fill || null;
+    tzProgress = {
+      phase: msg.phase || '',
+      agent: msg.agent || null,
+      filled: Number(progress.filled) || 0,
+      total: Number(progress.total) || 0,
+      editDone: fill ? Number(fill.done) || 0 : 0,
+      editTotal: fill ? Number(fill.total) || 0 : 0,
+    };
+  }
+
+  /** The ТЗ agent or one of the workers it runs (TZSpecAgent_task, …_fill). */
+  function isTzAgent(name) {
+    const agent = tzProgress && tzProgress.agent;
+    if (!agent || !name) return false;
+    return name === agent || String(name).startsWith(agent + '_');
+  }
+
+  /** {icon, text, done, total} while the ТЗ agents fill or edit the cards —
+   *  and only while they are the ones at work, so a run stopped half way does
+   *  not leave the count on screen for whatever runs next. */
+  function tzInfo() {
+    if (!tzProgress || !isTzAgent(st.lastAuthor)) return null;
+    const count = (template, done, total) =>
+      pick(template).replace('%d', done).replace('%d', total);
+    if (tzProgress.phase === 'agent_filling' && tzProgress.editTotal) {
+      return {
+        icon: 'edit_note', done: tzProgress.editDone, total: tzProgress.editTotal,
+        text: count(TEXT.tzEdited, tzProgress.editDone, tzProgress.editTotal),
+      };
+    }
+    if (tzProgress.phase === 'filling' && tzProgress.total) {
+      return {
+        icon: 'assignment', done: tzProgress.filled, total: tzProgress.total,
+        text: count(TEXT.tzFilled, tzProgress.filled, tzProgress.total),
+      };
+    }
+    return null;
+  }
+
   // ── The reducer ───────────────────────────────────────────────────────────
   function feed(msg, quiet) {
     if (!msg || !msg.type) return;
     const now = Date.now();
 
     switch (msg.type) {
+      case 'run_control': {
+        st.controlPaused = (msg.pause_causes || []).length > 0
+          || ['paused', 'pause_requested'].includes(msg.state);
+        if (st.controlPaused) {
+          st.hideAt = 0;
+          setPhase('waiting', {}, true);
+        } else if (msg.state === 'running') {
+          if (st.phase === 'idle') startRun(now);
+          else if (['waiting', 'waiting_frame'].includes(st.phase)) setPhase('thinking', {}, true);
+        } else if (msg.state === 'completed') endRun('done', DONE_LINGER_MS);
+        else if (msg.state === 'stopped') endRun('stopped', STOPPED_LINGER_MS);
+        break;
+      }
       case 'user_message':
         startRun(stamp(msg.timestamp));
         break;
@@ -762,9 +1008,12 @@
         break;
 
       case 'status':
-        if (msg.status === 'processing') {
+        if (msg.status === 'paused') {
+          st.controlPaused = true;
+          setPhase('waiting', {}, true);
+        } else if (msg.status === 'processing') {
           if (st.phase === 'idle') startRun(now);
-        } else if (st.phase !== 'idle' && st.hideAt === 0 && st.phase !== 'stopped') {
+        } else if (!st.controlPaused && st.phase !== 'idle' && st.hideAt === 0 && st.phase !== 'stopped') {
           endRun('done', DONE_LINGER_MS);
         }
         break;
@@ -776,7 +1025,10 @@
           st.phraseSince = now;
         }
         // The export replays the user's own turns as authored events too.
-        if (msg.author && msg.author !== 'user') st.agent = msg.author;
+        if (msg.author && msg.author !== 'user') {
+          st.agent = msg.author;
+          st.lastAuthor = msg.author;
+        }
         st.note = null;
         refresh();
         break;
@@ -815,9 +1067,25 @@
         break;
 
       case 'session_snapshot':
+        if (Array.isArray(msg.pipeline_stages)) setPipeline(msg.pipeline_stages);
+        readTz(msg.tz);
         if (msg.active_tasks && Array.isArray(msg.active_tasks)) {
           readPlan({ tasks: msg.active_tasks });
         }
+        break;
+
+      case 'checkpoint_restored':
+        if (Array.isArray(msg.pipeline_stages)) setPipeline(msg.pipeline_stages);
+        st.stage = Math.max(0, Number(msg.stage_index) || 0);
+        st.stageEnded = false;
+        st.outcome = null;
+        st.lastAuthor = msg.agent || null;
+        st.agent = msg.agent || null;
+        st.note = null;
+        break;
+
+      case 'tz_snapshot':
+        readTz(msg);
         break;
 
       case 'tasks_updated':
@@ -829,13 +1097,20 @@
 
       case 'hitl_request':
         st.lastEventAt = now;
-        const isFrameReq = (msg.agent_name === 'ContextInitAgent' || msg.agent_name === 'ContextInitSessionAgent')
+        // The ТЗ review is a form too, but not the research frame's.
+        const isTzForm = Boolean(msg.form && msg.form.kind === 'tz');
+        const isFrameReq = !isTzForm && (
+          (msg.agent_name === 'ContextInitAgent' || msg.agent_name === 'ContextInitSessionAgent')
           || Boolean(msg.form)
-          || frameStage();
+          || frameStage());
         setPhase(isFrameReq ? 'waiting_frame' : 'waiting', { agent: msg.agent_name || st.agent }, true);
         break;
 
       case 'hitl_timeout':
+        if (msg.paused) {
+          setPhase('waiting', {}, true);
+          break;
+        }
       case 'hitl_cancelled':
       case 'hitl_response':
         if (st.phase === 'waiting' || st.phase === 'waiting_frame') {
@@ -847,6 +1122,7 @@
         break;
 
       case 'final_response':
+        if (st.controlPaused) break;
         if (msg.content === 'Stopped' || st.phase === 'stopped') {
           endRun('stopped', STOPPED_LINGER_MS);
         } else {
@@ -858,7 +1134,7 @@
         // Deliberately not showing `msg.message`: it is a Python traceback
         // summary, and it is already posted into the chat as a system message.
         st.note = null;
-        endRun('error', ERROR_LINGER_MS);
+        if (!st.controlPaused) endRun('error', ERROR_LINGER_MS);
         break;
 
       default:
@@ -868,8 +1144,15 @@
   }
 
   function onToolActivity(msg, now) {
+    if (msg.phase === 'agent_start' || msg.phase === 'agent_end') {
+      if (msg.phase === 'agent_start' && st.phase === 'idle') startRun(now);
+      if (msg.phase === 'agent_start' && msg.author) st.lastAuthor = msg.author;
+      touchStage(msg.author, msg.phase === 'agent_start' ? 'start' : 'end');
+      return;
+    }
     const tool = msg.tool;
     if (!tool) return;
+    if (msg.author) st.lastAuthor = msg.author;
     if (st.phase === 'idle') startRun(now);
     st.lastEventAt = now;
     if (st.phase === 'waiting' || st.phase === 'waiting_frame') {
@@ -879,7 +1162,10 @@
     const author = msg.author || 'system';
 
     if (msg.phase === 'call') {
-      const target = delegationTarget(tool, msg.args);
+      touchStage(author, 'call');
+      // The server knows an AgentTool when it sees one (a module is one too,
+      // whatever its name); the name-based guess is for older records.
+      const target = (msg.is_delegation && msg.target_agent) || delegationTarget(tool, msg.args);
       if (target) {
         // A delegation is a call like any other: it has an id, it gets a
         // result, and it is open the whole time the subordinate works. Putting
@@ -888,8 +1174,8 @@
         openWork(msg.call_id, {
           kind: 'delegation', tool: tool, agent: author, target: target, at: now,
         });
-        pushStep(msg.call_id, 'alt_route',
-          pick(PHASES.delegating) + ': ' + agentLabel(target));
+        const label = delegationLabel(target);
+        if (label) pushStep(msg.call_id, 'alt_route', pick(PHASES.delegating) + ': ' + label);
         st.note = null;
         refresh();
         return;
@@ -968,7 +1254,7 @@
   function view() {
     // What the user should be told right now, derived fresh on every paint so
     // silence and elapsed time can change the phrase with no new events.
-    let phase = st.phase;
+    let phase = st.controlPaused ? 'waiting' : st.phase;
     if (phase !== 'idle' && !connected) phase = 'offline';
     // Silence only means "I have nothing to report" when nothing is running.
     // A sandbox task runs for forty minutes without emitting a single event,
@@ -986,8 +1272,9 @@
       icon = category.icon;
       text = phraseFor(st.category, st.toolName);
     } else if (phase === 'delegating') {
-      icon = PHASES.agentWorking.icon;
-      text = pick(PHASES.agentWorking).replace('%s', agentLabel(st.target));
+      const who = delegationLabel(st.target);
+      icon = who ? PHASES.agentWorking.icon : PHASES.thinking.icon;
+      text = who ? pick(PHASES.agentWorking).replace('%s', who) : pick(PHASES.thinking);
     } else if (phase === 'reviewing') {
       const category = CATEGORIES[st.category] || CATEGORIES.tool;
       icon = st.category === 'delegation' ? 'groups' : category.icon;
@@ -1002,15 +1289,42 @@
       icon = entry.icon;
       text = pick(entry);
     }
-    return { phase: phase, icon: icon, text: text };
+    // The ТЗ agents at work: the card count is the whole story.
+    const tz = LIVE_PHASES.includes(phase) ? tzInfo() : null;
+    if (tz) return { phase: phase, icon: tz.icon, text: tz.text, activity: null, tz: tz };
+    // A linear pipeline: the stage leads the line and the activity becomes
+    // its sub-line. Waiting, done and failures keep the line — they are what
+    // the user has to act on.
+    const stage = stageInfo();
+    if (stage && LIVE_PHASES.includes(phase)) {
+      // "Работает <модуль>" says nothing the stage does not already say.
+      const activity = phase === 'delegating' ? null : text;
+      return { phase: phase, icon: icon, text: stageCounter(stage) + ' · ' + stage.title, activity: activity };
+    }
+    return { phase: phase, icon: icon, text: text, activity: null };
   }
 
-  function subLine(phase) {
+  function subLine(phase, activity, tz) {
     const parts = [];
+    const stage = stageInfo();
+    if (tz) {
+      // No tool, no agent: at most where the pipeline stands.
+      if (st.note) return st.note;
+      return stage ? stageCounter(stage) + ' · ' + stage.title : '';
+    }
     if (st.note) {
       parts.push(st.note);
     } else {
-      if (st.agent && phase !== 'done' && phase !== 'stopped') parts.push(agentLabel(st.agent, true));
+      if (activity) {
+        // The stage is on the main line; say what is being done within it.
+        parts.push(activity);
+      } else if (stage && ['waiting', 'waiting_frame'].includes(phase)) {
+        parts.push(stageCounter(stage) + ' · ' + stage.title);
+      } else if (!(stage && LIVE_PHASES.includes(phase))
+        && st.agent && phase !== 'done' && phase !== 'stopped') {
+        // In a linear pipeline the stage names the work; no agent names.
+        parts.push(agentLabel(st.agent, true));
+      }
       const step = stepLine();
       // The step names the work better than a tool argument does, so it wins
       // the one slot they would otherwise share.
@@ -1058,6 +1372,12 @@
       st.plan = summarise(st.tasks);
     }
     const current = view();
+    // The top bar's status pill says the same thing in two words; it reads
+    // the phase from here instead of keeping a second reducer of its own.
+    if (document.body && document.body.dataset.runPhase !== current.phase) {
+      document.body.dataset.runPhase = current.phase;
+      if (typeof window.renderStatusBadge === 'function') window.renderStatusBadge();
+    }
     if (current.phase === 'idle') {
       root.classList.add('hidden');
       root.innerHTML = '';
@@ -1066,9 +1386,8 @@
     root.classList.remove('hidden');
 
     const tone = TONES[PHASE_TONE[current.phase] || 'work'];
-    const live = ['working', 'thinking', 'starting', 'delegating', 'reviewing',
-      'finalizing', 'long_thinking', 'framing'].includes(current.phase);
-    const sub = subLine(current.phase);
+    const live = LIVE_PHASES.includes(current.phase);
+    const sub = subLine(current.phase, current.activity, current.tz);
     // The elapsed time of the *current step*, not of the run: on hour three of
     // a study the run total says nothing, while "12 мин" on this step says
     // whether to worry. The run total moves to the card's tooltip.
@@ -1081,6 +1400,15 @@
     const activePlan = st.sandboxPlan || st.plan;
     const hasPlan = Boolean(activePlan && activePlan.total > 0);
     const planPercent = hasPlan ? Math.min(100, Math.round((activePlan.done / activePlan.total) * 100)) : 0;
+    // The card's bar: the pipeline's stages when there are any — the plan is
+    // one stage's business and keeps its own bar in the expanded view.
+    const stage = stageInfo();
+    const bar = current.tz
+      ? { done: current.tz.done, total: current.tz.total }
+      : stage
+        ? { done: stage.done, total: stage.total }
+        : (hasPlan ? { done: activePlan.done, total: activePlan.total } : null);
+    const barPercent = bar ? Math.min(100, Math.round((bar.done / bar.total) * 100)) : 0;
 
     root.innerHTML = `
       <div class="si-card flex items-stretch gap-0 rounded-xl border ${tone.card} overflow-hidden transition-colors" title="${esc(title)}">
@@ -1090,12 +1418,12 @@
           <div class="flex-1 min-w-0">
             <div class="text-[13px] font-semibold leading-tight ${tone.text} ${live ? 'si-shimmer' : ''} truncate">${esc(current.text)}</div>
             ${sub ? `<div class="text-[10px] text-outline-variant leading-tight truncate mt-0.5">${esc(sub)}</div>` : ''}
-            ${hasPlan ? `
+            ${bar ? `
             <div class="mt-1 flex items-center gap-2">
               <div class="si-mini-progress flex-1">
-                <div class="si-mini-progress-fill" style="width: ${planPercent}%"></div>
+                <div class="si-mini-progress-fill" style="width: ${barPercent}%"></div>
               </div>
-              <span class="text-[9px] font-mono text-outline-variant/80 shrink-0 tabular-nums">${activePlan.done}/${activePlan.total} (${planPercent}%)</span>
+              <span class="text-[9px] font-mono text-outline-variant/80 shrink-0 tabular-nums">${bar.done}/${bar.total} (${barPercent}%)</span>
             </div>` : ''}
           </div>
           ${timer ? `<span class="text-[10px] font-mono text-outline-variant shrink-0 tabular-nums">${timer}</span>` : ''}
@@ -1105,8 +1433,26 @@
           </button>
         </div>
       </div>
-      ${expanded && (steps.length || hasPlan) ? `
+      ${expanded && (steps.length || hasPlan || stage) ? `
       <div class="mt-1.5 space-y-1.5">
+        ${stage ? `
+        <div class="p-2.5 rounded-lg border border-outline-variant/15 bg-surface-container-lowest/80 space-y-1">
+          <div class="flex items-center gap-1.5 text-[11px] font-semibold text-on-surface">
+            <span class="material-symbols-outlined text-sm text-primary">conversion_path</span>
+            <span>${esc(pick(TEXT.stagesHeader))}</span>
+            <span class="text-[9px] font-mono font-normal text-outline-variant">(${stage.done} / ${stage.total})</span>
+          </div>
+          ${pipeline.stages.map((item, i) => {
+      const norm = i < stage.done ? 'done' : (i === st.stage ? 'active' : 'todo');
+      const icon = norm === 'done' ? 'check' : (norm === 'active' ? 'autorenew' : 'radio_button_unchecked');
+      const itemTone = norm === 'active' ? 'text-primary font-medium' : 'text-outline-variant';
+      return `<div class="flex items-center gap-2 text-[10px] ${itemTone}">
+              <span class="material-symbols-outlined text-[13px] shrink-0 ${norm === 'active' ? 'si-icon' : ''}">${icon}</span>
+              <span class="font-mono text-[9px] opacity-75 shrink-0">${i + 1}.</span>
+              <span class="truncate">${esc(item.title || item.agent)}</span>
+            </div>`;
+    }).join('')}
+        </div>` : ''}
         ${hasPlan ? `
         <div class="p-2.5 rounded-lg border border-outline-variant/15 bg-surface-container-lowest/80 ${planExpanded ? 'space-y-2' : ''}">
           <div class="flex items-center justify-between text-[11px] font-semibold text-on-surface cursor-pointer select-none si-plan-header">
@@ -1131,7 +1477,7 @@
 
           ${planExpanded ? `
           <div class="h-1 bg-surface-container-high rounded-full overflow-hidden">
-            <div class="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 rounded-full" style="width: ${planPercent}%;"></div>
+            <div class="h-full bg-primary transition-all duration-300 rounded-full" style="width: ${planPercent}%;"></div>
           </div>
 
           <div class="space-y-1 pt-0.5 max-h-80 overflow-y-auto pr-1">
@@ -1307,13 +1653,23 @@
 
   window.StatusIndicator = {
     mount: guarded('mount', mount),
-    feed: guarded('feed', feed),
-    reset: guarded('reset', reset),
+    feed: guarded('feed', function (msg, quiet) { feed(msg, quiet); notifyStages(); }),
+    reset: guarded('reset', function () { reset(); notifyStages(); }),
+    stages: guarded('stages', stageStates),
+    stageOf: guarded('stageOf', stageOf),
+    // Public display name for cards, telemetry and activity widgets. Runtime
+    // ids remain unchanged so event routing and history stay compatible.
+    agentName: guarded('agentName', function (name) { return agentLabel(name); }),
     demo: demo,   // async: the caller already handles its rejection
     setLang: guarded('setLang', function (value) { if (value) { lang = value; paint(); } }),
+    // The AGENTS table is the only place a class name is turned into a role a
+    // user would recognise. The plan tracker names the same agents, so it reads
+    // them from here rather than keeping a second copy that would drift.
+    agentLabel: guarded('agentLabel', agentLabel),
     setConnected: guarded('setConnected', function (value) { connected = !!value; render(); }),
     markStopped: guarded('markStopped', function () {
       endRun('stopped', STOPPED_LINGER_MS);
+      notifyStages();
     }),
   };
 })();

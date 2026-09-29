@@ -55,15 +55,6 @@ def test_sessions_get_different_keys():
     assert sandbox_tools._session(_ctx({})) != sandbox_tools._session(_ctx({}))
 
 
-def test_a2a_pin_wins_so_multi_step_work_survives_per_call_sessions():
-    """Over A2A each delegation is a fresh session; the pin keeps one sandbox."""
-    os.environ["CODER_WORKSPACE_ID"] = "a2a_shared"
-    try:
-        assert sandbox_tools._session(_ctx({})) == sandbox_tools._session(_ctx({}))
-    finally:
-        os.environ.pop("CODER_WORKSPACE_ID", None)
-
-
 # ── binding lifecycle (client level, no server) ──────────────────────────────
 
 def test_binding_is_per_session_and_rebindable():

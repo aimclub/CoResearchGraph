@@ -38,6 +38,28 @@ def _content(block: FrameBlock) -> str:
     return "; ".join(f"{f.name}: {f.value}".strip() for f in block.set_fields())
 
 
+def frame_operations(frame: ResearchFrame) -> List[Dict[str, Any]]:
+    """Executable slots for ExperimentContext — copied from the confirmed frame."""
+    from CoScientist.context_init.operations import operations_as_dicts
+
+    return operations_as_dicts(frame)
+
+
+def frame_constraint_rows(frame: ResearchFrame) -> List[Dict[str, Any]]:
+    """Typed constraint rows for ExperimentContext — no keyword interpretation."""
+    rows: List[Dict[str, Any]] = []
+    for block in frame.normalized().blocks:
+        if not block.set_fields():
+            continue
+        rows.append({
+            "kind": block.kind,
+            "title": block.title,
+            "subtype": block.subtype,
+            "content": _content(block),
+        })
+    return rows
+
+
 def frame_to_init_kwargs(frame: ResearchFrame) -> Dict[str, Any]:
     """Translate a (normalized) frame into ``store.init_research`` keyword args."""
     frame = frame.normalized()
@@ -137,7 +159,9 @@ def _dump_frame(store, frame: ResearchFrame, result: Dict[str, Any]) -> None:
         from pathlib import Path
 
         Path(directory).mkdir(parents=True, exist_ok=True)
+        full = store.full() if callable(getattr(store, "full", None)) else {}
         payload = {"root_id": result.get("root_id"),
+                   "research_id": full.get("research_id"),
                    "frame": frame.normalized().model_dump()}
         (Path(directory) / "research_frame.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -147,11 +171,23 @@ def _dump_frame(store, frame: ResearchFrame, result: Dict[str, Any]) -> None:
 
 def seed_frame(store, frame: ResearchFrame) -> Dict[str, Any]:
     """Seed the confirmed frame into ``store`` (a ResearchGraphStore)."""
+    frame = frame.normalized()
     kwargs = frame_to_init_kwargs(frame)
     result = store.init_research(source=AGENT_SOURCE, **kwargs)
     if result.get("ok"):
+        # Keep the per-field values and statuses with this exact research
+        # snapshot.  A session can contain several archived studies; a single
+        # mutable sidecar cannot tell their technical specifications apart.
+        store.set_framing_snapshot(frame.model_dump())
         _dump_frame(store, frame, result)
     return result
 
 
-__all__ = ["frame_to_init_kwargs", "seed_frame", "AGENT_SOURCE", "HUMAN_SOURCE"]
+__all__ = [
+    "frame_constraint_rows",
+    "frame_operations",
+    "frame_to_init_kwargs",
+    "seed_frame",
+    "AGENT_SOURCE",
+    "HUMAN_SOURCE",
+]

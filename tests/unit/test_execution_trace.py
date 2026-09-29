@@ -602,8 +602,59 @@ def test_an_agent_lists_the_files_and_links_it_produced():
     agent["output_files"] = ["s3://b/fig.png"]
     got = {n["id"]: n for n in execution_tree(full)["nodes"]}["agent:Research"]["artifacts"]
     assert [a["uri"] for a in got] == ["s3://b/k", "s3://b/fig.png", "https://x.y/report"]
-    assert got[0] == {"uri": "s3://b/k", "kind": "file", "tool": "extract"}
+    assert got[0] == {"uri": "s3://b/k", "kind": "file", "tool": "extract",
+                      "href": "/api/artifact/b/k"}
     assert got[2]["kind"] == "link"
+
+
+def test_a_file_artifact_is_something_the_reader_can_open(tmp_path, monkeypatch):
+    """`uri` is the durable reference; `href` is where the anchor goes.
+
+    A ``file`` artifact used to carry no href, and the panel drew it as plain
+    text — so an ``s3://`` key sat there unopenable even though
+    ``/api/artifact/`` had been serving exactly that for ages. A mirrored file
+    resolves against the scope that is *reading*, which is what lets an
+    imported session open its own artifacts.
+    """
+    from CoScientist.graph.projection import execution_tree
+    from CoScientist.reporting import session_files
+
+    monkeypatch.setenv("GRAPH_SNAPSHOT_DIR", str(tmp_path))
+    monkeypatch.setenv("ARTIFACTS__MIRROR_TO_S3", "False")
+    scope = ("u1", "s1")
+    # The bytes have to exist: a reference to a file this session does not hold
+    # is deliberately not offered as a link.
+    record = session_files.put_bytes(scope, b"\x89PNG\r\n\x1a\nx", filename="fig.png")
+    reference = session_files.ref(record["artifact_id"])
+
+    full = _agent_with_calls()
+    agent = next(n for n in full["nodes"] if n["id"] == "agent:Research")
+    agent["output_files"] = ["s3://b/fig.png", reference]
+    got = {n["id"]: n for n in
+           execution_tree(full, scope=scope)["nodes"]}["agent:Research"]["artifacts"]
+    by_uri = {a["uri"]: a for a in got}
+    assert by_uri["s3://b/fig.png"]["href"] == "/api/artifact/b/fig.png"
+    assert by_uri[reference]["href"] == (
+        f"/api/users/u1/sessions/s1/artifacts/{record['artifact_id']}"
+    )
+    assert by_uri[reference]["kind"] == "file"
+
+
+def test_a_truncated_link_is_not_offered_as_an_artifact():
+    """`_short()` marks its cut with an ellipsis, and the scrape used to keep it.
+
+    ``http://10.3…`` was listed beside real files, and told the reader something
+    existed that could never be fetched.
+    """
+    from CoScientist.graph.projection import execution_tree
+
+    full = _agent_with_calls()
+    agent = next(n for n in full["nodes"] if n["id"] == "agent:Research")
+    agent["output"] = "figure=http://10.3… and s3://b/real.png"
+    agent["output_files"] = []
+    got = {n["id"]: n for n in execution_tree(full)["nodes"]}["agent:Research"]["artifacts"]
+    assert not [a for a in got if "…" in a["uri"]]
+    assert "s3://b/real.png" in {a["uri"] for a in got}
 
 
 def test_an_old_snapshot_borrows_task_and_report_for_its_agents():
@@ -767,3 +818,69 @@ def test_mcp_endpoint_links_are_not_artifacts():
     assert not any(uri.rstrip("/").endswith("/mcp") for uri in uris)
     assert any(uri.endswith("table.csv") for uri in uris)
     assert any("fig.png" in uri for uri in uris)
+
+
+def test_a_refused_write_is_drawn_as_a_failure():
+    """A transactional write that saved NOTHING used to be drawn as a success.
+
+    `research_commit` answers a rejected commit with {"ok": false, "errors":
+    [...]} and carries neither `status` nor `error`, so the log said the call
+    went fine. In one real session three of ten commits were refused that way:
+    whole steps never reached the graph, and nothing anywhere said so.
+    """
+    from CoScientist.graph.emitter import _is_error as emitter_is_error
+    from CoScientist.graph.plugin import _is_error as plugin_is_error
+
+    refused = {"ok": False, "errors": ["nodes[0]: missing attrs.subtype"]}
+    for is_error in (emitter_is_error, plugin_is_error):
+        assert is_error(refused) is True
+        assert is_error({"ok": True, "message": "committed 2 node(s)"}) is False
+        # A tool that simply has no `ok` key is not a failure — which is why
+        # this tests `is False` and not a falsy `ok`.
+        assert is_error({"result": "success", "plan": []}) is False
+        assert is_error({"status": "error"}) is True
+        assert is_error("plain text") is False
+
+def test_a_recorded_plan_shows_up_in_the_trace():
+    """The Experiment Module records its plan as a `decision` node.
+
+    A trace that listed only tool calls showed a run executing a plan the reader
+    could not see. A decision belongs with the calls: something an agent did in
+    the turn, with a start, an end and a verdict.
+    """
+    full = {"nodes": [
+        {"id": "goal:a", "kind": "goal", "turn_id": "a", "label": "run the experiment",
+         "status": "success", "t_start": 100.0, "t_end": 140.0},
+        {"id": "plan:P1@r1:agent:x", "kind": "decision", "turn_id": "a",
+         "label": "plan rev 1 - 3 tasks - 45 min",
+         "executor_agent": "ExperimentPlannerAgent", "status": "success",
+         "verdict": "approved",
+         "input": {"kind": "experiment_plan", "task_count": 3},
+         "output": "plan rev 1 - 3 tasks - 45 min", "t_start": 105.0, "t_end": 118.0},
+        {"id": "tool:1", "kind": "tool_call", "turn_id": "a", "label": "start_task",
+         "executor_agent": "ExperimentExecutorAgent", "status": "success",
+         "t_start": 120.0, "t_end": 120.5},
+    ]}
+
+    calls = turns(full)["turns"][0]["calls"]
+    assert [c["tool"] for c in calls] == ["plan rev 1 - 3 tasks - 45 min", "start_task"]
+    plan = calls[0]
+    assert plan["agent"] == "ExperimentPlannerAgent"
+    assert plan["input"]["kind"] == "experiment_plan"
+    assert plan["duration"] == 13.0
+
+
+def test_the_experiment_module_reads_as_one_stretch():
+    """Its stages share the experiment band instead of scattering the module
+    across three of them."""
+    from CoScientist.graph.projection import _PHASE_OF_AGENT
+
+    for name in (
+        "ExperimentModuleAgent",
+        "ExperimentPlannerAgent",
+        "ExperimentExecutorAgent",
+        "ExperimentResultReviewAgent",
+        "ToolRetrieverAgent",
+        "ToolReranker",
+    ):
+        assert _PHASE_OF_AGENT[name] == "experiment", name

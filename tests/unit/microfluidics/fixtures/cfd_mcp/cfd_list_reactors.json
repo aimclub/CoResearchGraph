@@ -1,0 +1,128 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"reactors\": [\n    {\n      \"reactor\": \"ss316_t_junction_narrow_tubes\",\n      \"title\": \"T-junction, narrow tubes (SS316)\",\n      \"description\": \"Two opposed 2 mm inlets meeting one outlet, 219,530 cells. The production geometry: the finest mesh here, and the slowest to solve.\",\n      \"mesh_key\": \"data/meshes/gmsh/ss316_t_junction_narrow_tubes.msh\",\n      \"available\": true,\n      \"size_bytes\": 11149345,\n      \"zones\": {\n        \"inlets\": [\n          \"left_inlet\",\n          \"right_inlet\"\n        ],\n        \"outlets\": [\n          \"outlet\"\n        ],\n        \"walls\": [\n          \"walls\"\n        ],\n        \"inlet_count\": 2,\n        \"supports_two_reactant_feed\": true\n      }\n    },\n    {\n      \"reactor\": \"t_junction\",\n      \"title\": \"T-junction\",\n      \"description\": \"Two opposed inlets meeting one outlet, 170,385 cells. Same topology as the SS316 reactor on a coarser mesh, so it answers the same questions sooner.\",\n      \"mesh_key\": \"data/meshes/gmsh/t_junction.msh\",\n      \"available\": true,\n      \"size_bytes\": 8905451,\n      \"zones\": {\n        \"inlets\": [\n          \"left_inlet\",\n          \"right_inlet\"\n        ],\n        \"outlets\": [\n          \"outlet\"\n        ],\n        \"walls\": [\n          \"walls\"\n        ],\n        \"inlet_count\": 2,\n        \"supports_two_reactant_feed\": true\n      }\n    },\n    {\n      \"reactor\": \"multi_port\",\n      \"title\": \"Multi-port manifold\",\n      \"description\": \"Three inlets and two outlets. Coarse: a topology probe rather than a quantitative reactor.\",\n      \"mesh_key\": \"data/meshes/gmsh/multi_port.msh\",\n      \"available\": true,\n      \"size_bytes\": 2995,\n      \"zones\": {\n        \"inlets\": [\n          \"inlet_a\",\n          \"inlet_b\",\n          \"inlet_c\"\n        ],\n        \"outlets\": [\n          \"outlet_a\",\n          \"outlet_b\"\n        ],\n        \"walls\": [\n          \"walls\"\n        ],\n        \"inlet_count\": 3,\n        \"supports_two_reactant_feed\": true\n      }\n    },\n    {\n      \"reactor\": \"one_inlet_two_outlets\",\n      \"title\": \"Splitter\",\n      \"description\": \"One inlet, two outlets. A single inlet cannot dose two reactants separately, so this geometry suits flow studies rather than reactions.\",\n      \"mesh_key\": \"data/meshes/gmsh/one_inlet_two_outlets.msh\",\n      \"available\": true,\n      \"size_bytes\": 2965,\n      \"zones\": {\n        \"inlets\": [\n          \"inlet\"\n        ],\n        \"outlets\": [\n          \"outlet_a\",\n          \"outlet_b\"\n        ],\n        \"walls\": [\n          \"walls\"\n        ],\n        \"inlet_count\": 1,\n        \"supports_two_reactant_feed\": false\n      }\n    },\n    {\n      \"reactor\": \"vertical_pipe_500\",\n      \"title\": \"Vertical pipe\",\n      \"description\": \"One inlet, one outlet, 632 cells. Small enough to run the whole chain in about a minute, which makes it the smoke test.\",\n      \"mesh_key\": \"data/meshes/gmsh/vertical_pipe_500.msh\",\n      \"available\": true,\n      \"size_bytes\": 35132,\n      \"zones\": {\n        \"inlets\": [\n          \"inlet\"\n        ],\n        \"outlets\": [\n          \"outlet\"\n        ],\n        \"walls\": [\n          \"walls\"\n        ],\n        \"inlet_count\": 1,\n        \"supports_two_reactant_feed\": false\n      }\n    }\n  ],\n  \"default_note\": \"An A + B reaction needs a reactor with two or more inlets (supports_two_reactant_feed). 'available: false' means this deployment does not carry that mesh file.\"\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "reactors": [
+      {
+        "reactor": "ss316_t_junction_narrow_tubes",
+        "title": "T-junction, narrow tubes (SS316)",
+        "description": "Two opposed 2 mm inlets meeting one outlet, 219,530 cells. The production geometry: the finest mesh here, and the slowest to solve.",
+        "mesh_key": "data/meshes/gmsh/ss316_t_junction_narrow_tubes.msh",
+        "available": true,
+        "size_bytes": 11149345,
+        "zones": {
+          "inlets": [
+            "left_inlet",
+            "right_inlet"
+          ],
+          "outlets": [
+            "outlet"
+          ],
+          "walls": [
+            "walls"
+          ],
+          "inlet_count": 2,
+          "supports_two_reactant_feed": true
+        }
+      },
+      {
+        "reactor": "t_junction",
+        "title": "T-junction",
+        "description": "Two opposed inlets meeting one outlet, 170,385 cells. Same topology as the SS316 reactor on a coarser mesh, so it answers the same questions sooner.",
+        "mesh_key": "data/meshes/gmsh/t_junction.msh",
+        "available": true,
+        "size_bytes": 8905451,
+        "zones": {
+          "inlets": [
+            "left_inlet",
+            "right_inlet"
+          ],
+          "outlets": [
+            "outlet"
+          ],
+          "walls": [
+            "walls"
+          ],
+          "inlet_count": 2,
+          "supports_two_reactant_feed": true
+        }
+      },
+      {
+        "reactor": "multi_port",
+        "title": "Multi-port manifold",
+        "description": "Three inlets and two outlets. Coarse: a topology probe rather than a quantitative reactor.",
+        "mesh_key": "data/meshes/gmsh/multi_port.msh",
+        "available": true,
+        "size_bytes": 2995,
+        "zones": {
+          "inlets": [
+            "inlet_a",
+            "inlet_b",
+            "inlet_c"
+          ],
+          "outlets": [
+            "outlet_a",
+            "outlet_b"
+          ],
+          "walls": [
+            "walls"
+          ],
+          "inlet_count": 3,
+          "supports_two_reactant_feed": true
+        }
+      },
+      {
+        "reactor": "one_inlet_two_outlets",
+        "title": "Splitter",
+        "description": "One inlet, two outlets. A single inlet cannot dose two reactants separately, so this geometry suits flow studies rather than reactions.",
+        "mesh_key": "data/meshes/gmsh/one_inlet_two_outlets.msh",
+        "available": true,
+        "size_bytes": 2965,
+        "zones": {
+          "inlets": [
+            "inlet"
+          ],
+          "outlets": [
+            "outlet_a",
+            "outlet_b"
+          ],
+          "walls": [
+            "walls"
+          ],
+          "inlet_count": 1,
+          "supports_two_reactant_feed": false
+        }
+      },
+      {
+        "reactor": "vertical_pipe_500",
+        "title": "Vertical pipe",
+        "description": "One inlet, one outlet, 632 cells. Small enough to run the whole chain in about a minute, which makes it the smoke test.",
+        "mesh_key": "data/meshes/gmsh/vertical_pipe_500.msh",
+        "available": true,
+        "size_bytes": 35132,
+        "zones": {
+          "inlets": [
+            "inlet"
+          ],
+          "outlets": [
+            "outlet"
+          ],
+          "walls": [
+            "walls"
+          ],
+          "inlet_count": 1,
+          "supports_two_reactant_feed": false
+        }
+      }
+    ],
+    "default_note": "An A + B reaction needs a reactor with two or more inlets (supports_two_reactant_feed). 'available: false' means this deployment does not carry that mesh file."
+  },
+  "isError": false
+}

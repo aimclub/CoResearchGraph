@@ -1,0 +1,137 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"schema\": \"reactor_experiment_result_v1\",\n  \"request_id\": \"contract-dump-run-1\",\n  \"run_id\": \"36696a2fd4f649fca473703ec8078fe4\",\n  \"status\": \"failed\",\n  \"finished\": true,\n  \"reactor\": \"t_junction\",\n  \"design\": {\n    \"reactor\": \"t_junction\",\n    \"inlet_speed_m_per_s\": 0.02,\n    \"activation_energy_j_per_mol\": 0.0,\n    \"reactant_a\": \"A\",\n    \"reactant_b\": \"B\",\n    \"product\": \"C\",\n    \"molecular_weight_a_g_per_mol\": 100.0,\n    \"molecular_weight_b_g_per_mol\": 100.0,\n    \"temperature_k\": 298.15,\n    \"pressure_pa\": 101325.0,\n    \"mode\": \"isothermal\",\n    \"density_kg_per_m3\": 1000.0,\n    \"kinematic_viscosity_m2_per_s\": 1e-6,\n    \"species_diffusivity_m2_s\": 3e-10,\n    \"heat_capacity_j_per_kg_k\": 4180.0,\n    \"thermal_diffusivity_m2_s\": 1.4e-7,\n    \"turnovers\": 4.0,\n    \"include_mixing_stage\": true,\n    \"device\": \"auto\",\n    \"concentration_a_mol_per_m3\": 100.0,\n    \"concentration_b_mol_per_m3\": 100.0,\n    \"rate_constant_m3_per_mol_s\": 0.001\n  },\n  \"derived\": {\n    \"operating_point\": {\n      \"domain_volume_m3\": 1.9900000000000002e-7,\n      \"total_inlet_area_m2\": 2.0000000000000003e-6,\n      \"inlet_flow_rate_m3_per_s\": 4.000000000000001e-8,\n      \"residence_time_s_estimate\": 4.975,\n      \"mean_cell_size_m\": 0.00010531104103520682,\n      \"time_step_s\": 0.0026327760258801703,\n      \"time_step_source\": \"inlet_speed\",\n      \"flow_min_steps\": 945,\n      \"flow_max_steps\": 200000,\n      \"transport_num_steps\": 7559,\n      \"reactive_num_steps\": 7559,\n      \"turnovers_requested\": 4.0\n    },\n    \"zone_roles\": {\n      \"fluid\": \"fluid\",\n      \"fluid_volume_m3\": 1.9900000000000002e-7,\n      \"cell_count\": 170385,\n      \"inlets\": [\n        {\n          \"name\": \"left_inlet\",\n          \"area_m2\": 1e-6\n        },\n        {\n          \"name\": \"right_inlet\",\n          \"area_m2\": 1.0000000000000002e-6\n        }\n      ],\n      \"outlets\": [\n        {\n          \"name\": \"outlet\",\n          \"area_m2\": 2.0000000000000003e-6\n        }\n      ],\n      \"walls\": [\n        \"walls\"\n      ]\n    },\n    \"generated_inputs\": {\n      \"case_config_path\": \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/reactor_case_config.json\",\n      \"zone_catalog_path\": \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/zone_catalog.json\",\n      \"mesh_npz_path\": \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_imported_mesh.npz\"\n    },\n    \"skipped_stages\": []\n  },\n  \"results\": {},\n  \"results_from\": {},\n  \"trustworthy\": null,\n  \"blocking\": [],\n  \"stages\": [\n    {\n      \"stage\": \"import\",\n      \"experiment_id\": \"stage_import\",\n      \"exit_code\": 0,\n      \"duration_seconds\": 13.212135,\n      \"log_path\": \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/compute.log\",\n      \"artifact_count\": 8,\n      \"summary_path\": \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/summary.json\",\n      \"timed_out\": false,\n      \"metrics\": {\n        \"schema\": \"cfd_run_metrics_v1\",\n        \"stage\": \"stage_import\",\n        \"available\": false,\n        \"note\": \"no metric table is defined for stage 'stage_import'\"\n      }\n    },\n    {\n      \"stage\": \"flow\",\n      \"experiment_id\": \"stage_flow\",\n      \"exit_code\": 1,\n      \"duration_seconds\": 10.026267,\n      \"log_path\": \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/flow/compute.log\",\n      \"artifact_count\": 1,\n      \"summary_path\": null,\n      \"timed_out\": false,\n      \"metrics\": {\n        \"schema\": \"cfd_run_metrics_v1\",\n        \"stage\": \"stage_flow\",\n        \"available\": false,\n        \"note\": \"this stage recorded no unambiguous summary.json\"\n      }\n    }\n  ],\n  \"artifact_count\": 9,\n  \"error\": {\n    \"contract_version\": \"v1\",\n    \"code\": \"compute_nonzero_exit\",\n    \"message\": \"Compute process finished with non-zero exit code.\",\n    \"details\": {\n      \"exit_code\": 1\n    }\n  }\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "schema": "reactor_experiment_result_v1",
+    "request_id": "contract-dump-run-1",
+    "run_id": "36696a2fd4f649fca473703ec8078fe4",
+    "status": "failed",
+    "finished": true,
+    "reactor": "t_junction",
+    "design": {
+      "reactor": "t_junction",
+      "inlet_speed_m_per_s": 0.02,
+      "activation_energy_j_per_mol": 0.0,
+      "reactant_a": "A",
+      "reactant_b": "B",
+      "product": "C",
+      "molecular_weight_a_g_per_mol": 100.0,
+      "molecular_weight_b_g_per_mol": 100.0,
+      "temperature_k": 298.15,
+      "pressure_pa": 101325.0,
+      "mode": "isothermal",
+      "density_kg_per_m3": 1000.0,
+      "kinematic_viscosity_m2_per_s": 1e-06,
+      "species_diffusivity_m2_s": 3e-10,
+      "heat_capacity_j_per_kg_k": 4180.0,
+      "thermal_diffusivity_m2_s": 1.4e-07,
+      "turnovers": 4.0,
+      "include_mixing_stage": true,
+      "device": "auto",
+      "concentration_a_mol_per_m3": 100.0,
+      "concentration_b_mol_per_m3": 100.0,
+      "rate_constant_m3_per_mol_s": 0.001
+    },
+    "derived": {
+      "operating_point": {
+        "domain_volume_m3": 1.9900000000000002e-07,
+        "total_inlet_area_m2": 2.0000000000000003e-06,
+        "inlet_flow_rate_m3_per_s": 4.000000000000001e-08,
+        "residence_time_s_estimate": 4.975,
+        "mean_cell_size_m": 0.00010531104103520682,
+        "time_step_s": 0.0026327760258801703,
+        "time_step_source": "inlet_speed",
+        "flow_min_steps": 945,
+        "flow_max_steps": 200000,
+        "transport_num_steps": 7559,
+        "reactive_num_steps": 7559,
+        "turnovers_requested": 4.0
+      },
+      "zone_roles": {
+        "fluid": "fluid",
+        "fluid_volume_m3": 1.9900000000000002e-07,
+        "cell_count": 170385,
+        "inlets": [
+          {
+            "name": "left_inlet",
+            "area_m2": 1e-06
+          },
+          {
+            "name": "right_inlet",
+            "area_m2": 1.0000000000000002e-06
+          }
+        ],
+        "outlets": [
+          {
+            "name": "outlet",
+            "area_m2": 2.0000000000000003e-06
+          }
+        ],
+        "walls": [
+          "walls"
+        ]
+      },
+      "generated_inputs": {
+        "case_config_path": "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/reactor_case_config.json",
+        "zone_catalog_path": "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/zone_catalog.json",
+        "mesh_npz_path": "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_imported_mesh.npz"
+      },
+      "skipped_stages": []
+    },
+    "results": {},
+    "results_from": {},
+    "trustworthy": null,
+    "blocking": [],
+    "stages": [
+      {
+        "stage": "import",
+        "experiment_id": "stage_import",
+        "exit_code": 0,
+        "duration_seconds": 13.212135,
+        "log_path": "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/compute.log",
+        "artifact_count": 8,
+        "summary_path": "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/summary.json",
+        "timed_out": false,
+        "metrics": {
+          "schema": "cfd_run_metrics_v1",
+          "stage": "stage_import",
+          "available": false,
+          "note": "no metric table is defined for stage 'stage_import'"
+        }
+      },
+      {
+        "stage": "flow",
+        "experiment_id": "stage_flow",
+        "exit_code": 1,
+        "duration_seconds": 10.026267,
+        "log_path": "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/flow/compute.log",
+        "artifact_count": 1,
+        "summary_path": null,
+        "timed_out": false,
+        "metrics": {
+          "schema": "cfd_run_metrics_v1",
+          "stage": "stage_flow",
+          "available": false,
+          "note": "this stage recorded no unambiguous summary.json"
+        }
+      }
+    ],
+    "artifact_count": 9,
+    "error": {
+      "contract_version": "v1",
+      "code": "compute_nonzero_exit",
+      "message": "Compute process finished with non-zero exit code.",
+      "details": {
+        "exit_code": 1
+      }
+    }
+  },
+  "isError": false
+}

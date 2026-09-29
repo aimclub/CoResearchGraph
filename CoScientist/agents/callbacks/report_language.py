@@ -33,6 +33,45 @@ REPORT_LANGUAGES = ("ru", "en")
 DEFAULT_REPORT_LANGUAGE = "ru"
 
 
+def graph_text_rule(raw) -> str:
+    """The language rule for text WRITTEN INTO THE GRAPH, not into a report.
+
+    The report blocks below are for a document with headings and figures. The
+    background validator writes a Conclusion node instead, and it is not an
+    agent — it has no ADK state and never received `{report_language_block?}`,
+    so it wrote its conclusions in English into a Russian study and the reader
+    met an English paragraph on the one card that answers the question.
+    """
+    if normalize_report_language(raw) != "ru":
+        return ""
+    return (
+        "\n\nLANGUAGE. Write every text field of your answer in RUSSIAN. "
+        "These instructions are English; your output is not. Leave untranslated: "
+        "numbers, units and formulas; node ids (H1, E3, CC2); tool, agent and "
+        "parameter identifiers; file paths, links and citation strings. For a "
+        "domain term whose Russian form is ambiguous, give the Russian and the "
+        "English in parentheses at first use."
+    )
+
+
+def session_report_language(state) -> str:
+    """The language this session writes in, from whatever holds its state.
+
+    The renderers that build a Work Order, a Work Report or an experiment plan
+    sit far from the web layer but are read by the same human, and their frame —
+    "Goal", "Done when", "Steps" — used to be English inside an otherwise
+    Russian study. They call this with whatever state they have: an ADK state
+    mapping, a tool or callback context, or nothing at all.
+    """
+    try:
+        if state is None:
+            return DEFAULT_REPORT_LANGUAGE
+        holder = getattr(state, "state", state)
+        return normalize_report_language(holder.get(REPORT_LANGUAGE_STATE_KEY))
+    except Exception:  # noqa: BLE001 — a language guess must never break a run
+        return DEFAULT_REPORT_LANGUAGE
+
+
 def normalize_report_language(raw) -> str:
     """Map any input to a supported language code.
 
@@ -49,9 +88,9 @@ Write the entire report in Russian. These instructions are in English, the
 report is not. Everything the reader sees is Russian: headings, prose, captions,
 list items, and conclusions.
 
-Heading substitutions inside the `format_results` blocks — these two, and no
-others: `## Figures` becomes `## Иллюстрации`, and `## Data tables` becomes
-`## Таблицы данных`.
+Heading substitutions inside the `format_results` blocks — these three, and no
+others: `## Figures` becomes `## Иллюстрации`, `## Data tables` becomes
+`## Таблицы данных`, and `## Files` becomes `## Файлы`.
 
 Section headings, in this order. The role each one carries is in parentheses,
 so match them to the five sections of step 3:
@@ -83,7 +122,8 @@ the report. Everything the reader sees is English: headings, prose, captions,
 list items, and conclusions.
 
 Heading substitutions inside the `format_results` blocks — none. Keep
-`## Figures` and `## Data tables` exactly as `format_results` returned them.
+`## Figures`, `## Data tables` and `## Files` exactly as `format_results`
+returned them.
 
 Section headings, in this order. The role each one carries is in parentheses,
 so match them to the five sections of step 3:

@@ -62,6 +62,16 @@ def _hypothesis_tools(g, hyp_id: str) -> List[str]:
     return sorted(tools)
 
 
+def _conditional_eligible(g, hyp_id: str) -> bool:
+    for predecessor, _, key, data in g.in_edges(hyp_id, keys=True, data=True):
+        if key != "conditional_successor":
+            continue
+        required = str((data.get("attrs") or {}).get("required_status") or "refuted")
+        if _status(g, predecessor) != required:
+            return False
+    return True
+
+
 # ── individual triggers ──────────────────────────────────────────────────────
 
 def _id_order(node_id: str) -> tuple:
@@ -71,20 +81,26 @@ def _id_order(node_id: str) -> tuple:
 
 
 def ready_hypotheses(store: Optional[ResearchGraphStore] = None) -> Dict[str, Any]:
-    """The ONE hypothesis to verify next.
+    """The hypotheses to verify next — as many as the run is allowed to hold.
 
     Every `formulated` hypothesis whose referenced Tools are available (vacuously
-    ready when it references none) is a candidate, but only the most relevant one
-    — the agent's pick (`attrs.selected`) / highest `attrs.priority`, ties broken
-    by id order — is offered as actionable in `items`. The rest are reported as
-    `queued` so the orchestrator sees the backlog without starting it: one branch
-    at a time, otherwise a batch of hypotheses gets verified in parallel and the
-    evidence of one contaminates the verdict of another.
+    ready when it references none) is a candidate, ranked by the agent's pick
+    (`attrs.selected`) / highest `attrs.priority`, ties broken by id order. The
+    top ones fill the free verification slots: the ceiling is
+    `settings.web.max_active_hypotheses`, minus the branches already running.
+
+    It used to offer exactly one, whatever the setting said, and everything else
+    was reported as a backlog not to start. That made the setting a lie at any
+    value above 1 — the store admitted three, the orchestrator was told it could
+    run three in parallel, and this digest named one.
     """
-    g = _graph(store).full_graph()
+    graph_store = _graph(store)
+    g = graph_store.full_graph()
     candidates = []
     for h in _nodes_of(g, "Hypothesis"):
         if _status(g, h) != "formulated":
+            continue
+        if not _conditional_eligible(g, h):
             continue
         tools = _hypothesis_tools(g, h)
         if all(_status(g, t) == "available" for t in tools):
@@ -92,22 +108,31 @@ def ready_hypotheses(store: Optional[ResearchGraphStore] = None) -> Dict[str, An
                                "methods": _out(g, h, "tested_by"), "tools": tools})
     candidates.sort(key=lambda i: (priority_rank(g.nodes[i["hypothesis"]].get("attrs")),
                                    _id_order(i["hypothesis"])))
-    items, queued = candidates[:1], candidates[1:]
     active = [h for h in _nodes_of(g, "Hypothesis")
               if _status(g, h) == "under_verification"]
+    try:
+        max_active = graph_store.max_active_hypotheses()
+    except AttributeError:  # a bare graph passed in place of a store
+        max_active = 1
+    room = max(0, max_active - len(active))
+    items, queued = candidates[:room], candidates[room:]
 
-    lines = [f"IN VERIFICATION: {h} \"{_label(g, h)}\" — this branch is active; "
-             f"finish it (gather evidence → verdict) before starting another"
+    tail = ("this branch is active; finish it (gather evidence → verdict) "
+            "before starting another" if max_active == 1 else
+            "this branch is active; gather evidence → verdict")
+    lines = [f"IN VERIFICATION: {h} \"{_label(g, h)}\" — {tail}"
              for h in sorted(active, key=_id_order)]
-    lines += [f"READY (verify this ONE next): {i['hypothesis']} \"{i['label']}\" — "
+    verb = ("verify this ONE next" if max_active == 1 else
+            f"verify next — up to {max_active} may run in parallel")
+    lines += [f"READY ({verb}): {i['hypothesis']} \"{i['label']}\" — "
               f"{'tools available' if i['tools'] else 'no tools needed'} "
               f"→ research_set_focus({i['hypothesis']}) then delegate evidence "
               f"gathering for it" for i in items]
     if queued:
         lines.append(
-            "QUEUED (do NOT verify in parallel): "
+            "QUEUED (no free slot right now): "
             + ", ".join(f"{i['hypothesis']} \"{i['label']}\"" for i in queued)
-            + " → take the next one only after the active branch has a verdict")
+            + " → take the next one only after a running branch has a verdict")
     return {"items": items, "queued": queued, "in_verification": active,
             "rendered": "\n".join(lines)}
 
@@ -115,15 +140,24 @@ def ready_hypotheses(store: Optional[ResearchGraphStore] = None) -> Dict[str, An
 def postponed_hypotheses(store: Optional[ResearchGraphStore] = None) -> Dict[str, Any]:
     """The backlog: alternatives set aside while one hypothesis is verified.
 
-    Rendered only when nothing is ready or under verification — i.e. exactly when
-    reviving one (postponed→formulated) is the sensible next move; otherwise the
-    backlog is noise the orchestrator must not act on."""
-    g = _graph(store).full_graph()
+    Rendered only when a verification slot is actually free — that is, exactly
+    when reviving one (postponed→formulated) would be accepted. Told to revive
+    with every slot taken, the orchestrator gets its commit refused by the
+    store and the digest was the thing that sent it there."""
+    graph_store = _graph(store)
+    g = graph_store.full_graph()
     items = [{"hypothesis": h, "label": _label(g, h)}
              for h in sorted(_nodes_of(g, "Hypothesis"), key=_id_order)
-             if _status(g, h) == "postponed"]
-    idle = not ready_hypotheses(store)["items"] and not any(
-        _status(g, h) == "under_verification" for h in _nodes_of(g, "Hypothesis"))
+             if _status(g, h) == "postponed" and _conditional_eligible(g, h)]
+    try:
+        max_active = graph_store.max_active_hypotheses()
+    except AttributeError:      # a bare graph passed in place of a store
+        max_active = 1
+    # The store's own definition of an occupied slot, or the digest and the
+    # commit would disagree about what "free" means.
+    busy = sum(1 for h in _nodes_of(g, "Hypothesis")
+               if _status(g, h) in ("formulated", "under_verification"))
+    idle = busy < max_active
     rendered = ""
     if items and idle:
         rendered = ("BACKLOG: " + ", ".join(f"{i['hypothesis']} \"{i['label']}\""
@@ -348,6 +382,75 @@ def verdict_without_evidence(store: Optional[ResearchGraphStore] = None) -> Dict
     return {"items": stalled, "rendered": "\n".join(lines)}
 
 
+#: A branch that can still produce a verdict, or is waiting its turn to. The
+#: rest — refuted, confirmed, inconclusive — are settled, and a question with
+#: nothing but settled branches under it needs a new one.
+_LIVE_HYPOTHESIS = ("formulated", "under_verification", "postponed")
+
+
+def study_without_hypothesis(store: Optional[ResearchGraphStore] = None) -> Dict[str, Any]:
+    """A study that has a question but no hypothesis at all.
+
+    Across the runs this was written from, this was the graph's most common
+    shape by a wide margin: a question, a row of verification methods, some
+    evidence, and nothing claiming what any of it was supposed to show. The
+    cause was that every route to the generator was worded for uncertainty
+    ("when the direction is unclear"), and a procedural request — "build me the
+    pipeline that ranks these compounds" — reads as the opposite of unclear, so
+    the generator was never called and the graph never had an arc to close.
+
+    A known route is still a claim: running it may return nothing, or the wrong
+    thing. Writing that claim down first is what makes the outcome judgeable
+    rather than merely delivered, so the trigger fires on the absence and does
+    not care how obvious the task looks. `open_questions` already computed the
+    same fact, but rendered it as the descriptive aside "no hypotheses yet
+    (branch)", which no line of the orchestrator's action table consumed.
+    """
+    g = _graph(store).full_graph()
+    if not _nodes_of(g, "ResearchQuestion"):
+        return {"items": [], "rendered": ""}
+    # Status-aware, not existence-aware. Keyed on "are there any Hypothesis
+    # nodes", the trigger went silent the moment the first one was written and
+    # never spoke again — so once the sole hypothesis was refuted, with no
+    # backlog to revive, nothing re-invoked the generator and the study sat on
+    # an open question with every branch dead. The prompt promises "more come
+    # later, and only if the first ones fail"; this is what delivers it.
+    hypotheses = sorted(_nodes_of(g, "Hypothesis"), key=_id_order)
+    if any(_status(g, h) in _LIVE_HYPOTHESIS for h in hypotheses):
+        return {"items": [], "rendered": ""}
+    questions = sorted(
+        (q for q in _nodes_of(g, "ResearchQuestion") if _status(g, q) != "closed"),
+        key=_id_order)
+    if not questions:
+        return {"items": [], "rendered": ""}
+    methods = sorted(_nodes_of(g, "VerificationMethod"), key=_id_order)
+    items = [{"question": q, "label": _label(g, q), "methods": methods,
+              "settled": hypotheses}
+             for q in questions]
+    if hypotheses:
+        dead = ", ".join(f"{h} ({_status(g, h)})" for h in hypotheses)
+        head = (f"NO LIVE HYPOTHESIS: {questions[0]} \"{_label(g, questions[0])}\" "
+                f"is still open and every branch under it is settled: {dead}. "
+                f"Call the HypothesesAgent for a new one that accounts for what "
+                f"those branches showed, or close the question.")
+    else:
+        # Short on purpose: the digest is char-budgeted and the reasoning for
+        # this already sits in the orchestrator's action table, so paying for it
+        # twice costs rows off the end of the GRAPH INDEX.
+        head = (f"NO HYPOTHESIS: {questions[0]} \"{_label(g, questions[0])}\" has "
+                f"none. Call the HypothesesAgent BEFORE any verification method, "
+                f"however obvious the route looks.")
+    if methods:
+        # Their STATUS, not an assertion that they are running. A method is
+        # only ever created as `proposed`, so "already running" was false on
+        # every graph that had just been planned — and it contradicted the
+        # PROGRESS line of the same digest.
+        head += (" " + str(len(methods)) + " method(s) already stand under the "
+                 "question with nothing to test: "
+                 + ", ".join(f"{m} ({_status(g, m)})" for m in methods) + ".")
+    return {"items": items, "rendered": head}
+
+
 def study_open(store: Optional[ResearchGraphStore] = None) -> Dict[str, Any]:
     """Whether the study may be called finished — as a graph condition.
 
@@ -561,6 +664,8 @@ def criteria_coverage(store: Optional[ResearchGraphStore] = None) -> Dict[str, A
 
 
 TRIGGERS = {
+    # First: a study with no hypothesis has nothing for the rest to act on.
+    "study_without_hypothesis": study_without_hypothesis,
     "criteria_coverage": criteria_coverage,
     "ready_hypotheses": ready_hypotheses,
     "blocked_hypotheses": blocked_hypotheses,

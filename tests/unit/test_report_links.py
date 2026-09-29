@@ -128,8 +128,8 @@ class _StubS3Service:
         self.calls = []
 
     def generate_presigned_url(self, s3_key, method="get_object", expiration=360,
-                               bucket_name=None):
-        self.calls.append((s3_key, method, expiration, bucket_name))
+                               bucket_name=None, response_content_type=None):
+        self.calls.append((s3_key, method, expiration, bucket_name, response_content_type))
         if self.raises is not None:
             raise self.raises
         return self.url
@@ -151,7 +151,26 @@ def test_a_non_vault_bucket_is_signed_directly(monkeypatch):
 
     assert response.status_code == 302
     assert response.headers["location"] == "https://s3.example.org/fresh.png"
-    assert stub.calls == [("tox_antitargets/fig5.png", "get_object", 3600, "tox-bucket")]
+    assert stub.calls == [("tox_antitargets/fig5.png", "get_object", 3600, "tox-bucket", "image/png")]
+
+
+def test_a_minted_url_overrides_the_content_type(monkeypatch):
+    """An object uploaded without a ContentType comes back as
+    binary/octet-stream, and a browser refuses to render an SVG from that.
+    The minted URL overrides the response Content-Type from the extension."""
+    stub = _StubS3Service()
+    monkeypatch.setattr(web_app, "s3_service", stub)
+
+    with _client() as client:
+        response = client.get(
+            "/api/artifact/coder-sandbox/sandbox-1/diagrams/canvas.svg",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    assert stub.calls == [
+        ("sandbox-1/diagrams/canvas.svg", "get_object", 3600, "coder-sandbox", "image/svg+xml")
+    ]
 
 
 def test_a_vault_object_is_minted_through_the_vault(monkeypatch):

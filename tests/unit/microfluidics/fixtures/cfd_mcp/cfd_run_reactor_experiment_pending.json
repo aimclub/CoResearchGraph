@@ -1,0 +1,34 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"schema\": \"reactor_experiment_result_v1\",\n  \"request_id\": \"contract-dump-run-2\",\n  \"run_id\": \"b2941fe692c74ad78a4a302978e4e63e\",\n  \"status\": \"pending\",\n  \"finished\": false,\n  \"reactor\": null,\n  \"design\": {},\n  \"derived\": {\n    \"operating_point\": null,\n    \"zone_roles\": null,\n    \"generated_inputs\": null,\n    \"skipped_stages\": []\n  },\n  \"results\": {},\n  \"results_from\": {},\n  \"trustworthy\": null,\n  \"blocking\": [],\n  \"stages\": [],\n  \"artifact_count\": 0,\n  \"error\": null\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "schema": "reactor_experiment_result_v1",
+    "request_id": "contract-dump-run-2",
+    "run_id": "b2941fe692c74ad78a4a302978e4e63e",
+    "status": "pending",
+    "finished": false,
+    "reactor": null,
+    "design": {},
+    "derived": {
+      "operating_point": null,
+      "zone_roles": null,
+      "generated_inputs": null,
+      "skipped_stages": []
+    },
+    "results": {},
+    "results_from": {},
+    "trustworthy": null,
+    "blocking": [],
+    "stages": [],
+    "artifact_count": 0,
+    "error": null
+  },
+  "isError": false
+}

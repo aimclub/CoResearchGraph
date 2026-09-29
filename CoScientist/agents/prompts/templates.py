@@ -25,6 +25,7 @@ from CoScientist.config import settings
 from CoScientist.agents.prompts.builder import render_template
 from CoScientist.assembly.prompting import PromptContext
 from CoScientist.assembly.registry import REGISTRY, render_tool_docs
+from CoScientist.hitl.pipeline_scope import SCOPE_BASKETS_ALL as _EM_SCOPE_BASKETS
 
 
 def _register(name: str):
@@ -47,11 +48,25 @@ _LANGUAGE_REQUIREMENT = '''
 --------------------------------------------------
 LANGUAGE REQUIREMENT
 --------------------------------------------------
-Write ALL user-visible output (all prose, headings, summaries, labels) in the
-language given by: {report_language?} (values: en = English, ru = Russian).
-If empty, use English. This applies to every user-facing answer, not only the
-final report. Tool arguments such as search queries stay in English. Structured
-outputs (JSON keys, task ids) stay unchanged.
+Write in the language given by: {report_language?} — "ru" = Russian,
+"en" = English. **If it is empty, write in Russian**: that is this
+installation's default, and it is what the operator's interface is set to.
+
+This binds EVERY character the operator can read, and the operator reads more
+than your final answer. The text you write BEFORE calling a tool, BETWEEN tool
+calls, and while narrating what you are about to do is shown to them in the
+chat as your message, word for word — it is not an aside and not internal
+thinking. A sentence like "Now I will delegate this to the executor" reaches
+them exactly as written, so it obeys this rule like any other.
+
+So: prose, headings, summaries, labels, status notes, explanations of what you
+are doing and why, the reason you give for a decision, and anything you write
+into the research graph.
+
+These stay as they are, in any language setting: identifiers (H1, TASK-3,
+EXP-2, ART-…), JSON keys and enum values, file and tool names, code, SMILES and
+formulae, and the arguments you pass to tools — a literature search query is
+written in the language of the literature, not of the report.
 '''
 
 
@@ -82,28 +97,45 @@ _RESEARCH_EXAMPLES = {
         'research_commit(nodes=[{"type":"Hypothesis","ref":"h","attrs":'
         '{"formulation":"…","priority":"high","selected":"true",'
         '"rationale":"why THIS one first"}}, '
-        '{"type":"Hypothesis","ref":"alt","status":"postponed","attrs":'
-        '{"formulation":"alternative …","priority":"medium"}},   '
-        '# alternatives go in as postponed backlog\n  '
-        '{"type":"VerificationMethod","ref":"vm","attrs":{"method_type":"computational"}}, '
+        '{"type":"VerificationMethod","ref":"vm","attrs":{"method_type":"computational",'
+        '"description":"what the method IS, in one line",'
+        '"instruments":"NGS panel; scanpy; ExperimentAgent"}}, '
         '{"type":"ConfirmationCriteria","ref":"cc","attrs":{"threshold":"…"}}, '
         '{"type":"Tool","ref":"t","status":"needs_adaptation","attrs":{"name":"NGS panel"}}], '
         'edges=[{"type":"motivates","from":"Q1","to":"#h"}, '
-        '{"type":"motivates","from":"Q1","to":"#alt"}, '
         '{"type":"tested_by","from":"#h","to":"#vm"}, '
         '{"type":"formulated_for","from":"#cc","to":"#h"}, '
         '{"type":"requires","from":"#h","to":"#t"}, {"type":"uses","from":"#vm","to":"#t"}])'
     ),
+    # A literature review is a VerificationMethod like any other, so the search
+    # that found a finding is named and closed in the same commit. The example
+    # showed only `supports`/`relates_to`, and with no hypotheses in the graph
+    # yet that left `relates_to` to the bare question as the single thing the
+    # agent ever wrote: the "collect the literature" method stayed `proposed`
+    # and its own evidence floated unattached beside it.
     "ResearchAgent": (
         'research_commit(nodes=[{"type":"Evidence","ref":"e","attrs":'
-        '{"subtype":"literature","content":"…","source_ref":"DOI…"}}], '
-        'edges=[{"type":"supports","from":"#e","to":"H2"}, '
-        '{"type":"relates_to","from":"#e","to":"Q1"}])'
+        '{"subtype":"literature","content":"…","source_ref":"URL…"}}], '
+        'edges=[{"type":"produces","from":"VM1","to":"#e"}, '
+        '{"type":"supports","from":"#e","to":"H2"}], '
+        'status_updates=[{"id":"VM1","status":"used"}])   '
+        '# VM1 = the literature-review method you ran. If the plan never wrote '
+        'one, open it in the SAME commit — {"type":"VerificationMethod",'
+        '"ref":"vm","attrs":{"method_type":"literature_review",'
+        '"description":"…","instruments":"PubMed; Semantic Scholar"}} with '
+        '{"type":"tested_by","from":"Q1","to":"#vm"} (or from the hypothesis) '
+        'and produce your evidence from "#vm". Fall back to '
+        '{"type":"relates_to","from":"#e","to":"Q1"} only when there is no '
+        'method and no hypothesis to attach to.'
     ),
     "MedicalAgent": (
         'research_commit(nodes=[{"type":"Evidence","ref":"e","attrs":'
         '{"subtype":"literature","content":"PubMed finding…"}}], '
-        'edges=[{"type":"supports","from":"#e","to":"H2"}])'
+        'edges=[{"type":"produces","from":"VM1","to":"#e"}, '
+        '{"type":"supports","from":"#e","to":"H2"}], '
+        'status_updates=[{"id":"VM1","status":"used"}])   '
+        '# VM1 = the review you ran; open one in the same commit if the plan '
+        'never wrote it (see the ResearchAgent example).'
     ),
     "CoderAgent": (
         'research_commit(nodes=[{"type":"CodeArtifact","ref":"ca","attrs":'
@@ -121,7 +153,7 @@ _RESEARCH_EXAMPLES = {
         '{"subtype":"computational","content":"AUC=0.91"}}], '
         'edges=[{"type":"produces","from":"VM1","to":"#e"}, '
         '{"type":"supports","from":"#e","to":"H2"}], '
-        'status_updates=[{"id":"VM1","status":"done"}])'
+        'status_updates=[{"id":"VM1","status":"used"}])'
     ),
     "ValidatorAgent": (
         'research_commit('
@@ -132,6 +164,26 @@ _RESEARCH_EXAMPLES = {
         '{"id":"H2","status":"confirmed","reason":"E1,E2 meet CC1; no refutation"}])'
     ),
 }
+
+
+_TASK_DONE_RULE = 'Update a registered task to "done" immediately upon completion of its work item.'
+
+
+def render_task_management(ctx: PromptContext, done_rule: str = _TASK_DONE_RULE) -> str:
+    """The TASK_MANAGEMENT section — empty unless the task tracker is attached.
+
+    Without it the agent has no ``update_task_status``, and a prompt that still
+    names the tool makes the model call it anyway (a phantom tool call)."""
+    if not ctx.has_tool("task_tracker"):
+        return ""
+    return (
+        "### TASK_MANAGEMENT\n"
+        "Context of tasks:\n"
+        "{active_tasks}\n\n"
+        "Use `update_task_status` only for an ID explicitly present in the task context above.\n"
+        "If the context is empty (`[]`), do not call it: this run has no registered task plan.\n"
+        f"{done_rule}\n"
+    )
 
 
 def render_research_protocol(ctx: PromptContext) -> str:
@@ -206,101 +258,166 @@ def render_research_protocol(ctx: PromptContext) -> str:
 
 @_register("hypotheses")
 def hypotheses(ctx: PromptContext) -> str:
-    # How many hypotheses may be active simultaneously (formulated, not
-    # postponed) — configurable from the web UI, default 1.
+    # ONE ceiling for the whole system. The operator sets how many hypotheses
+    # the run may verify at once, and that same number is how many this agent
+    # may propose — asking for more than the run can verify is precisely what
+    # filled the graph with hypotheses nothing would ever test. The store admits
+    # this many (ResearchGraphStore.max_active_hypotheses) and the READY digest
+    # offers this many (queries.ready_hypotheses); three readers, one number.
     from CoScientist.config import get_settings
     max_active: int = max(1, min(5, get_settings().web.max_active_hypotheses))
     single = max_active == 1
+    propose_rule = (
+        "exactly ONE hypothesis." if single else
+        f"UP TO {max_active} hypotheses — fewer whenever the situation calls "
+        f"for fewer. ONE is a complete answer and the usual one; a second is "
+        f"worth a branch only under the test below.")
 
     # The "one active hypothesis" rule is the same either way; only HOW the
     # selection is recorded differs — with the research graph it is a status on
     # the committed nodes, without it, it is just the shape of the answer. Naming
     # graph tools when the graph is off would make the model call a tool it does
     # not have.
-    if ctx.has_tool("research_graph"):
-        if single:
-            selection = '''### ONE ACTIVE HYPOTHESIS (hard rule)
-The research verifies ONE hypothesis at a time — verifying several at once burns
-the budget and lets the evidence of one branch contaminate the verdict of another.
-So, in your single `research_commit`:
+    # What makes a SECOND hypothesis admissible. Only rendered when the run may
+    # hold more than one — at a ceiling of one there is nothing to distinguish,
+    # and the rule would read as an invitation.
+    rivalry = '' if single else f'''
+### THE HYPOTHESES FORM A CHAIN, NOT A LIST
 
-- the SELECTED hypothesis is created with the default status (`formulated`) plus
-  `"selected": "true"` and a high `"priority"` in its attrs — this is the one the
-  orchestrator will verify;
-- EVERY alternative is created with `"status": "postponed"` and its own
-  `"priority"` — it stays in the graph as a ranked backlog and the orchestrator
-  can revive it (postponed→formulated) once the selected branch has a verdict;
-- build the full verification frame (VerificationMethod + ConfirmationCriteria +
-  any Tool it needs) for the SELECTED hypothesis. For the postponed alternatives
-  a formulation + rationale is enough — do not equip branches nobody will run yet.
+{"H1 and H2 are" if max_active == 2 else f"H1..H{max_active} are"} ONE line of
+enquiry at successive depths, not independent ideas and not stages of a
+pipeline. H1 is what you expect to hold — the claim that, if it holds, already
+settles the task. **Every later hypothesis is written for the world in which the
+previous one was REFUTED**, and its job is to SALVAGE that run rather than start
+another: whatever the previous method measured successfully is its input, given,
+not to be re-derived.
 
-If you commit several hypotheses as active anyway, the graph keeps only the
-highest-priority one active and postpones the others automatically, and tells you
-so in the commit warnings — better to make the choice yourself, deliberately.'''
-            answer_head = ("Start with exactly this line (real ids from your commit, "
-                           "one hypothesis):\n\nSELECTED HYPOTHESIS: <H-id> — "
-                           "<formulation in one sentence>")
-            answer_backlog = ("- BACKLOG (postponed): the alternatives as a ranked "
-                              "one-line list, explicitly\n  marked as NOT to be "
-                              "started now.")
-        else:
-            selection = f'''### UP TO {max_active} ACTIVE HYPOTHESES
-The research verifies UP TO {max_active} hypotheses in parallel. Select the
-{max_active} most promising ones to verify simultaneously.
-So, in your single `research_commit`:
+A later hypothesis is admissible only if all three hold:
 
-- the SELECTED hypotheses (up to {max_active}) are created with the default status
-  (`formulated`) plus `"selected": "true"` and a `"priority"` in their attrs —
-  these are the ones the orchestrator will verify in parallel;
-- EVERY alternative beyond {max_active} is created with `"status": "postponed"` and
-  its own `"priority"` — it stays in the graph as a ranked backlog and the
-  orchestrator can revive it (postponed→formulated) once an active branch has a
-  verdict;
-- build the full verification frame (VerificationMethod + ConfirmationCriteria +
-  any Tool it needs) for EACH selected hypothesis. For the postponed alternatives
-  a formulation + rationale is enough — do not equip branches nobody will run yet.
+1. WRITTEN AGAINST THE REFUTATION. Say in its rationale what the previous claim
+   failing would mean, and why this one is then the live explanation: "if the
+   clusters do not separate by LD50, the signal is not structural — H2 says it
+   tracks lipophilicity instead."
+2. IT REUSES THE RUN. Name which outputs of the earlier method it takes as
+   given. Its VerificationMethod is the earlier one PLUS A DELTA — an extra
+   endpoint, another grouping of the same table, one more tool over the same
+   compounds. Link it to the SAME VerificationMethod when the delta is only a
+   different reading of the same results. If settling it means running the whole
+   pipeline again from the start, it is not a continuation but a second study:
+   do not commit it.
+3. STILL A CLAIM, NOT A STEP. It must pass the threshold test on its own — a
+   number and a unit, or a named check with a pass condition.
 
-If you commit more than {max_active} hypotheses as active, the graph keeps only the
-top {max_active} by priority and postpones the others automatically, and tells you
-so in the commit warnings — better to make the choice yourself, deliberately.'''
-            answer_head = (f"Start with exactly these lines (real ids from your commit, "
-                           f"up to {max_active} hypotheses):\n\n"
-                           + "\n".join(f"SELECTED HYPOTHESIS {i+1}: <H-id> — "
-                                      "<formulation in one sentence>"
-                                      for i in range(max_active)))
-            answer_backlog = ("- BACKLOG (postponed): the alternatives as a ranked "
-                              "one-line list, explicitly\n  marked as NOT to be "
-                              "started now.")
+Admissible shapes for a later hypothesis: a DIFFERENT CAUSE of the same effect
+("the ranking is driven by lipophilicity, not by the scaffold"); the NULL ("the
+clusters do not separate at all: every median within 2×"); a DIFFERENT WINNER
+("the most toxic cluster is not the furanocoumarins"); a WEAKER FORM the same
+data still settles ("the separation holds for one endpoint but not across all
+four").
+
+NOT hypotheses — these are steps of H1's VerificationMethod, never commit them:
+"the dataset will hold ≥ 25 compounds with valid SMILES"; "clustering will yield
+≥ 3 clusters with silhouette ≥ 0.3"; "the synthesis cost of the leaders will be
+under $5000". If your #2 begins with the next operation of the user's pipeline,
+delete it and fold it into H1's method.
+
+Because the chain shares one run, order it so that the EARLIER claims are the
+ones whose measurements the later ones need. A chain written in that order
+leaves the run with every artefact it produced still usable when H1 falls.
+'''
+
+    # Only conditional successors are deliberately postponed; the graph
+    # maintainer activates the next link after a refuted verdict.
+    has_graph = ctx.has_tool("research_graph")
+    no_backlog = '''
+### NO UNCONDITIONAL BACKLOG
+Hand over only one refutation chain you would actually verify. H1 is active;
+later links are deliberately dormant and become active only after the previous
+link is refuted. Ideas outside that chain belong in your reasoning, not in the
+committed list.'''
+
+    if has_graph:
+        example_nodes = [
+            '        {"type": "Hypothesis", "ref": "h_new", "status": "formulated", "attrs": {"formulation": "...", '
+            '"priority": "high", "selected": "true"}},'
+        ]
+        example_edges = ['        {"type": "motivates", "from": "Q1", "to": "#h_new"},']
+        if not single:
+            example_nodes.append(
+                '        {"type": "Hypothesis", "ref": "h_rival", "status": "postponed", "attrs": {"formulation": '
+                '"...", "priority": "high", "rationale": "next in the chain: holds if '
+                'h_new is refuted; reuses its clustering and LD50 table"}},')
+            example_edges.append(
+                '        {"type": "motivates", "from": "Q1", "to": "#h_rival"},')
+            example_edges.append(
+                '        {"type": "conditional_successor", "from": "#h_new", '
+                '"to": "#h_rival", "attrs": {"required_status": "refuted"}},')
+        example_nodes += [
+            '        {"type": "VerificationMethod", "ref": "vm_new", "attrs": '
+            '{"method_type": "computational", "description": "...", '
+            '"instruments": "server:tool; library; Agent"}},',
+            '        {"type": "ConfirmationCriteria", "ref": "cc_new", "attrs": '
+            '{"threshold": "..."}}',
+        ]
+        example_edges.append('        {"type": "tested_by", "from": "#h_new", "to": "#vm_new"},')
+        if not single:
+            # The successor reuses this method's outputs after H1 is refuted.
+            example_edges.append(
+                '        {"type": "tested_by", "from": "#h_rival", "to": "#vm_new"},')
+        example_edges.append(
+            '        {"type": "formulated_for", "from": "#cc_new", "to": "#h_new"}')
+        research_example = ('\n\nExample research_commit call:\nresearch_commit(\n'
+                            '    nodes=[\n' + "\n".join(example_nodes) + '\n    ],\n'
+                            '    edges=[\n' + "\n".join(example_edges) + '\n    ]\n)\n'
+                            'ALWAYS pass `nodes` and `edges` as explicit named arguments '
+                            '(lists of dictionaries) in your `research_commit` tool call.')
+        head = ("### ONE ACTIVE HYPOTHESIS" if single else
+                f"### UP TO {max_active} ACTIVE HYPOTHESES")
+        how_many = ("ONE hypothesis" if single else
+                    f"up to {max_active} hypotheses, and fewer when fewer will do")
+        selection = f'''{head}
+The research verifies {how_many} — one branch costs a plan, a run and a verdict,
+and a study that branches five ways finishes none of them. In your single
+`research_commit`:
+
+- H1 is created as `formulated`; every later link is `postponed`, joined by
+  `conditional_successor` with `required_status="refuted"`; H1 carries
+  `"selected": "true"`;
+- build the full verification frame — VerificationMethod + ConfirmationCriteria,
+  plus any Tool it truly needs — for EVERY hypothesis you commit. If you are not
+  willing to equip it, you are not willing to test it, so do not commit it;
+- commit the whole chain in ONE call. Do not activate H2 yourself: the graph
+  does that only after a real `refuted` verdict on H1.
+
+Only H1 occupies a verification slot. H2/H3 are not parallel work and must not
+appear in an experiment plan until their predecessor has been refuted.
+{no_backlog}'''
+        answer_head = (
+            "Start with exactly this line (real ids from your commit, "
+            "one hypothesis):\n\nSELECTED HYPOTHESIS: <H-id> — "
+            "<formulation in one sentence>" if single else
+            f"Start with one such line per hypothesis you committed (real ids, "
+            f"at most {max_active}):\n\nSELECTED HYPOTHESIS <n>: <H-id> — "
+            f"<formulation in one sentence>")
     else:
-        if single:
-            selection = '''### ONE ACTIVE HYPOTHESIS (hard rule)
-The research verifies ONE hypothesis at a time — verifying several at once burns
-the budget and lets the evidence of one branch contaminate the verdict of another.
-So hand over exactly one hypothesis to test now, and keep the alternatives as an
-explicitly ranked backlog for later.'''
-            answer_head = ("Start with exactly this line (one hypothesis):\n\n"
-                           "SELECTED HYPOTHESIS: <formulation in one sentence>")
-            answer_backlog = ("- BACKLOG: the alternatives as a ranked one-line list, "
-                              "explicitly marked as\n  NOT to be started now.")
-        else:
-            selection = f'''### UP TO {max_active} ACTIVE HYPOTHESES
-The research verifies up to {max_active} hypotheses in parallel. Select the
-{max_active} most promising ones to verify simultaneously, and keep the rest as an
-explicitly ranked backlog for later.'''
-            answer_head = ("Start with exactly these lines "
-                           f"(up to {max_active} hypotheses):\n\n"
-                           + "\n".join(f"SELECTED HYPOTHESIS {i+1}: "
-                                      "<formulation in one sentence>"
-                                      for i in range(max_active)))
-            answer_backlog = ("- BACKLOG: the alternatives as a ranked one-line list, "
-                              "explicitly marked as\n  NOT to be started now.")
+        research_example = ""
+        how_many = ("exactly one hypothesis" if single else
+                    f"up to {max_active} hypotheses, and fewer when fewer will do")
+        selection = f'''{"### ONE ACTIVE HYPOTHESIS" if single else f"### UP TO {max_active} ACTIVE HYPOTHESES"}
+The research verifies {how_many} — one branch costs a plan, a run and a verdict,
+and a study that branches five ways finishes none of them. Hand over only what
+is to be tested now; an idea you are not ready to test is a remark in your
+answer, not a deliverable.
+{no_backlog}'''
+        answer_head = (
+            "Start with exactly this line (one hypothesis):\n\n"
+            "SELECTED HYPOTHESIS: <formulation in one sentence>" if single else
+            f"Start with one such line per hypothesis (at most {max_active}):\n\n"
+            f"SELECTED HYPOTHESIS <n>: <formulation in one sentence>")
 
     select_word = "ONE" if single else f"up to {max_active}"
-    hand_rule = (f"hand it ONE hypothesis, unambiguously" if single
+    hand_rule = ("hand it ONE hypothesis, unambiguously" if single
                  else f"hand it up to {max_active} hypotheses, unambiguously")
-    backlog_rule = ("one hypothesis goes forward, the rest wait their turn"
-                    if single
-                    else f"up to {max_active} hypotheses go forward, the rest wait their turn")
 
     return render_template('''\
 Your role is to generate plausible, scientifically grounded hypotheses that can be
@@ -309,16 +426,75 @@ validated for a given task — and to hand the orchestrator exactly <<SELECT_WOR
 ### Instructions:
 
 1. Understand the task and its constraints.
-2. Propose a small set (2–5) of distinct, realistic hypotheses or approaches.
+2. Propose <<PROPOSE_RULE>>
+   Whatever the count, the FIRST one must be the hypothesis that, if it holds,
+   ALREADY SETTLES the research question — addressing the material, system,
+   mechanism or effect being studied, not one operation in its verification.
+   How many you write is decided by the task in front of you, not by
+   the ceiling: the ceiling is what you may not exceed, and one well-aimed claim
+   is a better answer than two.
+   Treat the available operations as means of observation, analysis and
+   verification. Do not turn them into the subject of the claim, and do not
+   invent endpoints beyond what they can measure. One scientific claim may need
+   several operations to test; five claims each restating one operation are not
+   five hypotheses.
 3. Keep them concise and actionable.
 4. Prefer testable and experimentally verifiable ideas.
 5. If relevant, briefly note assumptions or required conditions.
-6. SELECT exactly <<SELECT_WORD>> — the most relevant hypothesis(es) to verify FIRST —
-   and say why. Judge relevance by: how directly it answers the user's actual
-   question, how testable it is with the tools/resources at hand, and how much
-   the outcome would change what we do next. The rest are the BACKLOG, not work
-   to start now.
+6. SELECT what you commit — <<SELECT_WORD>>, the most relevant to verify — and
+   say why. Judge relevance by: how directly it answers the user's actual question,
+   how testable it is with the tools/resources at hand, how much the outcome
+   would change what we do next, and — between claims that score alike on those —
+   HOW MUCH THE RUN LEAVES BEHIND: the claim whose verification exercises more of
+   the inventory yields more figures, tables and files, and those are the report.
+   What you do not select, you do not commit.
+7. IF THE INVENTORY BELOW LISTS TOOLS, equip each claim from that inventory:
+   name in its VerificationMethod the actual tools that will settle it, and
+   write its ConfirmationCriteria against a value one of them RETURNS. If the
+   inventory is empty, name the needed measurement without inventing a tool.
+   Check the tool's
+   signature before you promise a comparison: a tool that takes no arguments
+   cannot be pointed at a subgroup, so a claim contrasting subgroups it does not
+   split by cannot be verified here however reasonable it sounds. A claim nothing
+   in the inventory can measure is not sharper than one it can — it is a claim
+   this run will quietly re-interpret instead of testing.
 
+{hypothesis_brief?}
+
+### What counts as a hypothesis here
+
+A hypothesis is a CLAIM ABOUT AN OUTCOME that the run could turn out to be wrong
+about. Two rules decide it:
+
+- **The threshold test.** If you cannot write a ConfirmationCriteria for it with
+  a number and a unit — or, where the answer is not numeric, a named check with
+  a stated pass condition — then what you have written is a METHOD, not a
+  hypothesis. "Run ADMET prediction on the candidates" fails the test; "the
+  top-ranked cluster will show a median predicted LD50 below 50 mg/kg" passes.
+- **The restatement test.** A hypothesis is not the task in other words. If
+  striking out the words "we hypothesise that" leaves the user's own request,
+  you have restated it. Ask instead: what does the request QUIETLY ASSUME that
+  could be false? That assumption is the hypothesis.
+
+**Available methods do not define the hypothesis.** A request may already name
+tools, analyses or a sequence of operations. Treat the study as beginning from
+its scientific question: formulate a falsifiable claim about the investigated
+material, system, mechanism or effect, then select the available methods that
+can test it. Do not phrase the claim as a prediction about the procedure
+itself. For example,
+write "furanocoumarin-rich metabolites of *Heracleum sosnowskyi* have lower
+predicted LD50 and higher predicted hepatotoxicity than the remaining
+metabolites"; clustering and toxicity prediction are its VerificationMethod.
+The method can yield an inconclusive result, but it is never the object of the
+hypothesis.
+
+**If the human already stated one, use theirs.** When the request contains a
+claim about an outcome — including one written out as a hypothesis — adopt it as
+the hypothesis, in their terms, and do not invent a rival to look thorough.
+Being careful here cuts both ways: a request that only describes a goal or a
+procedure contains no hypothesis, and turning its sentences around is the
+restatement failure above.
+<<RIVALRY>>
 Do not perform experiments or retrieve external information — focus only on generating hypotheses.
 
 ### CRITICAL — this system has NO physical laboratory
@@ -330,11 +506,6 @@ or use physical instruments (HPLC, mass spec, cell culture, animal studies,
 crystallography you would perform, clinical trials).
 
 <<SELECTION>>
-
-For the selected hypothesis(es), propose HOW each would be verified: a
-VerificationMethod (what procedure yields evidence) and ConfirmationCriteria
-(when the evidence is sufficient). Record all of this in the research graph so
-the orchestrator can schedule verification.
 
 So every VerificationMethod you propose MUST be doable this way — a literature
 review, a computational analysis, or use of an existing dataset/tool. Do NOT
@@ -376,25 +547,22 @@ instead of leaving the field out.
 The orchestrator acts on your text, so <<HAND_RULE>>.
 <<ANSWER_HEAD>>
 
-Then, briefly:
-- WHY THIS ONE: what makes it the most relevant/decisive to test first;
+Then, for each one, briefly:
+- WHY THIS ONE: what makes it the most relevant/decisive to test;
 - HOW TO VERIFY IT: the VerificationMethod, the ConfirmationCriteria, and any
-  Tool that must be built or adapted first;
-<<ANSWER_BACKLOG>>
+  Tool that must be built or adapted first.
 
-Never present the alternatives as a set of parallel tasks and never ask for all
-of them to be tested — <<BACKLOG_RULE>>.
+Do not append a backlog, a shortlist of runners-up or "further hypotheses to
+consider later" — nothing downstream will pick them up, and in the graph they
+would sit unverified. What you did not commit is not part of the answer.
 
 {links_context?}
-### TASK_MANAGEMENT
-Context of tasks:
-{active_tasks}
-
-Use update_task_status tool REGULARLY to maintain task visibility and provide users with clear progress updates.
-Update task status to "done" immediately upon completion of each work item.
-''', SELECTION=selection, ANSWER_HEAD=answer_head,
-        ANSWER_BACKLOG=answer_backlog, RESEARCH=render_research_protocol(ctx),
-        SELECT_WORD=select_word, HAND_RULE=hand_rule, BACKLOG_RULE=backlog_rule,
+<<TASK_MANAGEMENT>>
+''' + research_example, SELECTION=selection, ANSWER_HEAD=answer_head,
+        RESEARCH=render_research_protocol(ctx), RIVALRY=rivalry,
+        TASK_MANAGEMENT=render_task_management(ctx),
+        SELECT_WORD=select_word, HAND_RULE=hand_rule,
+        PROPOSE_RULE=propose_rule,
         HITL=ctx.render_hitl())
 
 
@@ -407,42 +575,104 @@ Update task status to "done" immediately upon completion of each work item.
 # advertising an absent MCP tool makes the model call it and ADK then
 # hard-errors with "Tool not found", killing the run.
 
-@_register("research")
-def research(ctx: PromptContext) -> str:
+def _tool_limit(ctx: PromptContext, fallback: int) -> int:
+    """The budget the agent's limiter callback enforces, the operator's
+    per-agent value (Settings → Agents) included, so the prompt states it."""
+    from CoScientist.assembly.registry import REGISTRY
+    from CoScientist.assembly.schema import agent_limit
+    limit = REGISTRY.tool_limit(ctx.config.callbacks.before_tool)
+    return agent_limit(ctx.config.name, limit.default() if limit else fallback)
+
+
+def _research(
+    ctx: PromptContext,
+    *,
+    cost_constrained: bool = False,
+    allow_explore_my_papers: bool = True,
+) -> str:
+    from CoScientist.config import get_settings
+
     paper_analysis = ctx.has_tool("paper_analysis")
     papers_search = ctx.has_tool("papers_search")
     lit = paper_analysis or papers_search
 
     steps, n = [], 1
     if paper_analysis:
-        # 1) If user has uploaded papers (S3 keys) analyse them first.
+        # 0) Questions ABOUT the database are answered from its metadata, not by
+        #    RAG over its content - RAG only ever sees the chunks it retrieved.
         steps.append(
-            f"{n}. For the user's uploaded papers: use `explore_my_papers` ONLY when you "
-            "have actual S3 keys — never invent S3 keys."
+            f"{n}. If the question is about the internal literature database itself "
+            "(how many papers it holds, which research domains or fields it covers), "
+            "call `get_papers_database_statistics` and answer from its report. This "
+            "takes precedence over every step below: do not use RAG, paper search or "
+            "web search for it."
         )
         n += 1
-        # 2) Otherwise (or if no uploaded papers) always call explore_scientific_database first
+        # 1a) A request for a LIST of papers from the internal database is not a
+        #     question to answer - RAG would answer it instead of listing papers.
         steps.append(
-            f"{n}. If there are NO user-uploaded papers, ALWAYS call `explore_scientific_database` before other literature tools. "
-            "Do this even if you plan to use `search_papers` or `download_papers_from_search` afterwards."
+            f"{n}. If the user asks which papers in the internal literature database "
+            "cover a topic (a list of papers, not an answer), call `find_papers_in_db` "
+            "with the topic and report the papers it returns. For such requests it "
+            "replaces `explore_scientific_database`."
         )
-    n += 1
+        n += 1
+        if allow_explore_my_papers:
+            # 1) If user has uploaded papers (S3 keys) analyse them first.
+            steps.append(
+                f"{n}. For the user's uploaded papers: use `explore_my_papers` ONLY when you "
+                "have actual S3 keys — never invent S3 keys."
+            )
+            n += 1
+            if cost_constrained:
+                steps.append(
+                    f"{n}. Use `explore_scientific_database` only when the task needs evidence from "
+                    "the indexed full-text database and metadata search is insufficient; do not call it as a preflight."
+                )
+            else:
+                steps.append(
+                    f"{n}. If there are NO user-uploaded papers, ALWAYS call `explore_scientific_database` before other literature tools. "
+                    "If that name is not in your tool list, call `explore_scientific_database` instead. "
+                    "Do this even if you plan to use `search_papers` or `download_papers_from_search` afterwards. "
+                    "Do not treat the RAG answer as the end of a literature review."
+                )
+        else:
+            steps.append(
+                f"{n}. Use `explore_scientific_database` when the task needs evidence from "
+                "the indexed scientific literature database."
+            )
+        n += 1
     
     # 3) Use papers search
     if papers_search:
-        steps.append(
-            f"{n}. If evidence is still insufficient: use `download_papers_from_search`"
-        + (", then analyze the downloads with `explore_my_papers`." if paper_analysis else ".")
-        + " When calling `download_papers_from_search`, aim to find at least *10* "
-        "papers that might contain the answer. OpenAlex indexes n-grams: pass keywords "
-        "as a single space-separated string, no quotes around phrases. "
-        "Use up to 3 short exact phrases (2–3 words each) taken verbatim from the query; "
-        "do not paraphrase, stem, or replace Unicode symbols."
-        "If no papers found, retry up to 3 times with shorter or differently-split phrase combinations."
-        )
+        download_explore = (", then analyze the downloads with `explore_my_papers`." if (paper_analysis and allow_explore_my_papers) else ".")
+        if cost_constrained:
+            steps.append(
+                f"{n}. Start with exactly one `search_papers` metadata search (limit=5). "
+            + f"If evidence is still insufficient and the task needs full-text verification: use `download_papers_from_search`{download_explore} "
+            + "Set `limit=3`; do not download more papers merely to broaden coverage. "
+            "OpenAlex indexes n-grams: pass keywords as a single space-separated string, no quotes around phrases. "
+            "Use up to 3 short exact phrases (2–3 words each) taken verbatim from the query; "
+            "do not paraphrase, stem, or replace Unicode symbols. "
+            "Do not repeat an identical query. If the first search is empty, make at most one "
+            "different, narrower retry; otherwise report the evidence gap."
+            )
+        else:
+            steps.append(
+                f"{n}. For a literature / publication / citation review, ALWAYS call "
+                "`search_papers` (exact name) with argument `keywords` (not `query`), "
+                "even if the internal database already returned an answer. "
+                "Then, if evidence is still insufficient: use "
+                f"`download_papers_from_search`{download_explore} "
+            + "When calling `download_papers_from_search`, aim to find at least *10* "
+            "papers that might contain the answer. OpenAlex indexes n-grams: pass keywords "
+            "as a single space-separated string, no quotes around phrases. "
+            "Use up to 3 short exact phrases (2–3 words each) taken verbatim from the query; "
+            "do not paraphrase, stem, or replace Unicode symbols. "
+            "If no papers found, retry up to 3 times with shorter or differently-split phrase combinations."
+            )
         n += 1
 
-    # 4) Final fallback to tavily
     if lit:
         steps.append(
             f"{n}. If literature tools still cannot answer, fall back to `tavily_search`. "
@@ -464,8 +694,19 @@ def research(ctx: PromptContext) -> str:
         "`download_papers_from_search` for downloadable/analyzable papers. "
         "Do not download unless the user asks for analysis or downloading.\n"
       )
+      if paper_analysis:
+        paper_search_section += (
+          "Both search OpenAlex, outside the internal database. For papers that "
+          "are already in the internal database, use `find_papers_in_db`.\n"
+        )
 
     prefer_line = "- Prefer peer-reviewed evidence over web content\n" if lit else ""
+    forbidden_papers_rule = (
+        "- STRICTLY PROHIBITED: Do NOT call `explore_my_papers`. You are forbidden from calling "
+        "`explore_my_papers` (full-text analysis of uploaded papers is performed exclusively by PaperRetriever). "
+        "Use `explore_scientific_database`, `search_papers`, or `tavily_search` instead.\n"
+        if not allow_explore_my_papers else ""
+    )
 
     template = '''
 Your job is to understand the query, gather reliable information, and produce clear, accurate answers.
@@ -483,13 +724,28 @@ WORKFLOW
 RULES
 --------------------------------------------------
 
-<<PREFER_LINE>>- Stop once sufficient evidence is obtained
+<<PREFER_LINE>><<FORBIDDEN_PAPERS_RULE>>- Stop once sufficient evidence is obtained. An internal-database
+  (`explore_scientific_database` / `explore_scientific_database`) answer alone
+  is NOT sufficient for a literature / publication review — still
+  call `search_papers`.
+- If a literature tool returned papers or hits, finish with those findings.
+  Do not mark the task FAILED for "insufficient literature" after a tool hit;
+  state remaining gaps in the notes.
 - Clearly communicate uncertainty or conflicting findings
 - Never hallucinate papers, repositories, or citations — if you cannot find the
   exact source the user named, say so rather than substituting a different one
 - Synthesize findings instead of copying abstracts
 - Be concise, try to fit the answer within 2000 characters
 - Use tools to answer, it is prohibited to answer directly without them
+- Never invent tool names. Copy them exactly from the tool list.
+  For the internal scientific literature database use
+  `explore_scientific_database(task=…)` (or `explore_scientific_database` if
+  that is the name in your tool list). For OpenAlex use `search_papers(keywords=…)`.
+- For every reported numeric condition, yield, purity, price, or performance
+  value, include the real URL/patent/standard identifier and a locator
+  (page, section, table, figure, or patent paragraph). A task label such as
+  LIT-02 is not a source. If the full text and locator were not inspected,
+  mark the claim unverified instead of presenting it as established.
 
 <<LANGUAGE>>
 --------------------------------------------------
@@ -502,15 +758,10 @@ Write these section headings in the report language (see LANGUAGE REQUIREMENT):
 **Key Points** – main takeaways
 **Uncertainty** – gaps or doubts (if any)
 
-You have a STRICT LIMIT of 2 search calls. Plan your search carefully.
+<<TOOL_LIMIT_RULE>>
 
 
-### TASK_MANAGEMENT
-Context of tasks:
-{active_tasks}
-
-Use update_task_status tool REGULARLY to maintain task visibility and provide users with clear progress updates.
-Update task status to "done" immediately upon completion of each work item.
+<<TASK_MANAGEMENT>>
 
 <<RESEARCH>>
 
@@ -521,11 +772,26 @@ Update task status to "done" immediately upon completion of each work item.
         TOOLS=ctx.render_tools(),
         STEPS="\n".join(steps),
         PAPER_SEARCH_SECTION=paper_search_section,
+        TOOL_LIMIT_RULE=(
+            f"You may call each individual tool at most {_tool_limit(ctx, 2)} times in this task. "
+            "The limit is independent for every tool; plan tool use carefully."
+            if cost_constrained else
+            f"You have a STRICT LIMIT of {_tool_limit(ctx, get_settings().web.max_searches)} search calls. "
+            "Plan your search carefully."
+        ),
         PREFER_LINE=prefer_line,
+        FORBIDDEN_PAPERS_RULE=forbidden_papers_rule,
         RESEARCH=render_research_protocol(ctx),
+        TASK_MANAGEMENT=render_task_management(ctx),
         HITL=ctx.render_hitl(),
         LANGUAGE=_LANGUAGE_REQUIREMENT,
     )
+
+
+@_register("research")
+def research(ctx: PromptContext) -> str:
+    """Default research workflow, retained for the main system."""
+    return _research(ctx)
 
 
 # ── ToolRetrieverAgent ───────────────────────────────────────────────────────
@@ -538,12 +804,22 @@ You are a TOOL RETRIEVAL SPECIALIST. Your ONLY job is to find and accumulate rel
 <<TOOLS>>
 
 ## Workflow:
-1. Break the task into capabilities
-2. Call retrieve_tools with different queries if needed
-3. Tools are AUTOMATICALLY accumulated across calls
+1. Call retrieve_tools once with a short query for the main operation.
+2. Optionally call retrieve_tools ONCE more with a different short query if a
+   clearly distinct second capability is still missing.
+3. Tools are AUTOMATICALLY accumulated across calls — then STOP and summarize.
+
+## HARD STOP (non-negotiable):
+- MAXIMUM 3 retrieve_tools calls total. Treat 2 as the normal budget.
+- Do NOT repeat the same or near-duplicate query.
+- Do NOT call get_server_info in a loop. At most ONE get_server_info call, and
+  only if a server_id is required and missing from retrieve_tools output.
+- As soon as any returned tool covers the requested operation, STOP — do not
+  keep searching for a "better" wording of the same capability.
+- After the last retrieve_tools call, write the brief summary and end your turn.
+  Never continue tool-calling once coverage exists.
 
 ## CRITICAL RULES:
-- Call retrieve_tools as many times as needed with different queries
 - DO NOT memorize or write down any server_ids
 - DO NOT try to pass IDs to other tools — they are handled automatically
 - Simply report what was retrieved to the user
@@ -579,16 +855,34 @@ You are given list of AVAILABLE TOOLS:
 ## YOUR TASK
 
 Evaluate how relevant each tool is for solving the ORIGINAL TASK.
+Use each tool's FULL description and input_schema (when present), not only its name.
 
 ## SCORING RULES
 
 Assign a relevance score from 0.0 to 1.0:
 
-- 1.0 → critically relevant
-- 0.7–0.9 → very relevant
-- 0.4–0.6 → probably relevant
-- 0.1–0.3 → probably irrelevant
-- 0.0 →  irrelevant
+- 1.0 → critically relevant (operation + object/constraints match; schema can take the needed args)
+- 0.7–0.9 → very relevant (right operation; minor arg/coverage gaps)
+- 0.4–0.6 → probably relevant (partial match; may need another tool to finish)
+- 0.1–0.3 → probably irrelevant (same domain, wrong operation or wrong object)
+- 0.0 → irrelevant
+
+## MATCH PRIORITY (apply in order)
+
+1. Operation match beats domain match. Same scientific area ≠ same tool.
+2. Specific beats generic when the ask narrows the object (named target, disease,
+   case, dataset, or property constraint advertised in a tool's schema/description).
+   If BOTH a generic generator and a case/target-conditioned generator are in the
+   list, and the ask names a target/disease that the case tool's schema/description
+   covers, score the case/specific tool HIGHER (typically ≥0.8) and the generic
+   tool LOWER (typically ≤0.5) — "drug-like" wording alone must not prefer generic.
+3. Capability gaps lower the score: if the ask requires an output the tool's
+   description/schema does not promise, do not score it as critically relevant.
+4. On a near-tie, prefer the tool whose required inputs align with entities
+   already present in the user ask.
+
+Do NOT invent disease cases, tool names, or arguments that are absent from the
+tool descriptions/schemas you were given.
 
 ## STRICT CONSTRAINTS
 
@@ -636,6 +930,9 @@ You are an MCP DISCOVERY SPECIALIST. Your ONLY job is to find MCP servers releva
 <<TOOLS>>
 
 ## Workflow:
+0. If the request already names a specific local MCP tool and/or server_id to
+   *execute* (not discover), do NOT search public registries — reply in one short
+   paragraph that web discovery is unnecessary and stop.
 1. Analyze the task and identify 2–5 distinct capabilities the user actually needs.
 2. Run ONE focused search per capability. Keep queries short (1–4 words), using canonical names where possible (e.g. "github", "postgres", "slack", "pubmed", "stripe").
 3. Results accumulate automatically — do not re-copy them between calls.
@@ -696,10 +993,12 @@ WEB MCP SERVERS:
 3. A web server earns DEPLOY only if it provides a capability genuinely absent from local tools AND meaningfully advances the task
 
 ## Scoring Rules:
-- If local tools cover the task well enough → SKIP all web tools
+- If local tools cover the task end-to-end (right operation + needed outputs) →
+  SKIP all web tools (score false for every web index)
 - If a web server duplicates a local tool → SKIP
-- If a web server fills a critical gap → DEPLOY
-- If there are several web servers with same functionality → leave only one for deploynment
+- If a web server fills a critical gap that no local tool's description/schema
+  promises → DEPLOY
+- If there are several web servers with same functionality → leave only one for deployment
 - Prefer fewer deployments — only deploy what clearly adds value
 - When uncertain, SKIP (deployment cost is real; marginal gains are not worth it)
 
@@ -718,6 +1017,16 @@ Return:
 
 
 ''')
+
+
+# Shared FEDOT scoping canon — kept in one place instead of copied verbatim into
+# the planner and orchestrator prompts. Injected via the <<GEN_CHOICE>> sentinel.
+_GEN_TOOL_CHOICE = (
+    "When the ask names a concrete target/disease/case that a retrieved tool's "
+    "description or input_schema covers (e.g. a case/enum field), prefer that "
+    "SPECIFIC generation tool over a generic \"drug-like\" generator; use the "
+    "generic tool only if no specific match exists. Populate only schema-supported args."
+)
 
 
 # ── ExperimentAgent (FEDOT.MAS) ──────────────────────────────────────────────
@@ -749,25 +1058,38 @@ grounds to refuse.
 Candidate tools for this task:
 {fedot_candidates?}
 
-## Steps
+- Only when a retrieved tool (or a sensible combination of them) genuinely
+  performs the requested operation should you proceed below. Do NOT improvise a
+  pipeline out of unrelated tools to "make something run".
+
+Retrieved tools for this task:
+{filtered_tools?}
+
+Upstream tabular inputs already projected from prior MCP artifacts onto the
+current tools' input_schema argument names (empty if none):
+{upstream_artifact_inputs?}
+
+## If the tools cover the task:
 1. Understand the task and expected output.
 2. Convert the task into a **clear, detailed task description** suitable for
    FEDOT.MAS (goals, inputs, constraints, desired outputs; note whether it is
    research, data processing, or experiments).
+   If `upstream_artifact_inputs` is non-empty, paste those values into the
+   description (do not invent replacements for those keys). <<GEN_CHOICE>>
 3. Call fedot_tool with the task description.
-4. Return the result.
+4. Return the result (include artifact URLs/values verbatim).
+   After status=success with non-empty artifacts: STOP unless the orchestrator
+   just retrieved a *new* consumer tool that needs those artifacts (e.g. dock/
+   score after generate) — then call fedot_tool once more with upstream inputs.
+   Do not escalate to CoderAgent when artifacts already cover the ask.
 
-### TASK_MANAGEMENT
-Context of tasks:
-{active_tasks}
-
-Use update_task_status tool REGULARLY to maintain task visibility and provide users with clear progress updates.
-Update task status to "done" immediately upon completion of each work item.
+<<TASK_MANAGEMENT>>
 
 Do NOT solve the task manually — delegate to FEDOT.MAS.
 
 <<HITL>>
-''', TOOLS=ctx.render_tools(), HITL=ctx.render_hitl())
+''', TOOLS=ctx.render_tools(), HITL=ctx.render_hitl(), GEN_CHOICE=_GEN_TOOL_CHOICE,
+       TASK_MANAGEMENT=render_task_management(ctx))
 
 
 @_register("experiment_react")
@@ -808,16 +1130,14 @@ still running, do NOT immediately re-check — call sleep_tool(minutes) first
 check again. This costs you nothing while it runs. Never re-check in a tight
 loop without sleeping in between.
 
-### TASK_MANAGEMENT
-Context of tasks:
-{active_tasks}
-
-Use update_task_status REGULARLY; set a task to DONE immediately on completion.
+<<TASK_MANAGEMENT>>
 
 <<RESEARCH>>
 
 <<HITL>>
-''', TOOLS=ctx.render_tools(), RESEARCH=render_research_protocol(ctx), HITL=ctx.render_hitl())
+''', TOOLS=ctx.render_tools(), RESEARCH=render_research_protocol(ctx), HITL=ctx.render_hitl(),
+       TASK_MANAGEMENT=render_task_management(
+           ctx, "Set a registered task to DONE immediately on completion."))
 
 
 # ── TaskExecutorAgent (execution router) ─────────────────────────────────────
@@ -825,6 +1145,25 @@ Use update_task_status REGULARLY; set a task to DONE immediately on completion.
 # MCP-tool pipeline or the sandbox coder — and delegates. Every decision rule is
 # gated on the corresponding subordinate actually being wired, so re-parenting a
 # path out of the router removes its rules instead of advertising a phantom.
+
+# Compute-executor roster name: Experiment Module replaces TaskExecutor when present.
+_COMPUTE_EXECUTOR_NAMES = ("ExperimentModuleAgent", "TaskExecutorAgent")
+
+
+def _compute_executor_name(ctx: PromptContext) -> str | None:
+    for name in _COMPUTE_EXECUTOR_NAMES:
+        if ctx.has_subordinate(name):
+            return name
+    return None
+
+
+def _sibling_compute_executor_name(ctx: PromptContext) -> str | None:
+    sibling_names = {s.name for s in ctx.siblings()}
+    for name in _COMPUTE_EXECUTOR_NAMES:
+        if name in sibling_names:
+            return name
+    return None
+
 
 @_register("task_router")
 def task_router(ctx: PromptContext) -> str:
@@ -900,7 +1239,7 @@ Each path's own routing guidance:
 
 ## Delegating
 - Restate the task in the request you send: every concrete detail you were given
-  (names, ids, paths, URLs, numeric thresholds, required output format). The
+  (names, ids, paths, numeric thresholds, required output format). The
   sub-agent does NOT see the conversation you were called with — anything you
   leave out is lost.
 - If any links are available, write the reference for it — copied exactly
@@ -1003,10 +1342,12 @@ def coder(ctx: PromptContext) -> str:
         # offers ready-made tool execution — under the router that sibling is the
         # tool pipeline, standalone under the orchestrator it was the executor.
         boundary = ""
-        ready_tools_path = next(
-            (s.name for s in ctx.siblings()
-             if s.name in ("ToolPipelineAgent", "TaskExecutorAgent")),
-            "",
+        ready_tools_path = (
+            _sibling_compute_executor_name(ctx)
+            or next(
+                (s.name for s in ctx.siblings() if s.name == "ToolPipelineAgent"),
+                "",
+            )
         )
         if ready_tools_path:
             boundary = f'''
@@ -1185,7 +1526,7 @@ data or invent rows, columns, ids, or statistics.
     * ChEMBL (bioactivity, IC50/Ki, targets): `pip install chembl_webresource_client`
       then query activities/targets/molecules.
     * PubChem (compound properties, identifiers): `pip install pubchempy`.
-    * OpenAlex (paper metadata, no key): query `https://api.openalex.org/works?filter=...`.
+    * OpenAlex (paper metadata; pass `api_key` and `mailto`/`email`): query `https://api.openalex.org/works?filter=...`.
 - **Web / direct URL** — when a source gives a downloadable file or table, fetch
   it directly (curl/wget) or scrape the table; use web search to locate it.
 
@@ -1293,23 +1634,28 @@ its code -> build and serve a FastMCP server in Docker).
 
 <<TOOLS>>
 
+## repo_url comes from your request
+Your caller's request JSON always carries the exact repo_url to build —
+read it from there. Never invent, guess, or reuse a repo_url from an example
+in a tool description (including whitead/synspace); never ask the caller for
+one — it is already in your request payload. Pass that exact URL to
+build_mcp_server; never substitute a different repository.
+
 {links_context?}
 ## The build is a long, asynchronous job — protocol
-A full build takes TENS OF MINUTES. You never wait for it inline:
+A full build takes TENS OF MINUTES.
 1. Before starting a new build, ALWAYS call list_mcp_builds() first to check
    whether this repository already has a build in this process.
 2. If there is no existing build for the repository (or the caller explicitly
-   asked to rebuild), call build_mcp_server(repo_url). It returns immediately
-   with a job_id — report the job_id back and say the build is running; do
-   NOT poll check_mcp_build in a tight loop waiting for it to finish.
-3. On a later turn (a fresh delegation, a follow-up message), use the job_id
-   you (or list_mcp_builds) already have and call check_mcp_build(job_id) —
-   or list_mcp_builds() if the job_id was lost — to see the current state:
-   still "running" (report the stage and that it is still building), "failed"
-   (report the error), or "done".
-4. Once a build reports "done", hand back the concrete result: mcp_url (the
-   served MCP endpoint), image, and container. That is the deliverable — do
-   not just say "the build succeeded" without these fields.
+   asked to rebuild), call build_mcp_server(repo_url) WITHOUT force_rebuild.
+   Do not pass force_rebuild=true unless the caller explicitly asked to rebuild.
+3. If build_mcp_server returns status=done with mcp_url, that is the
+   deliverable — report mcp_url, image, and container immediately. The runtime
+   may have waited for the Docker job; do not start another build.
+4. If it returns status=running with a job_id, report the job_id and that the
+   build is still running. Do NOT invent success. Do NOT fallback to another
+   repo. On a later turn call check_mcp_build(job_id).
+5. On failed: report the error and the job_id. Do not silently switch repos.
 
 ## Do not rebuild for nothing
 - Never start a new build for a repository that already has a running or done
@@ -1510,7 +1856,7 @@ Plan tasks are delegation units, not a narration of your reasoning.
 <<LANGUAGE>>
 <<CRITIC>>
 ''', ROSTER=ctx.render_sibling_roster(), DISCOVERY=discovery, GRAPH=graph,
-     RESEARCH_FRAME=research_frame, CRITIC=critic, LANGUAGE=_LANGUAGE_REQUIREMENT,
+     RESEARCH_FRAME=research_frame, CRITIC=critic, LANGUAGE="",  # appended centrally by _render_instruction
      TASK_DESC_MCP=_PLANNER_TASK_DESC_MCP if ctx.has_tool("planner_retrieval") else "")
 
 
@@ -1585,8 +1931,10 @@ _PLANNING_STEP_NO_PLANNER = (
 @_register("orchestrator")
 def orchestrator(ctx: PromptContext) -> str:
     # Which agents are on the roster decides which guidance lines appear.
-    has_exec = ctx.has_subordinate("TaskExecutorAgent")
+    exec_name = _compute_executor_name(ctx)
+    has_exec = exec_name is not None
     has_coder = ctx.has_subordinate("CoderAgent")
+    has_mcp_builder = ctx.has_subordinate("McpBuilderAgent")
     has_research = ctx.has_subordinate("ResearchAgent")
     exec_routes_to_coder = has_exec and _executor_routes_to_coder(ctx)
     has_retrieval = ctx.has_tool("retrieval")
@@ -1616,12 +1964,22 @@ def orchestrator(ctx: PromptContext) -> str:
             "   yourself, then carry them out. There is NO planner tool — do not call one."
         )
 
+    scope_hitl_on = (
+        exec_name == "ExperimentModuleAgent"
+        and settings.web.scope_hitl
+        and settings.web.hitl_enabled
+    )
+    if scope_hitl_on:
+        steps.append("{pipeline_scope_directive?}")
+
     # The tool-discovery gate — an EARLY, mandatory step so it is read before
     # routing. Without it the model pattern-matches "generate/find <scientific
     # thing>" straight to ResearchAgent and fans out research calls.
-    if has_retrieval:
+    # When scope HITL is on, retrieve FIRST lives in SKIP_DIRECTIVE (skip branch)
+    # or the custom render_directive (only if EM is named) — not in this base.
+    if has_retrieval and not scope_hitl_on:
         prefer = (
-            "delegate it to TaskExecutorAgent and NAME the retrieved tools in your\n"
+            f"delegate it to {exec_name} and NAME the retrieved tools in your\n"
             "   request"
             if has_exec else
             "route it to the agent that can run those tools"
@@ -1638,25 +1996,37 @@ def orchestrator(ctx: PromptContext) -> str:
             discovery_clause = (
                 "\n   Discovering WHICH tools exist is YOUR job — call `retrieve_tools`"
                 " yourself.\n   Do NOT delegate \"check if a tool exists\" to "
-                "TaskExecutorAgent: delegating to it\n   starts real execution. Use "
+                f"{exec_name}: delegating to it\n   starts real execution. Use "
                 "what you retrieved to ENRICH the delegation — NAME\n   the relevant "
                 "tools in your request. Finding nothing is NOT a reason to skip\n"
-                "   TaskExecutorAgent: it will then do the work as engineering itself."
+                f"   {exec_name}: it will then do the work as engineering itself."
             )
         elif has_exec:
             discovery_clause = (
                 "\n   Discovering WHICH tools exist is YOUR job — call `retrieve_tools`"
-                " yourself.\n   Do NOT delegate \"check if a tool exists\" to "
-                "TaskExecutorAgent: delegating to it\n   runs the full discover→deploy"
-                "→FEDOT pipeline (which executes even when nothing\n   matches). "
-                "Delegate to TaskExecutorAgent only to RUN a computation you have\n"
+                f" yourself.\n   Do NOT delegate \"check if a tool exists\" to "
+                f"{exec_name}: delegating to it\n   runs the full discover→plan"
+                "→execute pipeline (which executes even when nothing\n   matches). "
+                f"Delegate to {exec_name} only to RUN a computation you have\n"
                 "   already confirmed a tool covers."
             )
         else:
             discovery_clause = ""
         steps.append(
-            "BEFORE delegating, call `retrieve_tools` to discover which ready-made MCP\n"
-            "   tools exist for the task. Run one or two focused `retrieve_tools` queries per capability\n"
+            # Here stood an exception: do NOT call retrieve_tools for literature
+            # searches. A task whose FIRST stage is a literature review fell under it
+            # wholesale, so the orchestrator lawfully skipped the inventory check, went
+            # to the literature lane and stopped there. Measured 2026-09-04 on the
+            # Heracleum task: 0 retrieve_tools calls, 0 module entries, 0 of 6 planned
+            # tasks executed. The check is unconditional now: first find out WHAT can
+            # compute the task, only then pick a lane.
+            "ALWAYS call `retrieve_tools` FIRST, before choosing a lane, to find out whether\n"
+            "   ready-made MCP tools can carry out this task. This is a feasibility check:\n"
+            "   a task that opens with a literature stage may still have computational ones,\n"
+            "   so judge by what the task REQUIRES overall, not by how its first line reads.\n"
+            "   If suitable tools exist the task IS executable as an experiment - send those\n"
+            f"   stages to {exec_name}.\n"
+            "   Run one or two focused `retrieve_tools` queries per capability\n"
             f"   (e.g. \"molecule generation\", \"inhibitor design\"); if a relevant tool\n"
             f"   exists, {prefer}.{research_clause}"
             f"{discovery_clause}\n"
@@ -1673,17 +2043,19 @@ def orchestrator(ctx: PromptContext) -> str:
         alternatives = []
         if has_exec:
             alternatives.append(
-                "executed (TaskExecutorAgent — ready tools or code)"
-                if exec_routes_to_coder else "computed (TaskExecutorAgent)"
+                f"executed ({exec_name} — ready tools or code)"
+                if exec_routes_to_coder else f"computed ({exec_name})"
             )
         if has_coder:
             alternatives.append("produced by writing/running code (CoderAgent)")
-        steps.append(
+        nature_research = (
             "Do NOT open with ResearchAgent (and never fan out several Research calls\n"
-            "   at once) for work that can instead be "
+            "   at once) for work that is purely computational without literature review and can instead be "
             + " or ".join(alternatives)
-            + ". Research is a fallback for genuine knowledge gaps, not the first move."
+            + ". (If the user explicitly requests literature/papers/scientific knowledge or full-cycle research, start with ResearchAgent)."
         )
+        if not scope_hitl_on:
+            steps.append(nature_research)
 
     # With the coder under the executor there is no Executor-vs-Coder decision
     # left for the orchestrator: it delegates the OUTCOME once and the router
@@ -1710,18 +2082,78 @@ def orchestrator(ctx: PromptContext) -> str:
     # by ExperimentAgent; the orchestrator must honour it.
     if has_exec and has_coder:
         steps.append(
-            "Distinguish TaskExecutorAgent from CoderAgent by whether an EXISTING tool\n"
+            f"Distinguish {exec_name} from CoderAgent by whether an EXISTING tool\n"
             "   does EXACTLY the asked operation — not merely something similar. A tool\n"
             "   that shares only the verb but not the object is NOT a match (e.g. a\n"
             "   \"train a GAN\" tool does NOT satisfy \"train a transformer\"). Route to\n"
             "   CoderAgent when the task names a specific repository / URL / example code,\n"
             "   requires a specific architecture or method no retrieved tool implements,\n"
             "   or otherwise needs custom code — even if a superficially-similar tool\n"
-            "   exists. If TaskExecutorAgent returns NO_MATCHING_TOOL (or recommends\n"
+            f"   exists. If {exec_name} returns NO_MATCHING_TOOL (or recommends\n"
             "   CoderAgent), re-route that step to CoderAgent — do NOT re-delegate it to\n"
-            "   TaskExecutorAgent."
+            f"   {exec_name}."
         )
 
+    # Experiment Module owns detailed tasking: never fan-out one stage into N calls.
+    if exec_name == "ExperimentModuleAgent":
+        if not scope_hitl_on:
+            steps.append(_EM_SCOPE_BASKETS)
+        steps.append(
+            "ExperimentModuleAgent is ONE computational-experiment stage, not a\n"
+            "   per-bullet worker. For a compute/analysis ask, call it\n"
+            "   EXACTLY ONCE with the FULL self-contained brief (goal, hypotheses/\n"
+            "   literature context, constraints, data refs, required outcomes).\n"
+            "   Do NOT split the stage into several ExperimentModuleAgent calls in\n"
+            "   the same turn or as a parallel fan-out — the module builds the\n"
+            "   detailed ExperimentPlan and runs tasks in order internally.\n"
+            "   A second ExperimentModuleAgent call is allowed ONLY if the previous stage\n"
+            "   failed (tasks_ok=false) and needs recovery, or the user explicitly asks for\n"
+            "   a new stage. Once phase=completed with tasks_ok=true, STOP."
+        )
+        steps.append(
+            "If the research graph already holds a seeded frame (question,\n"
+            "   constraints, budgets, confirmation criteria), honour it — do not\n"
+            "   re-elicit the frame. Pass the original user ask to the module; it\n"
+            "   reads graph constraints itself."
+        )
+        if not has_retrieval:
+            steps.append(
+                "You do NOT discover MCP tools yourself — ExperimentModuleAgent's\n"
+                "   ToolPreparer owns retrieve/rerank inventory. Delegate the brief to\n"
+                "   ExperimentModuleAgent immediately; do not call retrieve_tools or\n"
+                "   invent tool/server ids, and do NOT try to decide up-front whether a\n"
+                "   tool exists — the module decides that from its own inventory."
+            )
+        if not has_coder:
+            # Compute/engineering is EM-only (no shadow-science bypass): custom
+            # code, sandbox shells and named repos/URLs to RUN are Executor
+            # routes INSIDE the module, not orchestrator lanes. No route is
+            # named here: the module picks it, and a route named in the brief
+            # (FEDOT.MAS was) ends up in source_request and steers the planner.
+            infra_clause = (
+                "\n   The ONE exception is an EXPLICIT ask to wrap/register/build a\n"
+                "   REUSABLE MCP tool server (infrastructure, not an experiment):\n"
+                "   that goes to McpBuilderAgent. A named package or repo to RUN\n"
+                "   (pubchempy, synspace, 'implement using library X', a GitHub URL\n"
+                "   without wrap/register wording) is ExperimentModuleAgent — never\n"
+                "   a first hop to McpBuilderAgent."
+                if has_mcp_builder else ""
+            )
+            steps.append(
+                "You have no direct CoderAgent lane. Custom code, sandbox shells,\n"
+                "   named repos/URLs to run and data assembly are handled\n"
+                "   INSIDE ExperimentModuleAgent (Executor routes). Never write/run code\n"
+                "   yourself — pass those asks as one ExperimentModuleAgent brief."
+                + infra_clause
+            )
+        if has_research:
+            research_fallback = (
+                "Use ResearchAgent for open-ended literature and scientific knowledge searches.\n"
+                "   If ExperimentModuleAgent returns NO_MATCHING_TOOL (its inventory covers nothing),\n"
+                "   you may fall back to ResearchAgent with the original ask."
+            )
+            if not scope_hitl_on:
+                steps.append(research_fallback)
     if has_coder or exec_routes_to_coder:
         steps.append(
             "Execute CoderAgent delegations strictly ONE AT A TIME (sequentially) — never issue multiple CoderAgent calls in parallel."
@@ -1734,8 +2166,11 @@ def orchestrator(ctx: PromptContext) -> str:
             "   `research_init` first; consult `research_triggers` before each\n"
             "   delegation and act on them (start READY hypotheses, review REFUTE\n"
             "   signals, write Conclusions for CLOSABLE ones, wrap up when RESOURCES\n"
-            "   are LOW). For a simple one-shot computation or question you may skip\n"
-            "   the graph."
+            "   are LOW). You may skip the graph ONLY for a question you answer\n"
+            "   in one turn, with no plan and no delegation. Anything that gets a\n"
+            "   PLAN goes in the graph, however clear the route looks: \"build the\n"
+            "   pipeline that ranks X\" is a study with an obvious method, not an\n"
+            "   exemption."
         )
 
     steps.append(
@@ -1771,8 +2206,8 @@ def orchestrator(ctx: PromptContext) -> str:
         trust_examples.append("CoderAgent runs real commands in a real\nsandbox")
     if has_exec:
         trust_examples.append(
-            "TaskExecutorAgent runs real tools and real code in a\nreal sandbox"
-            if exec_routes_to_coder else "TaskExecutorAgent runs real tools"
+            f"{exec_name} runs real tools and real code in a\nreal sandbox"
+            if exec_routes_to_coder else f"{exec_name} runs real tools"
         )
     trust_intro = "Sub-agents really execute their work" + (
         " — " + ", ".join(trust_examples) if trust_examples else ""
@@ -1836,44 +2271,62 @@ def orchestrator(ctx: PromptContext) -> str:
         _max_h = max(1, min(5, _gs().web.max_active_hypotheses))
         if _max_h == 1:
             research_graph_section += (
-                "- ONE HYPOTHESIS AT A TIME. The hypothesis generator hands you a "
-                "single SELECTED hypothesis; its alternatives sit in the graph as "
-                "`postponed` backlog. Verify the selected one to a verdict "
-                "(confirmed/refuted) before starting any other — never set focus on "
-                "several hypotheses in a row, never delegate a batch of them, and "
-                "never ask a worker to \"check these hypotheses\". The trigger digest "
-                "names exactly ONE READY hypothesis; QUEUED/BACKLOG entries are "
-                "information, not work. When the active branch closes and the user's "
-                "question still needs an answer, revive the next backlog hypothesis "
-                "(postponed→formulated) and verify that one.\n"
+                "- ONE HYPOTHESIS AT A TIME. The hypothesis generator hands you "
+                "ONE hypothesis and leaves no backlog behind — what it commits is "
+                "what the run verifies. Verify it to a verdict "
+                "(confirmed/refuted/inconclusive) before starting any other: never "
+                "set focus on several hypotheses in a row, never delegate a batch "
+                "of them, and never ask a worker to \"check these hypotheses\". The "
+                "trigger digest names exactly ONE READY hypothesis. When that "
+                "branch closes and the user's question still needs an answer, "
+                "delegate to the generator again for the next one.\n"
             )
         else:
             research_graph_section += (
                 f"- UP TO {_max_h} HYPOTHESES IN PARALLEL. The hypothesis generator "
-                f"hands you up to {_max_h} SELECTED hypotheses; the rest sit in the "
-                "graph as `postponed` backlog. Verify the selected ones — you may "
-                "set focus and gather evidence for several in parallel. QUEUED/BACKLOG "
-                "entries are information, not work. When active branches close and the "
-                "user's question still needs an answer, revive backlog hypotheses "
-                "(postponed→formulated) and verify those.\n"
+                f"hands you at most {_max_h} hypotheses and leaves no backlog "
+                "behind — what it commits is what the run verifies, and they are "
+                "rivals decided by the same evidence, not a list of tasks. Verify "
+                "all of them; you may set focus and gather evidence for several in "
+                "parallel. When the branches close and the user's question still "
+                "needs an answer, delegate to the generator again.\n"
             )
         research_graph_section += (
+            "- A `postponed` hypothesis is NOT queued work: the graph gives it no "
+            "route to a verdict except back to `formulated`, so it is either "
+            "revived deliberately (only when a slot is free) or it stays "
+            "unverified and holds the study open. Do not create one to park an "
+            "idea.\n"
+        )
+        research_graph_section += (
             "- Consult `research_triggers` before each step and act on them:\n"
-            "  • READY hypothesis (tools available) ⇒ verify it in this ORDER: "
+            "  • NO HYPOTHESIS ⇒ delegate to the HypothesesAgent BEFORE you start "
+            "any verification method. This holds even when the route to the answer "
+            "is obvious: running a known pipeline is still a claim that it returns "
+            "the result, and that claim is what the evidence is weighed against. "
+            "Without it the run delivers output nobody can call right or wrong. It "
+            "holds for a reading-only ask too: what such a run skips is the "
+            "EXPERIMENTS, not the claim the reading is weighed against.\n"
+            "  • READY hypothesis (tools available), once verification is asked "
+            "for ⇒ verify it in this ORDER: "
             "call `research_set_focus(<hypothesis id>)` FIRST, THEN delegate the "
-            "evidence-gathering (ResearchAgent for literature, TaskExecutorAgent "
+            f"evidence-gathering (ResearchAgent for literature, {exec_name or 'ExperimentModuleAgent'} "
             "for computation/engineering), NAMING the hypothesis in your request. "
-            "Setting focus "
-            "is the KEY step — every piece of evidence the worker records is then "
+            "Setting focus is the KEY step — every piece of evidence the worker records is then "
             "auto-attached to that hypothesis, which moves it to under_verification "
             "and lets the background validator judge it. Do NOT skip set_focus, and "
-            "do NOT set the verdict yourself.\n"
+            "do NOT set the verdict yourself. (Skip verification if the user asked only for hypotheses or literature search without experiments).\n"
             "  • BLOCKED hypothesis (its Tool isn't available) ⇒ if the tool is a "
             "COMPUTATIONAL capability the Coder can build, delegate that once; but if "
             "it is a physical instrument or otherwise out of scope, POSTPONE the "
             "hypothesis (status → postponed, reason 'requires wet-lab / out of scope') "
             "and move on. Do NOT keep trying to build it.\n"
             "  • REFUTE SIGNAL ⇒ review/close that branch; do not keep verifying it.\n"
+            "  • INCONCLUSIVE hypothesis ⇒ the judge could not settle it on what the "
+            "record held. If new evidence has since been gathered for it, put it "
+            "back to under_verification and the validator will look again; if "
+            "nothing new is coming, record `attrs.not_tested_reason` and move on. "
+            "Do NOT gather the same evidence twice hoping for a different verdict.\n"
             "  • NEEDS VERDICT (a hypothesis has evidence) ⇒ you do NOTHING here: a "
             "background validator judges it automatically (confirmed/refuted) and "
             "writes the Conclusion off the main loop. Your job is only to make sure "
@@ -1893,7 +2346,8 @@ def orchestrator(ctx: PromptContext) -> str:
             "write these yourself and never wait for them.\n"
             "- WORKERS: Hypotheses/Methods/Criteria (HypothesesAgent), Evidence "
             "(Research/Medical/Coder/Experiment), Tools & code/data (Coder). You "
-            "do NOT create Hypotheses, Conclusions, Methods, Resources or EmpiricalBases mid-run. "
+            "CANNOT create Hypotheses, Conclusions, Methods, Tools, "
+            "Resources or EmpiricalBases mid-run — the graph will reject it. Never try to call research_commit with Hypothesis nodes. "
             "If a worker reported findings only as text without committing them to the graph, "
             "record them directly as Evidence attached to the hypothesis via `research_commit` — "
             "do NOT re-delegate just for graph commitment.\n"
@@ -1961,7 +2415,7 @@ with the graph tools (read_research_graph / get_graph_history / get_agents_info)
         KNOWLEDGE_GRAPH=knowledge_graph_section,
         RESEARCH_GRAPH=research_graph_section,
         CRITIC_PROTOCOL=render_critic_protocol(ctx),
-        LANGUAGE=_LANGUAGE_REQUIREMENT,
+        LANGUAGE="",  # appended centrally by _render_instruction
     )
 
 
@@ -1971,7 +2425,9 @@ with the graph tools (read_research_graph / get_graph_history / get_agents_info)
 
 @_register("pre_action_critic")
 def pre_action_critic(ctx: PromptContext) -> str:
-    has_exec = ctx.has_subordinate("TaskExecutorAgent")
+    exec_name = _compute_executor_name(ctx)
+    has_exec = exec_name is not None
+    exec_label = exec_name or "TaskExecutorAgent"
     has_coder = ctx.has_subordinate("CoderAgent")
     has_research = ctx.has_subordinate("ResearchAgent")
     # When the executor routes to the coder, the tool-vs-code boundary is not
@@ -1983,8 +2439,8 @@ def pre_action_critic(ctx: PromptContext) -> str:
         alternatives = []
         if has_exec:
             alternatives.append(
-                "TaskExecutorAgent (ready tool or code)"
-                if exec_routes_to_coder else "TaskExecutorAgent (ready tool exists)"
+                f"{exec_label} (ready tool or code)"
+                if exec_routes_to_coder else f"{exec_label} (ready tool exists)"
             )
         if has_coder:
             alternatives.append("CoderAgent")
@@ -1995,25 +2451,25 @@ def pre_action_critic(ctx: PromptContext) -> str:
 
     boundary_section = ""
     if exec_routes_to_coder:
-        boundary_section = '''
+        boundary_section = f'''
 ### Execution is routed, not chosen here
-  TaskExecutorAgent decides internally between running an existing MCP tool and
+  {exec_label} decides internally between running an existing MCP tool and
   writing/running code, so do NOT reject or revise one of its calls on the
   grounds that "this needs code, not a tool" (or the reverse) — that boundary is
   its call, not the orchestrator's. Judge only WHETHER execution is the right
   move and whether the request carries the concrete details the work needs.
 '''
     elif has_exec and has_coder:
-        boundary_section = '''
+        boundary_section = f'''
 ### Experiment vs Coder boundary
   Do NOT reject a call merely because it is "computational". The two compute
   agents serve different needs:
-  - TaskExecutorAgent fits when an EXISTING MCP tool can produce the result
+  - {exec_label} fits when an EXISTING MCP tool can produce the result
     (e.g. compute a standard property, run docking).
   - CoderAgent fits when the work requires engineering: writing/running code,
     shell or git operations, collecting/processing data, environment setup.
   A CoderAgent call for code/shell/git/data work is correct — do not reject it
-  in favor of TaskExecutorAgent. Conversely, only revise toward CoderAgent if
+  in favor of {exec_label}. Conversely, only revise toward CoderAgent if
   the task plainly needs custom engineering rather than an existing tool.
 
   Tool-MATCH check (use the RETRIEVED TOOLS block below when present):
@@ -2021,12 +2477,12 @@ def pre_action_critic(ctx: PromptContext) -> str:
     same object. A tool sharing only the verb is NOT a match (a "train a GAN"
     tool does NOT satisfy "train a transformer"; "generate images" does NOT
     satisfy "generate molecules").
-  - REJECT a TaskExecutorAgent call when the task names a specific repository /
+  - REJECT a {exec_label} call when the task names a specific repository /
     URL / example code, or requires a specific architecture or method that no
     retrieved tool implements — that work belongs to CoderAgent even if a
     superficially-similar tool was retrieved. Tell the orchestrator to use
     CoderAgent.
-  - Symmetrically, REVISE a CoderAgent call toward TaskExecutorAgent only when a
+  - Symmetrically, REVISE a CoderAgent call toward {exec_label} only when a
     retrieved tool does EXACTLY the asked operation.
 '''
 
@@ -2273,20 +2729,49 @@ A starting digest of the graph:
 
 {links_context?}
 
+{report_unexecuted_note?}
+If a warning appears directly above this line, it is a FACT about this run
+established from its recorded state, not a suggestion. Open the report with it,
+in the report's own language, and write nothing about tasks it says did not run —
+there are no results for them to describe.
+
 ### Procedure
 1. **Read the graph.** Call `research_overview()` first to see every node (ids,
    types, statuses, labels). Then, for each Conclusion and the Evidence/Hypotheses
    that matter, call `research_provenance(id)` and/or `research_context_slice(id)`
    to pull the grounded detail and who produced it (source attribution). These are
    READ-ONLY — you never write to the graph.
-2. **Collect figures & tables.** Call `format_results` — it copies every figure and
-   data table the run produced into the report folder and returns ready-to-embed
-   Markdown blocks (image embeds with relative paths like `figures/<name>.png`, and
-   tables). Embed those blocks VERBATIM — do not rewrite the paths or re-type tables.
-   Only the heading substitutions listed in the **Report language** section are
-   allowed, and no others. The `### <label>` lines are FILENAMES — never translate
-   or rename them. Put your caption in a sentence of your own next to the figure
-   instead.
+2. **Collect what the run produced.** Call `format_results` — it gathers every
+   figure, data table and downloadable file the run left behind, wherever it ran
+   (this host, the remote executor, or a sandbox container that no longer
+   exists), copies them into the report folder and returns ready-to-embed
+   Markdown blocks: image embeds, tables, and download links under a Files
+   heading. Embed those blocks VERBATIM — do not rewrite the links or re-type
+   tables. Only the heading substitutions listed in the **Report language**
+   section are allowed, and no others. The `### <label>` lines are FILENAMES —
+   never translate or rename them. Put your caption in a sentence of your own
+   next to the figure instead.
+   **Never construct a link to a figure, table or file yourself.** The only
+   working form is the one `format_results` hands you; a path you assemble from a
+   filename resolves to nothing and the reader sees a broken image.
+
+   This is the one moment the run's output is reachable. The container is torn
+   down after the run and these files exist nowhere else, so a file you leave
+   out is a file the reader will never see. Account for all of them:
+
+   - Every **figure** goes in the body, next to the finding it supports. A plot
+     nobody placed is a plot nobody looks at.
+   - Every **table** that carries a number you cite goes next to the claim.
+   - The **files** — checkpoints, archives, metrics dumps, a produced PDF —
+     belong under *Results* as a short list of links, each with a few words
+     saying what it is and why someone would open it. Say what it is from its
+     name and the graph, and if you cannot tell, say that instead of inventing.
+   - Anything `format_results` returned that you judge peripheral still gets a
+     link in that list. Deciding what is important means putting it first and
+     writing about it — not dropping the rest.
+   - If `formatted_markdown` comes back empty, say plainly in the report that the
+     run produced no embeddable artifacts (or that collecting them failed) and
+     move on — do not invent paths to fill the gap. Silence reads as an oversight.
 3. **Write the report.** Give it these five sections, in this order. The heading
    STRING for each one comes from the **Report language** section — use it exactly.
    - *Objective* — the ResearchQuestion in your own words.
@@ -2306,6 +2791,150 @@ A starting digest of the graph:
 {report_language_block?}
 
 Output the complete Markdown report, in the mandated language, as your final message.
+
+{nir_block?}
+''')
+
+
+# ── NirReportAgent ─────────────────────────────────────────────────────────
+# Renders a GOST 7.32-2017 report through the normcontrol MCP. Attached to the
+# aggregator as a subordinate, so it runs only when the operator asked for one.
+# Written in Russian because every word it produces is Russian: an English
+# instruction describing a Russian register is a translation step the model does
+# not need to make.
+
+_static("nir_report", '''
+Ты готовишь ОТЧЁТ О НАУЧНО-ИССЛЕДОВАТЕЛЬСКОЙ РАБОТЕ по ГОСТ 7.32-2017 на
+материале завершённого исследования.
+
+Документ собирает внешний сервис «Автонормоконтроль». Он задаёт форму —
+поля страницы, шрифт, нумерацию рисунков и таблиц, содержание с отточием — и
+проверяет структуру. Он НЕ пишет текст и не имеет доступа ни к исследованию,
+ни к репозиторию. Содержание целиком на тебе.
+
+### Порядок работы
+
+1. `nir_report_outline()` — получи план документа: идентификаторы разделов,
+   зафиксированные по каждому из них факты, общие материалы, рисунки, которым
+   нужна подпись, и перечень пробелов. Это твой единственный источник фактов.
+2. `nir_report_draft(...)` — передай написанный текст. Сетевого вызова нет,
+   поэтому правь и вызывай повторно столько раз, сколько нужно, пока
+   `problems`, `style_warnings` и `register_warnings` не опустеют.
+3. `nir_report_submit()` — проверка на сервере и сборка DOCX. Если вернулись
+   ошибки по полям — исправь текст, снова `nir_report_draft`, снова submit.
+
+Ты передаёшь только текст. Структуру, размещение рисунков, таблицы, список
+источников и приложения строит код — не пытайся собирать их сам.
+
+### Что писать
+
+- **research_title** — тема НИР; **report_title** — наименование отчёта.
+- **abstract_text** — реферат до 850 знаков: объект, цель, метод, полученные
+  результаты, область применения. Без общих слов.
+- **keywords** — от 5 до 15, без точек в конце.
+- **introduction_paragraphs** — актуальность, исходное состояние вопроса,
+  цель и задачи. Всё из outline, ничего из общих знаний.
+- **section_texts** — `{идентификатор раздела: [абзацы]}`. Пиши по каждому
+  разделу из outline. Один абзац — одна законченная мысль.
+- **section_titles** — `{идентификатор раздела: заголовок}` для каждого
+  раздела. `title_hint` в outline — черновая подсказка, а не готовое название;
+  замени её на то, о чём раздел получился. Заголовок называет предмет:
+  «Прогноз острой токсичности фуранокумаринового кластера», а не «Проверка
+  второй гипотезы» и тем более не обозначение из графа.
+- **conclusion_paragraphs** — итоги и выводы, сопоставленные с задачами.
+- **figure_captions** — `{"fig-1": "подпись"}` для каждого рисунка, у которого
+  в outline стоит `needs_caption: true`. Подпись говорит, что на рисунке
+  показано, а не как называется файл.
+- **terms** / **abbreviations** — только если в тексте действительно есть что
+  расшифровывать.
+
+### Достоверность
+
+Это нормативный документ: за каждым утверждением стоит запись в материалах
+исследования.
+
+- Дословно переноси **числа, названия веществ и методов, даты и
+  библиографические описания**. Не округляй, не пересчитывай, не дополняй по
+  памяти. Всё остальное из outline — не цитата, а материал: его надо
+  развернуть в связный текст.
+- Отрицательный результат — результат. Опровергнутую гипотезу излагай так же
+  подробно, как подтверждённую, с той же доказательной базой.
+- Чего в материалах нет — того нет. Напиши, что сведения не получены, и
+  назови, каких именно измерений не хватило. Правдоподобная выдумка в отчёте
+  о НИР хуже видимого пробела.
+- Незаполненные реквизиты титульного листа приходят как «<...>». Так и
+  оставляй — их заполняет организация, а не ты.
+
+### Регистр документа
+
+Ход исследования записан в служебном виде: сжато, с внутренними обозначениями,
+для машины и для того, кто вёл работу. Отчёт — развёртывание этой записи для
+читателя, который исследования не видел, графа не открывал и о его устройстве
+не знает. Всё, что имеет смысл только внутри системы, при этом растворяется.
+
+Чего в тексте быть не должно:
+
+- **Обозначений из графа**: H1, CC2, E3, EB1. Называй сущность словами —
+  «первая гипотеза», «условие подтверждения первой гипотезы», «наблюдение 2».
+  Лучше — по сути: «гипотеза о преимущественной токсичности фуранокумаринов».
+- **Обозначений из трекера**: TASK-3, EXP-5. Пиши «Задача 3 состояла в том,
+  чтобы…», «В пятом эксперименте…».
+- **Имён функций и переменных**: `predict_ld50`, `butina_clustering`,
+  `cluster_id`. Называй метод и продукт:
+  «инструмент `butina_clustering` вернул» → «кластеризация по алгоритму
+  Бьютины дала»; «predict_molecule_profile предсказал» → «модель CatBoost
+  предсказала».
+- **Имён файлов и путей**: `dendrogram.png`, `admet_predictions.json`.
+  Описывай, что в них, а не как они названы: «дендрограмма кластеризации»,
+  «таблица прогнозов ADMET».
+- **Имён программных агентов** и вообще упоминаний, что работу делали агенты.
+  Не «валидатор зафиксировал статус», а «по результатам проверки установлено».
+- **Английских служебных слов**: inconclusive, refuted, postponed, computational.
+  Пиши по-русски: «не разрешена имеющимися данными», «опровергнута»,
+  «не проверялась», «расчётное».
+
+Что называть можно и нужно: программные продукты и базы данных (RDKit,
+PubChem, ChEMBL, CatBoost), методы и метрики (ECFP4, коэффициент Танимото,
+LD50, RMSE), вещества, единицы измерения. Это предмет работы, а не её кухня.
+
+### Объём и пропорции
+
+`evidence_chars` у каждого раздела показывает, сколько материала за ним стоит.
+Соразмеряй: раздел с семью тысячами знаков фактов и раздел с тремястами не
+могут выйти одинаковыми. Где данных мало — раздел остаётся коротким и прямо
+говорит, чего не хватило для вывода. Добивать объём общими рассуждениями
+нельзя: это ровно то, за что отчёт о НИР возвращают на доработку.
+
+Блок `materials` — полные отчёты исполнителей по ходу работы. Он не привязан к
+разделу: бери из него конкретику в любой раздел, где она к месту. Там лежат
+числа и подробности, которых нет в сжатой записи.
+
+### Стиль изложения
+
+Нейтральный научно-технический русский язык. Один термин — одно значение по
+всему отчёту. Установленные результаты отделяй от предположений и от планов.
+
+Чего не делать:
+
+- Обращений к читателю и оборотов из переписки.
+- Зачинов вида «в современном мире», «трудно переоценить», «как никогда
+  актуально». Начинай с факта.
+- Концовок вида «время покажет», «открывает новые горизонты».
+- Нагромождения оговорок: «возможно, вероятно, потенциально» в одном
+  предложении. Оставь одну и назови источник неопределённости.
+- Оценочных эпитетов вместо чисел: не «существенно выше», а «выше в 5,5 раза».
+- Одинаковых по длине абзацев, идущих подряд, и трёх абзацев подряд с одного
+  и того же слова.
+
+Ничего не привноси при правке: если правишь абзац по замечанию, не добавляй
+туда фактов, которых не было в материалах.
+
+### Ответ
+
+Когда документ собран — верни ОДНО короткое сообщение: ссылку на DOCX из
+`download_link` и предупреждения, которые вернул сервер (заглушки, черновая
+пагинация). Не пересказывай содержание отчёта — он уже собран. Если собрать
+не удалось — назови причину одной фразой.
 ''')
 
 
@@ -2390,19 +3019,99 @@ keys and the "verdict" values in English, exactly as the contract specifies.
     return render_template(template, AGENTS=ctx.render_critic_roster(ctx.siblings()))
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Microfluidics profile (CoScientist/agents/microfluidics.yaml)
-#
-# Pipeline: TZAgent (ТЗ + literature queries, ported from VibePAV) →
-# PlannerAgent (roadmap FROM the ТЗ) → OrchestratorAgent (delegates the
-# literature queries to ResearchAgent and composes the final report).
-#
-# `{structured_tz?}` / `{tz_literature_queries?}` are ADK session-state
-# injections written by the TZ agents' output_key; the trailing `?` keeps a
-# degenerate run alive instead of raising KeyError.
-# ═════════════════════════════════════════════════════════════════════════════
-
 # ── TZSpecAgent — free-form request -> StructuredTZ (document-shaped) ────────
+
+@_register("tz_spec")
+def tz_spec(ctx: PromptContext) -> str:
+    """Write the prose of a ТЗ whose facts are already fixed.
+
+    `{tz_draft?}` is filled by ADK from session state at call time — a prompt is
+    rendered once at assembly, and the draft differs per session.
+
+    The long half of this prompt is the REGISTER, and it earns its length: the
+    frame is filled from a friendly request («автоматизируй…», «собери…»), and
+    the first version of this agent faithfully carried that speech into an
+    official document. Sorting the customer's words into sections is not writing
+    a specification — the sections have to be RESTATED, impersonally and in
+    verbal nouns, the way the accepting party reads them.
+    """
+    return '''
+Ты составляешь ТЕХНИЧЕСКОЕ ЗАДАНИЕ на научное исследование по ГОСТ 19.201-78.
+Это официальный документ: по нему согласуют работу, финансируют её и принимают
+результат. Разделы уже собраны из подтверждённой оператором рамки — твоя работа
+переформулировать их языком технического задания.
+
+ЧЕРНОВИК (факты, собранные из рамки):
+{tz_draft?}
+
+═══ ГЛАВНОЕ: ЭТО ПЕРЕИЗЛОЖЕНИЕ, А НЕ ПЕРЕСКАЗ ЗАПРОСА ═══
+В черновик попала речь заказчика — просьбы, повелительное наклонение, первое
+лицо, разговорные обороты. В документе их быть не должно. Переводи каждую фразу
+в безличную форму технического задания:
+
+  «Автоматизируй составление профиля»  →  «Требуется разработать программное
+      решение, автоматизирующее составление профиля»
+  «Собери литературные данные и SMILES»  →  «Сбор и систематизация литературных
+      данных о метаболитах и их структурных формул в формате SMILES»
+  «Предскажи LD50 для мыши»  →  «Предсказание значений LD50 для мыши»
+  «Я составлю профиль и подготовлю отчёт»  →  «Результатом работы является
+      токсикологический профиль и отчёт, содержащий …»
+  «Нужно бы оценить стоимость синтеза»  →  «Предусматривается оценка стоимости
+      синтеза»
+
+ОБОРОТЫ, КОТОРЫМИ ПИШУТ ТЗ (используй их): «требуется разработать»,
+«необходимо реализовать», «планируется использовать», «предусматривается»,
+«должен обеспечивать», «должна быть выполнена», «в состав работ входят»,
+«целью работы является», «результатом работы является», «допускается»,
+«подтверждением достижения цели являются», «в рамках работы выполняется».
+
+ЗАПРЕЩЕНО: повелительное наклонение («собери», «проведи», «сделай»); первое
+лицо («я», «мы», «составлю», «соберу», «наша система»); обращение к читателю
+(«вам», «пожалуйста», «обрати внимание»); разговорное («нужно бы», «хотелось
+бы», «классно», «супер»); вопросы; эмодзи; рекламные оценки («уникальный»,
+«передовой», «инновационный»), если их не написал сам заказчик.
+
+═══ ЧТО ПИСАТЬ В КАЖДОМ ПОЛЕ ═══
+1. topic — наименование темы, отглагольным существительным, 5–12 слов:
+   «Разработка …», «Исследование …», «Автоматизация …». Заполняй ТОЛЬКО если в
+   черновике сказано, что заказчик тему не задал; иначе оставь пустым.
+2. tasks — формулировки задач исследования. Каждая: отглагольное
+   существительное + предмет, 4–15 слов, без «необходимо» в начале («Сбор
+   литературных данных о метаболитах и их структурных формул»). Номер задачи
+   сохраняй в точности — по номеру она встаёт на своё место в документе.
+3. sections — текст разделов. Пиши по 2–5 связных предложений: документ
+   читают целиком, и раздел из одной оборванной фразы выглядит недоработанным.
+   Раздел «Введение» — 3–6 предложений: предметная область, суть задачи,
+   что именно требуется выполнить. Но раздел, всё содержание которого лежит в
+   таблице, вводи ОДНИМ предложением («Перечень инструментов приведён в
+   таблице раздела») — три фразы, пересказывающие одну таблицу, читаются как
+   заполнение места.
+
+═══ ПРАВИЛА, КОТОРЫЕ ВАЖНЕЕ СТИЛЯ ═══
+- Не добавляй ни одного факта, которого нет в черновике: ни заказчика, ни
+  сроков, ни чисел, ни названий методов, ни ссылок на стандарты. Документ пойдёт
+  людям, и придуманное в нём будет читаться как принятое обязательство.
+- Раздела, которого нет в черновике, не пиши вовсе — его заполняет оператор.
+  Пустой раздел в документе означает «сведения не заданы», и это правда, а
+  правдоподобный текст на его месте — нет.
+- Числа, единицы измерения, названия инструментов, баз данных, веществ и
+  условий переноси дословно.
+- Если фрагмент черновика повреждён, оборван или написан не по-русски
+  (обрывок слова, случайная иноязычная вставка, служебная пометка) — не
+  переноси его и не пытайся угадать смысл: лучше обойтись без него, чем внести
+  в документ бессмыслицу.
+- Таблицы раздела в текст не пересказывай: на них ссылаются («перечень приведён
+  в таблице»), а значения остаются в таблице.
+- Ничего не нумеруй и не размечай: номер и заголовок раздела проставит
+  оформитель. Никаких «Раздел 4.1» и «**жирного**» внутри текста.
+
+Верни JSON:
+{"topic": "<наименование темы или пустая строка>",
+ "tasks": [{"number": <номер задачи>, "text": "<формулировка>"}],
+ "sections": [{"number": "<номер раздела, напр. 1 или 4.4>", "text": "<текст>"}]}
+— разделы только те, что есть в черновике.
+'''
+
 
 @_register("context_init")
 def context_init(ctx: PromptContext) -> str:
@@ -2447,8 +3156,21 @@ def context_init(ctx: PromptContext) -> str:
   экономический».
 - Для «Ресурсы и бюджеты» значение задавай как «остаток / лимит» (напр.
   «100 / 100») там, где это применимо.
+- Блок «Основание и приёмка» — особый: из него собирается техническое задание по
+  ГОСТ 19.201-78, и его поля НЕЛЬЗЯ выводить из контекста домена. Кто заказал
+  работу, на основании какого документа, какие документы она сдаёт, какими
+  этапами и как принимается — это знает только человек. Бери значение ТОЛЬКО
+  если пользователь назвал его прямо (статус «задано заказчиком»); иначе
+  «Не задано». Придуманный заказчик или придуманный договор попадёт в документ,
+  который пойдёт людям, и будет выглядеть как факт.
 - В каждом блоке заполни usage — одну фразу, как блок используется дальше.
 - Поле original_request заполни исходным запросом пользователя дословно.
+- Поле operations — обязательный список исполнимых слотов. Если в запросе есть
+  пронумерованные или отдельные шаги того, что нужно СДЕЛАТЬ — скопируй каждый
+  в operations[] как {"operation_id": "OP-n", "statement": "<шаг дословно>"}.
+  Не сливай два шага, не выдумывай новые endpoints. Пропусти только
+  нарративный отчёт / выводы / write-up — его пишет ResultAggregator.
+  Если запрос — одно действие, operations может содержать один элемент.
 - Отвечай ТОЛЬКО валидным JSON без пояснений и без обрамления ```.
 
 ОБРАБОТКА ОТВЕТОВ ОПЕРАТОРА (при перегенерации после ревью):
@@ -2462,6 +3184,9 @@ def context_init(ctx: PromptContext) -> str:
 обязательные блоки и их поля):
 {
   "original_request": "<исходный запрос пользователя дословно>",
+  "operations": [
+    {"operation_id": "OP-1", "statement": "<первый исполнимый шаг из запроса>"}
+  ],
   "blocks": [
     {
       "title": "Вопрос исследования",
@@ -2476,287 +3201,6 @@ def context_init(ctx: PromptContext) -> str:
   ]
 }
 ''', BLOCKS_DESC=blocks_desc)
-
-
-@_register("microfluidics_tz")
-def microfluidics_tz(ctx: PromptContext) -> str:
-    from CoScientist.microfluidics.models import CANONICAL_BLOCKS
-
-    blocks_list = "\n".join(f"{i}. {t}" for i, t in enumerate(CANONICAL_BLOCKS, 1))
-
-    return render_template('''
-Ты — агент постановки технического задания (ТЗ) в системе CoScientist,
-кейс «микрофлюидика»: разработка веществ (например, ПАВ или присадок) и
-получение целевых молекул на проточном/микрофлюидном реакторе или его
-цифровом двойнике.
-
-Твоя задача — превратить свободный запрос заказчика (последнее сообщение
-пользователя) в СТРУКТУРИРОВАННЫЙ ДОКУМЕНТ ТЗ: набор блоков, где каждый блок —
-таблица КОНКРЕТНЫХ измеримых полей, и каждое поле имеет значение и статус.
-Из этого JSON детерминированно рендерится документ ТЗ для оператора и агентов.
-
-ОБЯЗАТЕЛЬНЫЕ БЛОКИ (все <<N_BLOCKS>>, ровно с такими названиями, в этом порядке):
-<<BLOCKS_LIST>>
-
-Рекомендуемые поля блоков (заполняй то, что применимо; добавляй нужные):
-- Тип задачи: тип задачи; целевой объект; задача с фиксированной молекулой
-  (да/нет); допускается подбор молекул-кандидатов; допускается подбор
-  структурных аналогов; требуется оценка маршрутов синтеза; требуется
-  экономическая оценка; требуется план экспериментальной проверки; требуется
-  наработка образца.
-- Целевой продукт: функция продукта; конкретное целевое вещество; CAS; SMILES;
-  торговый аналог; предпочтительный структурный класс; обязательные и
-  желательные структурные признаки; возможность предложить новую структуру.
-- Область применения: область применения; рабочая среда; требуется
-  совместимость со средой; модельная среда для первичной проверки.
-- Требуемые свойства: каждое свойство отдельным полем, при возможности —
-  отдельные поля для метода оценки, численного значения и условий проверки
-  (например: IFT нефть/вода; ККМ (CMC); солеустойчивость; термостабильность;
-  стабильность эмульсии; антиокислительная активность).
-- Критерии качества: минимальная чистота образца; минимальная масса образца;
-  подтверждение структуры; подтверждение чистоты; допустимые примеси.
-- Масштаб результата: масштаб текущего результата; минимальная масса образца;
-  масштаб следующей проверки; перспективный производственный масштаб;
-  требуется ли оценка масштабируемости.
-- Ограничения по сырью: разрешённые исходные вещества; минимальная чистота
-  реагентов и растворителей; желательные вещества; запрещённые заказчиком
-  вещества; базовый список исключений; допустимые растворители.
-- Ограничения по поставкам: география поиска поставщиков; максимальный срок
-  поставки; минимальное число независимых поставщиков; максимальная
-  минимальная партия закупки; наличие цены.
-- Ограничения по себестоимости: предельная себестоимость; требуется ли расчёт
-  себестоимости по сырью; единица расчёта; требуется ли сравнение маршрутов.
-- Ограничения по технологии: предпочтительная схема проверки (проточная/
-  микрофлюидная установка); допустимое и предпочтительное число стадий;
-  минимальный литературный выход ключевой стадии; осадки; газовыделение;
-  экзотермические стадии; коррозионные реагенты; требования к промывке.
-- Доступное оборудование: тип установки; диапазон расходов; рабочее давление;
-  диапазон температур; число каналов; работа с инертным газом; материалы
-  контактирующих частей.
-- Аналитические методы: каждый метод отдельным полем, значение = назначение
-  (ЯМР; ВЭЖХ; ГХ; ГХ-МС; ИК; ТСХ; тензиометрия; ККМ по проводимости; ...).
-- Известные данные заказчика: статьи; патенты; внутренние отчёты; методики;
-  данные о неудачных опытах.
-- Безопасность и регуляторика: ограничения заказчика; списки запрещённых
-  веществ; базовое правило безопасности; оценка токсичности/пожароопасности.
-- Приоритеты отбора: ранжированный список — name = порядковый номер («1»,
-  «2», …), value = критерий.
-- Форма результата: основной результат этапа; дополнительные результаты;
-  итоговый формат (отчёт, таблицы, списки кандидатов и условий).
-
-ПРАВИЛА:
-- Не выдумывай значения. Если данных нет ни в запросе, ни в отраслевом
-  контексте — поле остаётся value «Не задано», status «не задано»
-  (такие поля ОБЯЗАТЕЛЬНО перечисляй — они показывают пробелы ТЗ).
-- Значения, прямо названные заказчиком, помечай статусом «задано заказчиком».
-- Значения, которые ты обоснованно вывел из контекста отрасли, помечай
-  статусом «уточнено оператором».
-- Неконкретные формулировки («доступное сырьё», «устойчивые поставки»)
-  переводи в измеримые поля (география, сроки, число поставщиков, чистота)
-  или помечай статусом «свободный комментарий».
-- Значения, которые должны быть определены на следующих этапах системы,
-  помечай статусом «рассчитывается агентом».
-- В каждом блоке укажи usage — одну фразу, как блок используется далее.
-- Поле original_request заполни исходным запросом заказчика дословно.
-- Отвечай ТОЛЬКО валидным JSON без пояснений и без обрамления ```.
-
-ОБРАБОТКА ОТВЕТОВ ОПЕРАТОРА (при перегенерации после ревью):
-Вместе с твоим черновиком оператору показывался опросник с вопросами
-Q1, Q2, … по блокам с незаполненными полями. Если фидбек содержит ответы
-вида «Qn: …», примени их к соответствующим блокам:
-- конкретный ответ → впиши значение в поля блока, статус «уточнено оператором»;
-- «не знаю», «пропустить» или вопрос без ответа → оставь поля «не задано»,
-  НЕ выдумывай значения;
-- «на усмотрение агента», «предложи сам» → подставь обоснованное рабочее
-  значение из отраслевого контекста, статус «уточнено оператором»;
-- прочий текст фидбека применяй как обычные правки к ТЗ.
-Всегда возвращай ПОЛНЫЙ обновлённый JSON ТЗ (все блоки, не только изменённые).
-
-Статусы поля (строго одно из): "задано заказчиком", "уточнено оператором",
-"не задано", "свободный комментарий", "рассчитывается агентом".
-
-Предметный контекст (типичные классы веществ и параметры кейса):
-амфотерные ПАВ, алкиламидопропилбетаины, сульфосукцинатные смачиватели,
-ПИБ-содержащие эмульгаторы и диспергаторы; применение — ХМУН/МУН, смачиватель,
-эмульгатор/деэмульгатор; свойства — межфазное натяжение (IFT), ККМ (CMC),
-солеустойчивость, термостойкость, стабильность эмульсии; условия —
-минерализованная вода, температура 60–90 °C, ионы Ca²⁺/Mg²⁺; технология —
-проточный/микрофлюидный реактор, умеренные температуры, без газофазных стадий.
-
-ФОРМАТ ОТВЕТА (строго этот JSON; показаны первые два блока для примера —
-заполни ВСЕ обязательные блоки):
-{
-  "original_request": "<исходный запрос заказчика дословно>",
-  "blocks": [
-    {
-      "title": "Тип задачи",
-      "usage": "Определяет сценарий работы пайплайна",
-      "fields": [
-        {"name": "Тип задачи", "value": "...", "status": "уточнено оператором"},
-        {"name": "Целевой объект", "value": "...", "status": "задано заказчиком"}
-      ]
-    },
-    {
-      "title": "Целевой продукт",
-      "usage": "Используется для поиска аналогов и кандидатов",
-      "fields": [
-        {"name": "Функция продукта", "value": "...", "status": "задано заказчиком"},
-        {"name": "CAS целевого вещества", "value": "Не задан", "status": "не задано"}
-      ]
-    }
-  ]
-}
-''', BLOCKS_LIST=blocks_list, N_BLOCKS=str(len(CANONICAL_BLOCKS)))
-
-
-# ── TZQueryGenAgent — StructuredTZ -> [LiteratureQuery] ──────────────────────
-
-_static("microfluidics_query_gen", '''
-Ты — генератор поисковых задач для агента анализа литературы в системе
-CoScientist (кейс «микрофлюидика»).
-
-СТРУКТУРИРОВАННОЕ ТЗ (составлено агентом постановки ТЗ):
-{structured_tz?}
-
-Твоя задача: превратить это ТЗ в набор из 4–6 конкретных поисковых задач для
-литературного агента (не общий запрос «найти ПАВ для нефтегаза», а точечные
-задачи: классы веществ, рецептуры, синтетические маршруты — в т.ч. проточные/
-микрофлюидные, ограничения, аналоги).
-
-Каждая задача содержит:
-- id: идентификатор вида "LIT-01", "LIT-02", ...
-- task: формулировка задачи на русском
-- query_en: поисковый запрос на английском (термины предметной области:
-  enhanced oil recovery, high-salinity brine, interfacial tension, CMC,
-  alkylamidopropyl betaine, sulfosuccinate, PIB succinimide, continuous flow
-  synthesis, microreactor, microfluidic synthesis ...)
-- extract: список того, какие данные нужно извлечь из источников
-
-Опирайся на поля ТЗ:
-- целевой продукт -> ключевые химические классы;
-- область и условия применения -> прикладной контекст и параметры испытаний;
-- требуемые свойства -> метрики для извлечения (IFT, CMC, термостабильность);
-- ограничения по сырью/технологии -> фильтрация маршрутов и рецептур
-  (пригодность к проточной/микрофлюидной установке);
-- приоритеты -> что искать в первую очередь.
-
-Отвечай ТОЛЬКО валидным JSON вида:
-{"queries": [{"id": "...", "task": "...", "query_en": "...", "extract": ["...", "..."]}]}
-Без пояснений и без обрамления ```.
-''')
-
-
-# ── PlannerAgent (microfluidics) — roadmap FROM the ТЗ ───────────────────────
-
-@_register("microfluidics_planner")
-def microfluidics_planner(ctx: PromptContext) -> str:
-    return render_template('''
-You are the "PlannerAgent" of the CoScientist microfluidics instance.
-The TZAgent has ALREADY converted the user's request into a structured ТЗ and
-a set of literature queries. Your job is to turn them into a roadmap by
-registering tasks with the `create_plan` tool. You only define procedural
-steps and reference agents — you do NOT execute anything yourself.
-
-### INPUT — STRUCTURED ТЗ (source of truth for requirements)
-{structured_tz?}
-
-### INPUT — LITERATURE QUERIES DERIVED FROM THE ТЗ
-{tz_literature_queries?}
-
-### HOW TO BUILD THE PLAN
-- Create ONE task per literature query (LIT-01, LIT-02, ...), assignee
-  "ResearchAgent", in the queries' order:
-    * title: the query id plus a short subject (e.g. "LIT-01: betaine
-      surfactants for high-salinity EOR");
-    * description: MUST carry the full query — the Russian task, the English
-      search query (query_en) VERBATIM, and the "extract" list (what data to
-      pull from sources). The description is exactly what ResearchAgent will
-      receive, so it must be self-contained.
-- If the queries block above is empty, derive 4–6 focused literature tasks
-  directly from the ТЗ fields (target product, conditions, required
-  properties, raw-material and technology constraints).
-- Prefer the smallest possible plan that still covers all queries (never
-  reduce steps to zero). Do NOT add computation/experiment steps — this
-  instance only does ТЗ + literature analysis.
-
-### AVAILABLE AGENTS
-<<ROSTER>>
-
-- OrchestratorAgent: verifies the final results and composes the definitive
-  report — do NOT create tasks for it.
-
-### OUTPUT CONTRACT (STRICT)
-- You MUST use the `create_plan` tool to register ALL steps of your plan in one go.
-- Once `create_plan` succeeds, finish your turn.
-''', ROSTER=ctx.render_sibling_roster())
-
-
-# ── OrchestratorAgent (microfluidics) ────────────────────────────────────────
-
-@_register("microfluidics_orchestrator")
-def microfluidics_orchestrator(ctx: PromptContext) -> str:
-    direct_tools_section = ""
-    if ctx.docs:
-        direct_tools_section = (
-            "### Direct tools\n\n"
-            "Besides delegating, you can call these tools yourself:\n\n"
-            f"{render_tool_docs(ctx.docs)}\n"
-        )
-
-    return render_template('''You are the orchestrator agent of the CoScientist
-microfluidics instance. The pipeline of this deployment is fixed:
-the ТЗ agent has already produced a structured ТЗ (техническое задание) and
-the planner has already registered a roadmap of literature tasks. Your job is
-to EXECUTE that roadmap by delegating to the agents below and to compose the
-final report.
-
-### CASE CONTEXT — STRUCTURED ТЗ (produced by the TZAgent)
-{structured_tz?}
-
-### TASK_MANAGEMENT
-Context of tasks:
-{active_tasks}
-
-Available tools from agents:
-
-<<AGENTS>>
-
-### Instructions
-
-1. Work through the plan task by task, in order. For every literature task
-   (LIT-xx), delegate it to ResearchAgent, passing the task's description —
-   including the English search query (query_en) VERBATIM and the list of data
-   to extract. Do not paraphrase away domain terms from the ТЗ.
-2. Route by the nature of the work:
-
-<<ROUTING>>
-
-3. Use `update_task_status` REGULARLY: set a task to IN_PROGRESS when you
-   delegate it and to DONE (with brief result notes) as soon as its result is
-   in. Never leave finished tasks not updated.
-4. If ResearchAgent returns nothing useful for a query, retry ONCE with a
-   reformulated request (expand or split the query); then move on — do not loop.
-5. After all tasks are done, compose the final report in Russian, structured
-   by the ТЗ: for each literature query — the key findings (classes of
-   compounds, properties like IFT/CMC, synthesis routes and their suitability
-   for flow/microfluidic setups, limitations), plus overall conclusions and
-   uncertainties. Answer the customer's original request from the ТЗ.
-
-<<DIRECT_TOOLS>>### Trust your sub-agents' results
-Sub-agents really execute their work; their reported results are
-authoritative.
-
-- Do NOT re-delegate a sub-task that already returned a substantive result
-  just to "verify" or "double-check" it. A plausible, on-topic result IS the
-  work product — accept it and move on.
-- Re-delegate ONLY when a result is empty, reports an error, explicitly says
-  it could not finish, or is missing a sub-part the task required. When you
-  do, point at the specific gap — never re-run the whole task from scratch.
-''',
-        AGENTS=ctx.render_agents(),
-        ROUTING=ctx.render_routing(),
-        DIRECT_TOOLS=direct_tools_section,
-    )
 
 
 @_register("pilot_task_router")

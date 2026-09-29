@@ -93,9 +93,9 @@ def test_adk_pause_condition_still_holds():
     """Guard against an ADK upgrade silently changing the contract above."""
     import inspect
 
-    from google.adk.flows.llm_flows import functions as adk_functions
+    from google.adk.flows.llm_flows import _tool_caller
 
-    src = inspect.getsource(adk_functions)
+    src = inspect.getsource(_tool_caller)
     assert "is_long_running or tool._defers_response" in src
     assert "and not function_response" in src
 
@@ -106,7 +106,12 @@ def test_console_handler_does_not_hang_without_a_tty():
     req = HITLRequest(agent_name="A", action_type=HITLAction.APPROVE, message="proceed?")
     resp = asyncio.run(asyncio.wait_for(ConsoleHITLHandler().handle_request(req), timeout=5))
     assert resp.action in (HITLAction.APPROVE, HITLAction.REJECT)
-    assert resp.instructions and "headless" in resp.instructions.lower()
+    # `instructions` is deliberately EMPTY here. Every consumer reads it as the
+    # operator's own words — the ТЗ interview recorded the explanation as an
+    # ANSWER to a question and put it in the document — so "no human was
+    # reachable" travels in `timed_out` instead.
+    assert not (resp.instructions or "")
+    assert resp.timed_out is True, "nobody decided this"
 
 
 def test_console_headless_policy_can_reject(monkeypatch):
