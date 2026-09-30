@@ -17,6 +17,9 @@ agents:
   ResearchAgent:
     hitl: false
     work_order: false
+  ToolRetrieverAgent:
+    callbacks:
+      after_model: [ensure_pilot_exact_tool_retrieved]
   ExperimentAgent:
     hitl: false
     work_order: false

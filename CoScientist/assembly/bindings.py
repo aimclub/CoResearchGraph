@@ -1380,6 +1380,8 @@ _cb("PaperSearchGuard", "before_tool", factory=lambda ctx: _paper_search_guard()
 _cb("ForbidExploreMyPapers", "before_tool", factory=lambda ctx: _forbid_explore_my_papers())
 # Catch hallucinated tool calls (e.g. `find`) and correct instead of crashing.
 _cb("guard_unknown_tools", "after_model", factory=_guard_unknown_tools)
+from CoScientist.agents.callbacks.pilot_exact_retrieval import ensure_pilot_exact_tool_retrieved
+_cb("ensure_pilot_exact_tool_retrieved", "after_model", func=ensure_pilot_exact_tool_retrieved)
 from CoScientist.agents.callbacks.pilot_delegation import (
     block_pilot_repeated_overview,
     enforce_pilot_executor_route,
