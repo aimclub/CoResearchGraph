@@ -4,9 +4,22 @@ extends: synapse_demo
 defaults:
   reasoning: medium
 agents:
+  PlanningPipelineAgent:
+    hitl: false
+  PlannerAgent:
+    hitl: false
+  ContextInitAgent:
+    hitl: false
   HypothesesAgent:
     reasoning: medium
+    hitl: false
+    work_order: false
+  ResearchAgent:
+    hitl: false
+    work_order: false
   ExperimentAgent:
+    hitl: false
+    work_order: false
     callbacks:
       before_agent: [redirect_when_no_tools, reset_scientific_execution, before_get_task, inject_research_context, user_links]
       before_model: [redact_link_urls, require_first_scientific_tool_call]
@@ -14,6 +27,7 @@ agents:
       after_model: [recover_pilot_json_science_call, require_scientific_execution, expand_link_refs]
       after_tool: [register_tool_result_links, capture_mcp_artifacts, record_scientific_mcp_result]
   TaskExecutorAgent:
+    hitl: false
     prompt: pilot_task_router
     callbacks:
       after_model: [attest_executor_science, expand_link_refs, guard_unknown_tools]
@@ -22,6 +36,7 @@ agents:
       before_tool: [resolve_link_refs, enforce_pilot_executor_route, preserve_pilot_target]
       after_tool: [register_tool_result_links, capture_scientific_pipeline_receipt]
   OrchestratorAgent:
+    hitl: false
     prompt: pilot_orchestrator
     callbacks:
       before_agent: [before_get_task, inject_graph_root, inject_research_context, user_links]
@@ -31,3 +46,28 @@ agents:
       # The missing-tool patch handles older ADK; ADK 2.9 handles unknown
       # calls natively. guard_unknown_tools would end the turn on prose.
       after_model: [require_pilot_delegations, validate_pilot_report, expand_link_refs]
+  CoderAgent:
+    hitl: false
+    callbacks:
+      before_agent: [inject_research_context, inject_dataset_context, user_links]
+      before_model: [redact_link_urls]
+      after_model: [expand_link_refs, guard_unknown_tools]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+  DatasetCollectorAgent:
+    hitl: false
+    work_order: false
+  MedicalAgent:
+    hitl: false
+    work_order: false
+  McpBuilderAgent:
+    hitl: false
+  FedotAgent:
+    hitl: false
+  ResultAggregatorAgent:
+    callbacks:
+      before_agent: [guard_report_without_execution, inject_research_context, inject_report_language, user_links]
+      before_model: [redact_link_urls]
+      after_model: [expand_link_refs]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]

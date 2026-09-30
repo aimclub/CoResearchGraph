@@ -640,3 +640,35 @@ def test_pilot_reasoning_matches_gpt_oss_gateway_without_changing_regular_demo()
         regular.agent("HypothesesAgent").reasoning
         == base.agent("HypothesesAgent").reasoning
     )
+
+
+def test_pilot_disables_human_requests_without_changing_regular_demo():
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = load_config(resolve_config_path("synapse_pilot"))
+    regular = load_config(resolve_config_path("synapse_demo"))
+
+    assert not any(agent.hitl or agent.work_order for agent in pilot.agents.values())
+    assert "hitl_before_tool" not in pilot.agent("CoderAgent").callbacks.before_tool
+    assert "ask_nir_report" not in pilot.agent("ResultAggregatorAgent").callbacks.before_agent
+    assert regular.agent("TaskExecutorAgent").hitl
+    assert regular.agent("ResearchAgent").work_order
+    assert "hitl_before_tool" in regular.agent("CoderAgent").callbacks.before_tool
+    assert "ask_nir_report" in regular.agent("ResultAggregatorAgent").callbacks.before_agent
+
+
+def test_pilot_omits_confirmation_tools_even_when_global_hitl_is_enabled(monkeypatch):
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+    from CoScientist.config.settings import get_settings
+
+    monkeypatch.setattr(get_settings().web, "hitl_enabled", True)
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+
+    for agent in pilot.agents.values():
+        names = {getattr(tool, "name", None) for tool in getattr(agent, "tools", [])}
+        assert names.isdisjoint({
+            "request_approval", "request_selection", "declare_work_order",
+            "update_work_order",
+        })
+        assert getattr(agent, "hitl_handler", None) is None
