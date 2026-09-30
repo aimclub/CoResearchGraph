@@ -12,7 +12,13 @@ _ATTEMPT_KEY = "_pilot_exact_tool_attempt"
 
 
 def ensure_pilot_exact_tool_retrieved(callback_context, llm_response):
-    if llm_response.partial:
+    if (
+        llm_response.partial
+        or llm_response.error_code
+        or llm_response.error_message
+        or llm_response.interrupted
+        or llm_response.content is None
+    ):
         return None
     parts = getattr(llm_response.content, "parts", None) or []
     if any(getattr(part, "function_call", None) for part in parts):

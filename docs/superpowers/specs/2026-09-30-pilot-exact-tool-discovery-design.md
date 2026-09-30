@@ -31,6 +31,11 @@ an explicit target, partial model responses, and normal model-originated tool
 calls retain their current behavior. No Synapse contract or other CoScientist
 profile changes.
 
+The pilot executor's existing handoff must preserve both the target name and
+its server ID when forwarding to `ToolPipelineAgent`; repeating only the name
+does not satisfy the identity constraint. Model error, interruption, and
+contentless control responses must pass through without triggering retrieval.
+
 ## Alternatives
 
 - Add another prompt instruction: smaller text change, but the retriever

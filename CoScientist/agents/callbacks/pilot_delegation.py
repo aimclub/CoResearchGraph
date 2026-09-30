@@ -124,7 +124,16 @@ def preserve_pilot_target(tool, args, tool_context):
     target = re.search(r"\bTarget tool:\s*([A-Za-z_][A-Za-z_0-9]*)\b", source)
     if not target or target.group(1) not in _PILOT_SCIENCE_TOOLS:
         return None
-    if re.search(r"\bTarget tool:\s*" + re.escape(target.group(1)) + r"\b", request):
+    target_pattern = re.compile(
+        r"\bTarget tool:\s*" + re.escape(target.group(1))
+        + r"\b(?:\s*\(server_id=([A-Za-z0-9_-]+)\))?"
+    )
+    source_target = target_pattern.search(source)
+    request_target = target_pattern.search(request)
+    if request_target and (
+        not source_target.group(1)
+        or request_target.group(1) == source_target.group(1)
+    ):
         return None
     args["request"] = f"{source}\n\nExecutor subtask: {request}"
     return None

@@ -22,6 +22,7 @@
 **Files:**
 - Create: `tests/unit/test_pilot_exact_retrieval.py`
 - Create: `CoScientist/agents/callbacks/pilot_exact_retrieval.py`
+- Modify: `CoScientist/agents/callbacks/pilot_delegation.py` (preserve target server in nested handoff)
 - Modify: `CoScientist/assembly/bindings.py` (pilot callback registration)
 - Modify: `CoScientist/agents/synapse_pilot.yaml` (`ToolRetrieverAgent` override)
 
@@ -152,6 +153,8 @@ def test_second_missing_result_raises_instead_of_looping():
 
 Also add one test each for a missing `server_id`, `partial=True`, and a model-originated `function_call` using the same helpers. Run each newly introduced behavior red if code does not yet implement it, then green with the Step 2 command targeting the full new file.
 
+Review also identified two boundary cases: `LlmResponse(error_code=...)` and `interrupted=True` must pass through unchanged, and a delegated `ToolPipelineAgent` request that repeats the tool name but omits its source `server_id` must be prefixed with the source target. Pin these with failing tests before implementing the guards and handoff preservation.
+
 - [ ] **Step 6: Add the ADK Runner regression.** Extend the new test file with this observable call/response test (and necessary imports). It uses a scripted model and a stubbed external retrieval function, not a mocked callback:
 
 ```python
@@ -218,7 +221,7 @@ def test_adk_executes_exact_lookup_once_before_failing_closed():
 
 - [ ] **Step 7: Verify all relevant tests and static checks.** Repeat the Step 2 Docker command with the test path replaced by `tests/unit/test_pilot_exact_retrieval.py tests/unit/test_executor_redirect.py tests/test_synapse_pilot_unknown_tools.py tests/unit/experiment/test_profile.py tests/unit/test_assembly.py`. Run `git diff --check` and `python -m compileall -q CoScientist/agents/callbacks/pilot_exact_retrieval.py`. Expected: zero test failures and zero diff/compile errors.
 
-- [ ] **Step 8: Commit and update PR #401.** Commit only the tested callback, binding, pilot profile, and tests. Push the existing branch; keep PR draft. Update the PR body with a sanitized statement of what changed, what was verified, and the unresolved receipt-accounting/full-report limitations—without local run IDs, private endpoints, credentials, or detailed internal traces.
+- [ ] **Step 8: Commit and update PR #401.** Commit only the tested callback, pilot handoff, binding, pilot profile, and tests. Push the existing branch; keep PR draft. Update the PR body with a sanitized statement of what changed, what was verified, and the unresolved receipt-accounting/full-report limitations—without local run IDs, private endpoints, credentials, or detailed internal traces.
 
 ### Task 2: Pilot verification without disturbing the working stand
 

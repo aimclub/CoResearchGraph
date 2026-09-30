@@ -7,6 +7,7 @@ from google.adk.models import LlmResponse
 from google.adk.models.base_llm import BaseLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from pydantic import PrivateAttr
@@ -14,6 +15,7 @@ from pydantic import PrivateAttr
 from CoScientist.agents.callbacks.pilot_exact_retrieval import (
     ensure_pilot_exact_tool_retrieved,
 )
+from CoScientist.agents.callbacks.pilot_delegation import preserve_pilot_target
 from CoScientist.assembly.schema import load_config, resolve_config_path
 
 
@@ -88,6 +90,20 @@ def test_partial_model_response_is_not_replaced():
     assert ensure_pilot_exact_tool_retrieved(_context(), response) is None
 
 
+def test_model_error_is_not_replaced_with_retrieval():
+    response = LlmResponse(error_code="MODEL_ERROR", error_message="Model failed")
+    assert ensure_pilot_exact_tool_retrieved(_context(), response) is None
+
+
+def test_interrupted_model_response_is_not_replaced():
+    response = LlmResponse(interrupted=True)
+    assert ensure_pilot_exact_tool_retrieved(_context(), response) is None
+
+
+def test_contentless_model_response_is_not_replaced():
+    assert ensure_pilot_exact_tool_retrieved(_context(), LlmResponse()) is None
+
+
 def test_model_originated_function_call_is_not_replaced():
     response = LlmResponse(content=types.Content(role="model", parts=[
         types.Part.from_function_call(
@@ -120,6 +136,33 @@ def test_callback_is_confined_to_synapse_pilot_profile():
     name = "ensure_pilot_exact_tool_retrieved"
     assert name in pilot.agent("ToolRetrieverAgent").callbacks.after_model
     assert name not in demo.agent("ToolRetrieverAgent").callbacks.after_model
+
+
+def test_executor_handoff_preserves_server_when_tool_name_is_repeated():
+    tool = AgentTool(agent=LlmAgent(
+        name="ToolPipelineAgent", model=_FinalOnlyModel(), instruction="Find tools."
+    ))
+    args = {"request": "Target tool: dataset_overview_heracleum_tox. Run it."}
+    source = "Target tool: dataset_overview_heracleum_tox (server_id=server-a)"
+    ctx = SimpleNamespace(_invocation_context=SimpleNamespace(
+        user_content=types.Content(parts=[types.Part(text=source)])
+    ))
+    preserve_pilot_target(tool, args, ctx)
+    assert args["request"].startswith(source)
+
+
+def test_executor_handoff_leaves_complete_target_unchanged():
+    tool = AgentTool(agent=LlmAgent(
+        name="ToolPipelineAgent", model=_FinalOnlyModel(), instruction="Find tools."
+    ))
+    source = "Target tool: dataset_overview_heracleum_tox (server_id=server-a)"
+    request = f"{source}. Run it."
+    args = {"request": request}
+    ctx = SimpleNamespace(_invocation_context=SimpleNamespace(
+        user_content=types.Content(parts=[types.Part(text=source)])
+    ))
+    preserve_pilot_target(tool, args, ctx)
+    assert args["request"] == request
 
 
 class _FinalOnlyModel(BaseLlm):
