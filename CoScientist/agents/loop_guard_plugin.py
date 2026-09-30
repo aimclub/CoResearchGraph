@@ -4,6 +4,14 @@ The generic guard catches identical calls. Experiment control additionally
 uses state progress and normalized failures, so changing only a reason or call
 id cannot reset the loop. Read-only plan observations and sanctioned polling
 are never blocked.
+
+Neither is the coder, and for a reason that does not apply to a search: the
+guard keys on (agent, tool, args), and for a tool that acts on a workspace the
+arguments are not the whole input — the filesystem is. Running the same test
+command after editing a file, re-reading a path a job is still writing, listing
+a directory until the artifact lands: the same arguments, a different world
+each time, and a genuinely different answer. Blocking those told an agent to
+change approach at the point where repeating the call WAS the approach.
 """
 from __future__ import annotations
 
@@ -15,7 +23,20 @@ from typing import Any, Dict, Optional
 
 from google.adk.plugins.base_plugin import BasePlugin
 
-POLLING_TOOLS = {"check_job", "research_triggers", "get_active_tasks"}
+POLLING_TOOLS = {"check_job", "check_sandbox_task", "check_mcp_build",
+                 "research_triggers", "get_active_tasks"}
+#: Everything the coder works through — the local/remote execution toolset and
+#: the sandbox one. Exempt wholesale: their results depend on a workspace that
+#: changes under them, so an identical call is not a repeated question. A
+#: toolset hands its tools over as `{prefix}_{name}`, which the suffix match
+#: below accounts for.
+CODER_TOOLS = {
+    "execute_bash", "read_file", "write_file", "list_directory",
+    "install_package",
+    "run_sandbox_task", "list_sandbox_files", "fetch_sandbox_artifact",
+}
+#: What the guard lets through without counting.
+EXEMPT_TOOLS = POLLING_TOOLS | CODER_TOOLS
 READ_ONLY_TOOLS = {"get_experiment_plan"}
 CONTROL_TOOLS = {
     "start_task", "record_result", "retry_task", "fallback_task", "skip_task",
@@ -328,8 +349,8 @@ class RepeatCallGuardPlugin(BasePlugin):
             return None
         tool_name = str(getattr(tool, "name", "") or "")
         short = tool_name.rsplit("_", 1)[-1] if tool_name else ""
-        if tool_name in POLLING_TOOLS or short in POLLING_TOOLS or any(
-            tool_name.endswith(p) for p in POLLING_TOOLS
+        if tool_name in EXEMPT_TOOLS or short in EXEMPT_TOOLS or any(
+            tool_name.endswith(p) for p in EXEMPT_TOOLS
         ):
             return None
 
@@ -372,7 +393,7 @@ class RepeatCallGuardPlugin(BasePlugin):
                 f"{n} times. Repeating it will not produce a different result. "
                 "Change approach: use different arguments, a different tool, or "
                 "state plainly what is blocking you and stop. If you are waiting "
-                "for a long job, poll it with check_job instead."
+                "for a long job, poll it with check_job or check_sandbox_task instead."
             ),
         }
 

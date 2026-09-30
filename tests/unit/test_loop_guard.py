@@ -59,3 +59,60 @@ def test_tavily_fallback_budget_is_independent_per_agent():
     assert call("EconomicsAgent") is None
     assert call("ReactorAgent") is None
     assert call("EconomicsAgent", "search_by_structure") is None
+
+
+def test_every_coder_tool_survives_repetition():
+    """The coder's tools act on a workspace, so identical args are not a loop.
+
+    The guard compares (agent, tool, args). For a search that triple is the
+    whole question, and asking it again is thrash. For `execute_bash` the
+    filesystem is half the input: the same test command after an edit is a
+    different call with the same arguments, and blocking it told the agent to
+    change approach when repeating the call WAS the approach.
+    """
+    from CoScientist.agents.loop_guard_plugin import CODER_TOOLS
+
+    for tool in sorted(CODER_TOOLS):
+        guard = RepeatCallGuardPlugin()
+        results = [_call(guard, tool, {"cmd": "pytest -q"}, agent="CoderAgent")
+                   for _ in range(12)]
+        assert all(r is None for r in results), f"{tool} was blocked"
+
+
+def test_a_prefixed_coder_tool_is_exempt_too():
+    """A toolset hands its tools over as `{prefix}_{name}`, and the guard sees that."""
+    guard = RepeatCallGuardPlugin()
+    results = [_call(guard, "coder_execute_bash", {"cmd": "ls"}, agent="CoderAgent")
+               for _ in range(12)]
+    assert all(r is None for r in results)
+
+
+def test_the_exemption_did_not_swallow_the_guard():
+    """Everything else is still counted — the point of the plugin stands."""
+    guard = RepeatCallGuardPlugin()
+    args = {"query": "same thing"}
+    for _ in range(4):
+        assert _call(guard, "tavily_search", args) is None
+    assert _call(guard, "tavily_search", args) is not None
+
+
+def test_the_exempt_names_are_the_ones_the_toolsets_actually_expose():
+    """A renamed tool would silently fall back under the guard."""
+    import inspect
+
+    from CoScientist.agents.loop_guard_plugin import CODER_TOOLS, EXEMPT_TOOLS
+    from CoScientist.tools.coder_tools.coder_tools import CoderToolset
+    from CoScientist.tools.coder_tools import sandbox_tools
+
+    toolset = CoderToolset()
+    live = {name for name in dir(toolset)
+            if not name.startswith("_")
+            and inspect.iscoroutinefunction(getattr(toolset, name, None))}
+    # Plumbing, not tools the model calls.
+    live -= {"close", "get_tools_with_prefix", "process_llm_request", "get_tools"}
+    live |= {f.__name__ for f in sandbox_tools.get_sandbox_tools()}
+
+    missing = live - EXEMPT_TOOLS
+    assert not missing, f"coder tools left under the guard: {sorted(missing)}"
+    stale = CODER_TOOLS - live
+    assert not stale, f"exempted names no toolset exposes: {sorted(stale)}"
