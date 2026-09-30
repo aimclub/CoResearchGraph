@@ -512,6 +512,23 @@ def test_pilot_requests_missing_profile_before_accepting_final_report():
         require_pilot_delegations(context, _model_response())
 
 
+def test_pilot_requests_first_science_tool_when_final_skips_executor():
+    context = _context(
+        _event("retrieve_tools"),
+        _event("ResearchAgent"),
+        state={"accumulated_tools": [{
+            "tool": "dataset_overview_heracleum_tox",
+            "server_id": "heracleum-server",
+        }]},
+    )
+
+    correction = require_pilot_delegations(context, _model_response())
+    call = correction.content.parts[0].function_call
+    assert call.name == "TaskExecutorAgent"
+    assert "Target tool: dataset_overview_heracleum_tox" in call.args["request"]
+    assert "server_id=heracleum-server" in call.args["request"]
+
+
 def test_pilot_recovers_missing_profile_after_reranker_clears_discovery():
     from CoScientist.assembly import build_system
     from CoScientist.assembly.schema import load_config, resolve_config_path
@@ -573,11 +590,43 @@ def test_pilot_allows_intermediate_tool_calls():
     assert require_pilot_delegations(context, _model_response(partial=True)) is None
 
 
-@pytest.mark.parametrize("missing", REQUIRED)
+@pytest.mark.parametrize("missing", REQUIRED[:2])
 def test_pilot_rejects_final_report_without_real_call_and_response(missing):
     events = [_event(name) for name in REQUIRED if name != missing]
     with pytest.raises(RuntimeError, match=missing):
         require_pilot_delegations(_context(*events), _model_response())
+
+
+def test_pilot_rejects_missing_executor_without_discovered_server():
+    context = _context(_event("retrieve_tools"), _event("ResearchAgent"))
+    with pytest.raises(RuntimeError, match="dataset_overview_heracleum_tox.*not discovered"):
+        require_pilot_delegations(context, _model_response())
+
+
+def test_pilot_rejects_unverified_executor_after_one_targeted_attempt():
+    context = _context(
+        _event("retrieve_tools"), _event("ResearchAgent"),
+        state={"accumulated_tools": [{
+            "tool": "dataset_overview_heracleum_tox",
+            "server_id": "heracleum-server",
+        }]},
+    )
+    assert require_pilot_delegations(context, _model_response()) is not None
+    with pytest.raises(RuntimeError, match="no verified result"):
+        require_pilot_delegations(context, _model_response())
+
+
+def test_pilot_does_not_count_failed_executor_response():
+    context = _context(
+        _event("retrieve_tools"), _event("ResearchAgent"),
+        _event("TaskExecutorAgent", result={"status": "failed"}),
+        state={"accumulated_tools": [{
+            "tool": "dataset_overview_heracleum_tox",
+            "server_id": "heracleum-server",
+        }]},
+    )
+    correction = require_pilot_delegations(context, _model_response())
+    assert correction.content.parts[0].function_call.name == "TaskExecutorAgent"
 
 
 def test_pilot_ignores_other_invocations_and_failed_results():

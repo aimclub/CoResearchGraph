@@ -284,6 +284,8 @@ def require_pilot_delegations(callback_context, llm_response):
         return None
     completed = _completed_delegations(callback_context)
     missing = [name for name in _REQUIRED if name not in completed]
+    if missing == ["TaskExecutorAgent"]:
+        return _request_missing_science(callback_context, _PILOT_SCIENCE_TOOLS[0])
     if missing:
         raise RuntimeError(
             "Pilot delegation contract: final response before observed "
