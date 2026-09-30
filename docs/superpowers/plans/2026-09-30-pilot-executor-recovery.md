@@ -28,7 +28,7 @@
 - Consumes: `require_pilot_delegations(callback_context, llm_response)`, `_request_missing_science(callback_context, name)`, and the test helpers `_context`, `_event`, `_model_response`.
 - Produces: `LlmResponse` with a `TaskExecutorAgent` function call targeting `dataset_overview_heracleum_tox`, or a fail-closed `RuntimeError`.
 
-- [ ] **Step 1: Write the failing test.** Add this test beside the existing missing-profile test:
+- [x] **Step 1: Write the failing test.** Add this test beside the existing missing-profile test:
 
 ```python
 def test_pilot_requests_first_science_tool_when_final_skips_executor():
@@ -48,16 +48,16 @@ def test_pilot_requests_first_science_tool_when_final_skips_executor():
     assert "server_id=heracleum-server" in call.args["request"]
 ```
 
-- [ ] **Step 2: Verify the regression fails.** Run `pytest -q tests/test_synapse_pilot_delegation.py::test_pilot_requests_first_science_tool_when_final_skips_executor`. Expected: `RuntimeError` names the missing `TaskExecutorAgent`.
+- [x] **Step 2: Verify the regression fails.** Run `pytest -q tests/test_synapse_pilot_delegation.py::test_pilot_requests_first_science_tool_when_final_skips_executor`. Expected: `RuntimeError` names the missing `TaskExecutorAgent`.
 
-- [ ] **Step 3: Implement the minimal callback branch.** Insert immediately before the existing `if missing: raise RuntimeError(...)` block:
+- [x] **Step 3: Implement the minimal callback branch.** Insert immediately before the existing `if missing: raise RuntimeError(...)` block:
 
 ```python
     if missing == ["TaskExecutorAgent"]:
         return _request_missing_science(callback_context, _PILOT_SCIENCE_TOOLS[0])
 ```
 
-- [ ] **Step 4: Verify green and retain fail-closed coverage.** Rerun the new test. Change the existing decorator to `@pytest.mark.parametrize("missing", REQUIRED[:2])`; leave the existing test body unchanged. Add these cases beside it:
+- [x] **Step 4: Verify green and retain fail-closed coverage.** Rerun the new test. Change the existing decorator to `@pytest.mark.parametrize("missing", REQUIRED[:2])`; leave the existing test body unchanged. Add these cases beside it:
 
 ```python
 def test_pilot_rejects_missing_executor_without_discovered_server():
@@ -94,7 +94,7 @@ def test_pilot_does_not_count_failed_executor_response():
 
 Run `pytest -q tests/test_synapse_pilot_delegation.py tests/test_pilot_handoff_adk.py tests/test_pilot_profile_a2a_handoff.py tests/test_synapse_a2a_boundary.py tests/test_synapse_native_a2a.py`. Expected: all pass.
 
-- [ ] **Step 5: Review and commit.** Run `git diff --check`, `ruff check CoScientist/agents/callbacks/pilot_delegation.py tests/test_synapse_pilot_delegation.py`, and `black --check CoScientist/agents/callbacks/pilot_delegation.py tests/test_synapse_pilot_delegation.py` if those executables are present in the project environment. Inspect the diff and commit only the callback/test change on `feature/heracleum-report-demo`; push the same branch to PR #401. Do not create a new PR.
+- [x] **Step 5: Review and commit.** Run `git diff --check`, `ruff check CoScientist/agents/callbacks/pilot_delegation.py tests/test_synapse_pilot_delegation.py`, and `black --check CoScientist/agents/callbacks/pilot_delegation.py tests/test_synapse_pilot_delegation.py` if those executables are present in the project environment. Inspect the diff and commit only the callback/test change on `feature/heracleum-report-demo`; push the same branch to PR #401. Do not create a new PR.
 
 ### Task 2: Verify the live pilot
 
@@ -105,8 +105,21 @@ Run `pytest -q tests/test_synapse_pilot_delegation.py tests/test_pilot_handoff_a
 - Consumes: committed CoScientist branch, isolated `synapse-coscientist-demo` stack, existing Heracleum prompt/workflow and `approval_mode=auto`.
 - Produces: one project ID, run ID, trace ID, and evidence-based verdict.
 
-- [ ] **Step 1: Build the image.** Build `docker/Dockerfile.a2a` from the committed branch; tag it with the branch commit and as `coscientist-local-demo:local`.
-- [ ] **Step 2: Restart only CoScientist.** Recreate `coscientist-real` with `--no-deps --no-build`; confirm healthy A2A cards and the `synapse_pilot` profile. Do not restart Synapse or Mongo.
-- [ ] **Step 3: Start one fresh Heracleum project.** Reuse the approved full prompt and pilot workflow in the local Synapse API, with `approval_mode=auto`.
-- [ ] **Step 4: Check the evidence.** Compare ADK call/response events and MCP receipts with the report. A successful result needs observed retrieval, research, `TaskExecutorAgent`, and all four required science computations. If it fails, record the exact failing boundary without further speculative patches.
+- [x] **Step 1: Build the image.** Build `docker/Dockerfile.a2a` from the committed branch; tag it with the branch commit and as `coscientist-local-demo:local`.
+- [x] **Step 2: Restart only CoScientist.** Recreate `coscientist-real` with `--no-deps --no-build`; confirm healthy A2A cards and the `synapse_pilot` profile. Do not restart Synapse or Mongo.
+- [x] **Step 3: Start one fresh Heracleum project.** Reuse the approved full prompt and pilot workflow in the local Synapse API, with `approval_mode=auto`.
+- [x] **Step 4: Check the evidence.** Compare ADK call/response events and MCP receipts with the report. A successful result needs observed retrieval, research, `TaskExecutorAgent`, and all four required science computations. If it fails, record the exact failing boundary without further speculative patches.
+
+## Outcome
+
+Run `5b2bebd7-db2e-4ecd-a4ae-3e441dd65b3e` (project
+`31257f30-587d-4ac5-a4b6-056862f8fb72`) failed. The callback did emit a
+targeted `TaskExecutorAgent` call, and the trace showed nonempty MCP responses
+for `dataset_overview_heracleum_tox` and `chemical_space_clustering`. The first
+executor returned `ExperimentAgent cannot finish without a successful scientific
+MCP call`; the targeted retry returned `Explicit target tool
+dataset_overview_heracleum_tox was not retrieved`. With no verified executor
+receipt, the pilot failed closed after its one bounded attempt. The report and
+all four required science results were not produced. This is a separate
+executor receipt/discovery boundary, not evidence that the report is ready.
 
