@@ -1,0 +1,234 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"routes\": [\n    {\n      \"route_id\": \"SDS-2\",\n      \"status\": \"partial\",\n      \"rank\": 1,\n      \"step_count\": 2,\n      \"target_smiles\": \"CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]\",\n      \"currency\": \"RUB\",\n      \"cost_packs\": \"1989.50\",\n      \"cost_per_unit\": \"1748.31\",\n      \"starting_materials\": [\n        {\n          \"smiles\": \"[Na+].[OH-]\",\n          \"inchikey\": \"HEMHJVSKTPXQMS-UHFFFAOYSA-M\",\n          \"qty\": \"14.599265\",\n          \"unit\": \"g\",\n          \"moles\": \"0.365009\",\n          \"molar_mass\": \"39.997\",\n          \"source\": \"stoichiometry\",\n          \"used_in_steps\": [\n            1\n          ]\n        },\n        {\n          \"smiles\": \"CCCCCCCCCCCCO\",\n          \"inchikey\": \"LQZZUXJYWNFBMV-UHFFFAOYSA-N\",\n          \"qty\": \"75.572763\",\n          \"unit\": \"g\",\n          \"moles\": \"0.405566\",\n          \"molar_mass\": \"186.339\",\n          \"source\": \"stoichiometry\",\n          \"used_in_steps\": [\n            0\n          ]\n        },\n        {\n          \"smiles\": \"O=S(=O)(O)Cl\",\n          \"inchikey\": \"XTHPWXDJESJLNJ-UHFFFAOYSA-N\",\n          \"qty\": \"47.258578\",\n          \"unit\": \"g\",\n          \"moles\": \"0.405566\",\n          \"molar_mass\": \"116.525\",\n          \"source\": \"stoichiometry\",\n          \"used_in_steps\": [\n            0\n          ]\n        }\n      ],\n      \"intermediates\": [\n        \"CCCCCCCCCCCCOS(=O)(=O)O\"\n      ],\n      \"unpriced_agents\": [],\n      \"missing\": [\n        {\n          \"smiles\": \"O=S(=O)(O)Cl\",\n          \"reason\": \"no_match\",\n          \"detail\": \"\"\n        }\n      ],\n      \"steps_smiles\": [\n        \"CCCCCCCCCCCCO.O=S(=O)(O)Cl>>CCCCCCCCCCCCOS(=O)(=O)O\",\n        \"CCCCCCCCCCCCOS(=O)(=O)O.([Na+].[OH-])>>(CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+])\"\n      ],\n      \"resolved_inputs\": [\n        {\n          \"input\": \"CCCCCCCCCCCCO\",\n          \"kind\": \"smiles\",\n          \"canonical_smiles\": \"CCCCCCCCCCCCO\",\n          \"inchikey\": \"LQZZUXJYWNFBMV-UHFFFAOYSA-N\",\n          \"formula\": \"C12H26O\",\n          \"molar_mass\": \"186.339\",\n          \"method\": \"smiles\",\n          \"confidence\": 1.0,\n          \"translated_from\": null,\n          \"error\": null,\n          \"hint\": null\n        },\n        {\n          \"input\": \"OS(=O)(=O)Cl\",\n          \"kind\": \"smiles\",\n          \"canonical_smiles\": \"O=S(=O)(O)Cl\",\n          \"inchikey\": \"XTHPWXDJESJLNJ-UHFFFAOYSA-N\",\n          \"formula\": \"HClO3S\",\n          \"molar_mass\": \"116.525\",\n          \"method\": \"smiles\",\n          \"confidence\": 1.0,\n          \"translated_from\": null,\n          \"error\": null,\n          \"hint\": null\n        },\n        {\n          \"input\": \"CCCCCCCCCCCCOS(=O)(=O)O\",\n          \"kind\": \"smiles\",\n          \"canonical_smiles\": \"CCCCCCCCCCCCOS(=O)(=O)O\",\n          \"inchikey\": \"MOTZDAYCYVMXPC-UHFFFAOYSA-N\",\n          \"formula\": \"C12H26O4S\",\n          \"molar_mass\": \"266.403\",\n          \"method\": \"smiles\",\n          \"confidence\": 1.0,\n          \"translated_from\": null,\n          \"error\": null,\n          \"hint\": null\n        },\n        {\n          \"input\": \"[Na+].[OH-]\",\n          \"kind\": \"smiles\",\n          \"canonical_smiles\": \"[Na+].[OH-]\",\n          \"inchikey\": \"HEMHJVSKTPXQMS-UHFFFAOYSA-M\",\n          \"formula\": \"HNaO\",\n          \"molar_mass\": \"39.997\",\n          \"method\": \"smiles\",\n          \"confidence\": 1.0,\n          \"translated_from\": null,\n          \"error\": null,\n          \"hint\": null\n        },\n        {\n          \"input\": \"CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]\",\n          \"kind\": \"smiles\",\n          \"canonical_smiles\": \"CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]\",\n          \"inchikey\": \"DBMJMQXJHONAFJ-UHFFFAOYSA-M\",\n          \"formula\": \"C12H25NaO4S\",\n          \"molar_mass\": \"288.385\",\n          \"method\": \"smiles\",\n          \"confidence\": 1.0,\n          \"translated_from\": null,\n          \"error\": null,\n          \"hint\": null\n        }\n      ],\n      \"estimate\": {\n        \"line_items\": [\n          {\n            \"query_smiles\": \"[Na+].[OH-]\",\n            \"matched_inchikey\": \"HEMHJVSKTPXQMS-UHFFFAOYSA-M\",\n            \"display_name_en\": null,\n            \"match_level\": \"точный\",\n            \"similarity\": 1.0,\n            \"qty\": \"14.599265\",\n            \"unit\": \"g\",\n            \"chosen\": {\n              \"supplier\": \"Лэнреактив\",\n              \"name_raw\": \"Натрий гидроокись 0,1Н\",\n              \"pack_qty\": \"1\",\n              \"pack_unit\": \"kg\",\n              \"price\": \"47.00\",\n              \"price_currency\": \"RUB\",\n              \"unit_price\": \"47.0000\"\n            },\n            \"packs_needed\": 1,\n            \"cost_packs\": \"47.00\",\n            \"cost_per_unit\": \"0.6861654550000\",\n            \"is_bulk\": false,\n            \"basis_suspect\": false,\n            \"comment\": \"\"\n          },\n          {\n            \"query_smiles\": \"CCCCCCCCCCCCO\",\n            \"matched_inchikey\": \"LQZZUXJYWNFBMV-UHFFFAOYSA-N\",\n            \"display_name_en\": null,\n            \"match_level\": \"точный\",\n            \"similarity\": 1.0,\n            \"qty\": \"75.572763\",\n            \"unit\": \"g\",\n            \"chosen\": {\n              \"supplier\": \"ХимКрафт\",\n              \"name_raw\": \"1-Додеканол, 98%\",\n              \"pack_qty\": \"42\",\n              \"pack_unit\": \"g\",\n              \"price\": \"971.25\",\n              \"price_currency\": \"RUB\",\n              \"unit_price\": \"23.1250\"\n            },\n            \"packs_needed\": 2,\n            \"cost_packs\": \"1942.50\",\n            \"cost_per_unit\": \"1747.6201443750\",\n            \"is_bulk\": false,\n            \"basis_suspect\": false,\n            \"comment\": \"\"\n          }\n        ],\n        \"total_by_currency\": {\n          \"RUB\": {\n            \"packs\": \"1989.50\",\n            \"per_unit\": \"1748.3063098300000\",\n            \"bulk_excluded_count\": 0\n          }\n        },\n        \"resolved_inputs\": [],\n        \"missing\": [\n          {\n            \"smiles\": \"O=S(=O)(O)Cl\",\n            \"reason\": \"no_match\",\n            \"detail\": \"\"\n          }\n        ],\n        \"candidates\": [],\n        \"comment\": \"\",\n        \"assumptions\": [\n          \"суммы раздельно по валютам, без пересчёта по курсу\",\n          \"по упаковкам — целые упаковки (реальный чек); за единицу — себестоимость (qty × цена/фасовку)\",\n          \"гидраты сведены к безводной базовой соли (v1); водосодержащие позиции уступают безводным при выборе и помечаются в комментарии\"\n        ],\n        \"error\": null\n      },\n      \"warnings\": [\n        \"1 позиц. не сопоставлено — сумма занижена (нижняя граница)\"\n      ]\n    }\n  ],\n  \"preferred_currency\": \"RUB\",\n  \"rank_by\": \"per_unit\",\n  \"assumptions\": [\n    \"закупаются только стартовые материалы; промежуточные продукты изготавливаются в маршруте\",\n    \"стехиометрия из reaction SMILES: повтор компонента = эквивалент; побочные продукты в зачёт не идут\",\n    \"агенты (растворители, катализаторы) в сумму не входят — у них нет стехиометрии\",\n    \"сравнение только внутри одной валюты, без пересчёта по курсу\",\n    \"рейтинг построен по себестоимости за единицу\",\n    \"выход задан для каждого шага — умолчание не применялось\"\n  ]\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "routes": [
+      {
+        "route_id": "SDS-2",
+        "status": "partial",
+        "rank": 1,
+        "step_count": 2,
+        "target_smiles": "CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]",
+        "currency": "RUB",
+        "cost_packs": "1989.50",
+        "cost_per_unit": "1748.31",
+        "starting_materials": [
+          {
+            "smiles": "[Na+].[OH-]",
+            "inchikey": "HEMHJVSKTPXQMS-UHFFFAOYSA-M",
+            "qty": "14.599265",
+            "unit": "g",
+            "moles": "0.365009",
+            "molar_mass": "39.997",
+            "source": "stoichiometry",
+            "used_in_steps": [
+              1
+            ]
+          },
+          {
+            "smiles": "CCCCCCCCCCCCO",
+            "inchikey": "LQZZUXJYWNFBMV-UHFFFAOYSA-N",
+            "qty": "75.572763",
+            "unit": "g",
+            "moles": "0.405566",
+            "molar_mass": "186.339",
+            "source": "stoichiometry",
+            "used_in_steps": [
+              0
+            ]
+          },
+          {
+            "smiles": "O=S(=O)(O)Cl",
+            "inchikey": "XTHPWXDJESJLNJ-UHFFFAOYSA-N",
+            "qty": "47.258578",
+            "unit": "g",
+            "moles": "0.405566",
+            "molar_mass": "116.525",
+            "source": "stoichiometry",
+            "used_in_steps": [
+              0
+            ]
+          }
+        ],
+        "intermediates": [
+          "CCCCCCCCCCCCOS(=O)(=O)O"
+        ],
+        "unpriced_agents": [],
+        "missing": [
+          {
+            "smiles": "O=S(=O)(O)Cl",
+            "reason": "no_match",
+            "detail": ""
+          }
+        ],
+        "steps_smiles": [
+          "CCCCCCCCCCCCO.O=S(=O)(O)Cl>>CCCCCCCCCCCCOS(=O)(=O)O",
+          "CCCCCCCCCCCCOS(=O)(=O)O.([Na+].[OH-])>>(CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+])"
+        ],
+        "resolved_inputs": [
+          {
+            "input": "CCCCCCCCCCCCO",
+            "kind": "smiles",
+            "canonical_smiles": "CCCCCCCCCCCCO",
+            "inchikey": "LQZZUXJYWNFBMV-UHFFFAOYSA-N",
+            "formula": "C12H26O",
+            "molar_mass": "186.339",
+            "method": "smiles",
+            "confidence": 1.0,
+            "translated_from": null,
+            "error": null,
+            "hint": null
+          },
+          {
+            "input": "OS(=O)(=O)Cl",
+            "kind": "smiles",
+            "canonical_smiles": "O=S(=O)(O)Cl",
+            "inchikey": "XTHPWXDJESJLNJ-UHFFFAOYSA-N",
+            "formula": "HClO3S",
+            "molar_mass": "116.525",
+            "method": "smiles",
+            "confidence": 1.0,
+            "translated_from": null,
+            "error": null,
+            "hint": null
+          },
+          {
+            "input": "CCCCCCCCCCCCOS(=O)(=O)O",
+            "kind": "smiles",
+            "canonical_smiles": "CCCCCCCCCCCCOS(=O)(=O)O",
+            "inchikey": "MOTZDAYCYVMXPC-UHFFFAOYSA-N",
+            "formula": "C12H26O4S",
+            "molar_mass": "266.403",
+            "method": "smiles",
+            "confidence": 1.0,
+            "translated_from": null,
+            "error": null,
+            "hint": null
+          },
+          {
+            "input": "[Na+].[OH-]",
+            "kind": "smiles",
+            "canonical_smiles": "[Na+].[OH-]",
+            "inchikey": "HEMHJVSKTPXQMS-UHFFFAOYSA-M",
+            "formula": "HNaO",
+            "molar_mass": "39.997",
+            "method": "smiles",
+            "confidence": 1.0,
+            "translated_from": null,
+            "error": null,
+            "hint": null
+          },
+          {
+            "input": "CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]",
+            "kind": "smiles",
+            "canonical_smiles": "CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]",
+            "inchikey": "DBMJMQXJHONAFJ-UHFFFAOYSA-M",
+            "formula": "C12H25NaO4S",
+            "molar_mass": "288.385",
+            "method": "smiles",
+            "confidence": 1.0,
+            "translated_from": null,
+            "error": null,
+            "hint": null
+          }
+        ],
+        "estimate": {
+          "line_items": [
+            {
+              "query_smiles": "[Na+].[OH-]",
+              "matched_inchikey": "HEMHJVSKTPXQMS-UHFFFAOYSA-M",
+              "display_name_en": null,
+              "match_level": "точный",
+              "similarity": 1.0,
+              "qty": "14.599265",
+              "unit": "g",
+              "chosen": {
+                "supplier": "Лэнреактив",
+                "name_raw": "Натрий гидроокись 0,1Н",
+                "pack_qty": "1",
+                "pack_unit": "kg",
+                "price": "47.00",
+                "price_currency": "RUB",
+                "unit_price": "47.0000"
+              },
+              "packs_needed": 1,
+              "cost_packs": "47.00",
+              "cost_per_unit": "0.6861654550000",
+              "is_bulk": false,
+              "basis_suspect": false,
+              "comment": ""
+            },
+            {
+              "query_smiles": "CCCCCCCCCCCCO",
+              "matched_inchikey": "LQZZUXJYWNFBMV-UHFFFAOYSA-N",
+              "display_name_en": null,
+              "match_level": "точный",
+              "similarity": 1.0,
+              "qty": "75.572763",
+              "unit": "g",
+              "chosen": {
+                "supplier": "ХимКрафт",
+                "name_raw": "1-Додеканол, 98%",
+                "pack_qty": "42",
+                "pack_unit": "g",
+                "price": "971.25",
+                "price_currency": "RUB",
+                "unit_price": "23.1250"
+              },
+              "packs_needed": 2,
+              "cost_packs": "1942.50",
+              "cost_per_unit": "1747.6201443750",
+              "is_bulk": false,
+              "basis_suspect": false,
+              "comment": ""
+            }
+          ],
+          "total_by_currency": {
+            "RUB": {
+              "packs": "1989.50",
+              "per_unit": "1748.3063098300000",
+              "bulk_excluded_count": 0
+            }
+          },
+          "resolved_inputs": [],
+          "missing": [
+            {
+              "smiles": "O=S(=O)(O)Cl",
+              "reason": "no_match",
+              "detail": ""
+            }
+          ],
+          "candidates": [],
+          "comment": "",
+          "assumptions": [
+            "суммы раздельно по валютам, без пересчёта по курсу",
+            "по упаковкам — целые упаковки (реальный чек); за единицу — себестоимость (qty × цена/фасовку)",
+            "гидраты сведены к безводной базовой соли (v1); водосодержащие позиции уступают безводным при выборе и помечаются в комментарии"
+          ],
+          "error": null
+        },
+        "warnings": [
+          "1 позиц. не сопоставлено — сумма занижена (нижняя граница)"
+        ]
+      }
+    ],
+    "preferred_currency": "RUB",
+    "rank_by": "per_unit",
+    "assumptions": [
+      "закупаются только стартовые материалы; промежуточные продукты изготавливаются в маршруте",
+      "стехиометрия из reaction SMILES: повтор компонента = эквивалент; побочные продукты в зачёт не идут",
+      "агенты (растворители, катализаторы) в сумму не входят — у них нет стехиометрии",
+      "сравнение только внутри одной валюты, без пересчёта по курсу",
+      "рейтинг построен по себестоимости за единицу",
+      "выход задан для каждого шага — умолчание не применялось"
+    ]
+  },
+  "isError": false
+}

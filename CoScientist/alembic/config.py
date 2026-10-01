@@ -68,6 +68,10 @@ WRAPPER_CALL_TIMEOUT        = 600   # the fallback wrapper-agent round-trip
 
 # ── Loop breakers ─────────────────────────────────────────────────────────────
 MAX_STEPS         = 120   # hard ceiling on events per agent turn
+# The coder writes a function and a test per tool, so its ceiling grows with
+# the plan: 24 steps a tool is the 120 above spread over the default five.
+# An eight-tool plan of a slow library (FEDOT) ran out at 120 three times.
+CODER_STEPS_PER_TOOL = 24
 MAX_TOOL_REPEATS  = 3     # abort on N identical consecutive tool calls
 MAX_TOOL_CYCLE    = 3     # abort on N identical NON-consecutive calls (set-cycling)
 MAX_GUARD_RETRIES = 3     # re-nudge an agent that missed write_report
@@ -89,7 +93,40 @@ LLM_RETRY_CAP        = int(v) if (v := os.environ.get("ALEMBIC_LLM_RETRY_CAP")) 
 TOOL_CYCLE_EXEMPT = frozenset({"check_venv_compat", "run_tool_tests"})
 
 # ── Tool-selection caps (Plan gate) ───────────────────────────────────────────
-MAX_TOOLS = 12   # hard cap on tools exposed per repo (matches ToolRosella)
+# Without ALEMBIC_MAX_TOOLS the explorer is asked for 2-5 tools and the gate
+# keeps at most 12 (matches ToolRosella). With it, both use that number: the
+# explorer is asked for up to N and the gate keeps no more than N. A library
+# with many public functions (FEDOT) needs more than five; a small one fewer.
+MAX_TOOLS_LIMIT = 30          # the largest ALEMBIC_MAX_TOOLS accepted
+EXPLORER_TOOLS_DEFAULT = 5    # the explorer's upper bound when nothing is set
+
+
+def requested_max_tools(raw: str | None) -> int | None:
+    """ALEMBIC_MAX_TOOLS as a count in 1..MAX_TOOLS_LIMIT, or None when unset
+    or unusable (the defaults then apply)."""
+    text = str(raw or "").strip()
+    if not text.isdigit():
+        return None
+    value = int(text)
+    return value if 1 <= value <= MAX_TOOLS_LIMIT else None
+
+
+MAX_TOOLS_REQUESTED = requested_max_tools(os.environ.get("ALEMBIC_MAX_TOOLS"))
+MAX_TOOLS = MAX_TOOLS_REQUESTED or 12   # hard cap on tools exposed per repo
+
+
+def coder_max_steps(n_tools: int) -> int:
+    """The coder's step ceiling for a plan of ``n_tools`` tools."""
+    return max(MAX_STEPS, CODER_STEPS_PER_TOOL * max(int(n_tools or 0), 0))
+
+
+def explorer_tool_count_rule(requested: int | None = MAX_TOOLS_REQUESTED) -> str:
+    """The explorer's line on how many tools to propose."""
+    upper = requested or EXPLORER_TOOLS_DEFAULT
+    if upper == 1:
+        return "Propose exactly 1 tool, the most useful one."
+    lower = min(2, upper)
+    return f"Propose {lower}-{upper} tools, best first."
 
 # ── Output size caps ──────────────────────────────────────────────────────────
 MAX_BYTES              = 40_000   # stdout/stderr text shown to the LLM

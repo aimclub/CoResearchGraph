@@ -5,6 +5,12 @@ build's container. Docker and the MCP transport are faked.
 """
 
 import asyncio
+import json
+import os
+import subprocess
+import sys
+import io
+import types
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -211,14 +217,22 @@ class _Done:
         self.stdout, self.stderr = stdout, stderr
 
 
-def _invoke(monkeypatch, running, stdout, stderr=""):
+# This build's own image, and a newer build of the repository that took the tag.
+_OWN_IMAGE, _NEWER_IMAGE = "sha256:old", "sha256:new"
+
+
+def _invoke(monkeypatch, running, stdout, stderr="", own_image=True):
     ran = []
     monkeypatch.setattr(build_api, "_container_running", lambda name: name in running)
     monkeypatch.setattr(build_api.subprocess, "run",
                         lambda cmd, **kw: ran.append(cmd) or _Done(stdout, stderr))
+    images = {_NEWER_IMAGE: "3GB", **({_OWN_IMAGE: "2GB"} if own_image else {})}
+    monkeypatch.setattr(build_api.alembic_tools, "docker_inventory", lambda: {
+        "images": images, "tags": {"alembic-tool:gget": _NEWER_IMAGE},
+        "containers": {_SERVE: {"image_id": _OWN_IMAGE, "running": False}} if own_image else {}})
     res = build_api._invoke_in_container(
-        {"repo_url": _REPO, "container": _SERVE}, "info", {"q": "x"})
-    return ran[0], res
+        {"repo_url": _REPO, "container": _SERVE, "image_id": _OWN_IMAGE}, "info", {"q": "x"})
+    return (ran[0] if ran else None), res
 
 
 def test_a_debug_run_uses_the_live_serve_container(monkeypatch):
@@ -229,11 +243,92 @@ def test_a_debug_run_uses_the_live_serve_container(monkeypatch):
     assert res == {"ok": True, "result": 1}
 
 
-def test_without_a_live_container_a_debug_run_starts_one_from_the_image(monkeypatch):
+def test_without_a_live_container_a_debug_run_starts_one_from_the_builds_own_image(monkeypatch):
+    """alembic-tool:<repo> moves to every newer build of the repository. An older
+    mordred build's calc_descriptors was looked up in the newer image, whose tool
+    is called calculate_descriptors, and came back "tools/calc_descriptors.py not found"."""
     cmd, _ = _invoke(monkeypatch, set(), 'ALEMBIC_INVOKE {"ok": true, "result": 1}\n')
 
     assert cmd[:3] == ["docker", "run", "--rm"]
-    assert "alembic-tool:gget" in cmd
+    assert _OWN_IMAGE in cmd
+    assert "alembic-tool:gget" not in cmd and _NEWER_IMAGE not in cmd
+
+
+def test_a_build_without_its_own_image_is_not_run_in_another_one(monkeypatch):
+    cmd, res = _invoke(monkeypatch, set(), "", own_image=False)
+
+    assert cmd is None
+    assert res["ok"] is False and "no image of its own" in res["error"]
+
+
+def test_the_debug_runner_calls_a_tool_kept_in_server_py(tmp_path):
+    """A server pulled from the hub can ship an alembic package too old for the
+    usual entry point, and keep its tools in server.py with no tools/<name>.py."""
+    out = tmp_path / "demo" / "output"
+    out.mkdir(parents=True)
+    (out / "server.py").write_text(
+        "from fastmcp import FastMCP\nmcp = FastMCP('demo')\n\n"
+        "@mcp.tool()\ndef add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, "-c", build_api._INVOKE_SCRIPT, "https://github.com/o/demo", "add",
+         json.dumps({"a": 1, "b": 2}), build_api._DIRECT_INVOKE],
+        capture_output=True, text=True, cwd=tmp_path, timeout=60,
+        env={**os.environ, "ALEMBIC_WORKDIR": str(tmp_path)})
+
+    line = next(l for l in proc.stdout.splitlines() if l.startswith(build_api._INVOKE_MARK))
+    assert json.loads(line[len(build_api._INVOKE_MARK):]) == {"ok": True, "result": 3}
+
+
+# ── files a tool left in S3 ─────────────────────────────────────────────────
+
+
+class _S3Client:
+    def __init__(self, size=10, body=b"a,b\n1,2\n"):
+        self.size, self.body = size, body
+
+    def head_object(self, Bucket, Key):
+        return {"ContentLength": self.size, "ContentType": "text/csv"}
+
+    def get_object(self, Bucket, Key):
+        return {"Body": io.BytesIO(self.body)}
+
+
+def _http():
+    app = FastAPI()
+    app.include_router(build_api.router)
+    return TestClient(app)
+
+
+def _s3(monkeypatch, client, bucket="agent-vault"):
+    from CoScientist.config import get_settings
+    from CoScientist.reporting import s3_upload
+
+    monkeypatch.setattr(get_settings().s3, "bucket_name", bucket)
+    service = types.SimpleNamespace(create_s3_client=lambda: client, bucket_name=bucket)
+    monkeypatch.setattr(s3_upload, "_get_service", lambda: service)
+
+
+def test_a_file_a_tool_wrote_is_read_out_of_the_bucket(monkeypatch):
+    """The page views the file through the server: the tool's presigned link is
+    signed for the address the SERVER reaches S3 at, and it expires."""
+    _s3(monkeypatch, _S3Client())
+
+    r = _http().get("/api/s3/object", params={"key": "ephemeral/u/s/out.csv",
+                                              "bucket": "agent-vault"})
+
+    assert r.status_code == 200 and r.content == b"a,b\n1,2\n"
+    assert r.headers["content-type"].startswith("text/csv")
+    assert 'filename="out.csv"' in r.headers["content-disposition"]
+
+
+def test_another_bucket_and_an_oversized_file_are_refused(monkeypatch):
+    _s3(monkeypatch, _S3Client())
+    assert _http().get("/api/s3/object", params={"key": "k", "bucket": "someone-else"}).status_code == 403
+
+    _s3(monkeypatch, _S3Client(size=build_api._S3_VIEW_MAX_BYTES + 1))
+    too_big = _http().get("/api/s3/object", params={"key": "big.csv"})
+    assert too_big.status_code == 413 and "viewing limit" in too_big.json()["detail"]
 
 
 def test_a_runner_that_prints_no_result_is_reported(monkeypatch):

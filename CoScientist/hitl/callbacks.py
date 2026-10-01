@@ -126,7 +126,11 @@ def make_hitl_after_callback(handler: AbstractHITLHandler, action_type: HITLActi
         response = await handler.handle_request(request)
 
         if not response.approved:
-            # Override agent output with rejection feedback
+            if response.timed_out:
+                return genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(text="Review timed out; no human decision was made.")],
+                )
             feedback = response.instructions or response.free_input or "No feedback provided"
             return genai_types.Content(
                 role="model",
@@ -135,14 +139,20 @@ def make_hitl_after_callback(handler: AbstractHITLHandler, action_type: HITLActi
                 )],
             )
 
-        '''if response.action == HITLAction.PROVIDE_INPUT and response.free_input:
-            # Override agent output entirely with user's free input
+        if response.action == HITLAction.PROVIDE_INPUT:
+            replacement = (
+                response.instructions
+                if response.instructions is not None
+                else response.free_input
+                if response.free_input is not None
+                else ""
+            )
             return genai_types.Content(
                 role="model",
                 parts=[genai_types.Part(
-                    text=response.free_input
+                    text=replacement
                 )],
-            )'''
+            )
 
         if action_type == HITLAction.SELECT and response.selected_option:
             # Override agent output with human's selection
@@ -208,6 +218,13 @@ def make_hitl_before_callback(handler: AbstractHITLHandler):
         response = await handler.handle_request(request)
 
         if not response.approved:
+            if response.timed_out:
+                return genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(
+                        text=f"Execution of agent '{agent_name}' paused because review timed out."
+                    )],
+                )
             # Return a content that "cancels" the agent execution by providing a mock model response
             reason = response.instructions or response.free_input or 'No reason given'
             return genai_types.Content(
@@ -225,6 +242,7 @@ def make_hitl_before_callback(handler: AbstractHITLHandler):
 def make_hitl_before_tool_callback(
     handler: AbstractHITLHandler,
     target_tools: Optional[Iterable[str]] = ("sandbox",),
+    require_hitl: bool = False,
 ):
     """Factory for before_tool_callback that intercepts tool calls and requests HITL approval.
 
@@ -242,6 +260,9 @@ def make_hitl_before_tool_callback(
             substring in lower-case tool name, e.g. "run_sandbox_task") will trigger
             HITL approval. When None, all tool calls (except excluded HITL tools)
             require approval.
+        require_hitl: Fail closed: a targeted call runs only after it is
+            approved in the web interface. HITL switched off or no web
+            interface attached leaves it blocked instead of running unreviewed.
 
     Returns:
         An async callback function compatible with ADK's before_tool_callback.
@@ -261,9 +282,6 @@ def make_hitl_before_tool_callback(
         tool_args=None,
         **kwargs,
     ) -> Optional[Dict[str, Any]]:
-        if not get_settings().web.hitl_enabled:
-            return None
-
         # Support both positional (tool, args, tool_context) and keyword calls from ADK
         actual_tool = tool if tool is not None else kwargs.get("tool")
         actual_args = (
@@ -286,6 +304,22 @@ def make_hitl_before_tool_callback(
             tool_lower = tool_name.lower()
             if not any(t == tool_name or t.lower() in tool_lower for t in targets):
                 return None
+
+        if require_hitl:
+            from CoScientist.hitl.human_gate import unavailable_reason
+
+            unavailable = unavailable_reason(handler)
+            if unavailable is not None:
+                return {
+                    "status": "denied",
+                    "blocked_by": "hitl_unavailable",
+                    "message": (
+                        f"Tool '{tool_name}' needs approval in the web interface, but "
+                        f"{unavailable}; the call was not executed."
+                    ),
+                }
+        elif not get_settings().web.hitl_enabled:
+            return None
 
         inv_ctx = getattr(actual_context, "_invocation_context", None) or getattr(actual_context, "invocation_context", None)
         inv_agent = getattr(inv_ctx, "agent", None) if inv_ctx is not None else None
@@ -325,6 +359,12 @@ def make_hitl_before_tool_callback(
         response = await handler.handle_request(request)
 
         if not response.approved:
+            if response.timed_out:
+                return {
+                    "status": "unanswered",
+                    "blocked_by": "timeout",
+                    "message": f"Review of tool '{tool_name}' timed out; no human decision was made.",
+                }
             reason = response.instructions or response.free_input or "No reason provided"
             return {
                 "status": "denied",

@@ -47,6 +47,14 @@ class TaskTrackerToolset(BaseToolset):
             another task's result; leave it null for independent tasks. A task
             may never reference itself.
           - notes (str, optional)
+          - tools (list of str, optional): the tool names this step will be run
+            WITH, taken from the tools you can see — MCP tool names, or the
+            library/repo a code task must use. You know which tools exist, so
+            this is the one part of the method the plan can already answer: it
+            carries into the research graph as the instruments of the step, and
+            whoever writes the verification method starts from it instead of
+            guessing. Name the tool, not the capability ("calculate_docking",
+            not "docking"). Omit it for a step that runs no tool.
 
         Ids are renumbered TASK-1..TASK-N in final execution order, and the
         returned "plan" lists that order — check it before finishing your turn.
@@ -154,6 +162,7 @@ class TaskTrackerToolset(BaseToolset):
                 "status": "TODO",
                 "parent_id": final_ids[parents[-1]] if parents else None,
                 "notes": task["notes"],
+                "tools": task.get("tools") or [],
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
             })
@@ -325,26 +334,13 @@ class TaskTrackerToolset(BaseToolset):
         Returns:
             A dictionary indicating success or failure.
         """
-        master_tasks = list(
-            tool_context.state.get("_master_active_tasks")
-            or tool_context.state.get("active_tasks", [])
-        )
-        found_task = None
-        for task in master_tasks:
-            if task.get("id") == task_id:
-                task["status"] = status
-                task["updated_at"] = datetime.now().isoformat()
-                if notes:
-                    task["notes"] = task.get("notes", "") + (
-                        f"\n[{datetime.now().isoformat()}] {notes}"
-                    )
-                found_task = task
-                break
-
+        current_agent = getattr(tool_context, "agent_name", None)
+        set_task_status(tool_context.state, task_id, status,
+                        notes=notes or "", agent=current_agent)
+        found_task = next(
+            (t for t in (tool_context.state.get("_master_active_tasks") or [])
+             if isinstance(t, dict) and t.get("id") == task_id), None)
         if found_task:
-            tool_context.state["_master_active_tasks"] = master_tasks
-            current_agent = getattr(tool_context, "agent_name", None)
-            tool_context.state["active_tasks"] = clean_tasks_for_agent(master_tasks, current_agent)
             return {"result": "success", "task": found_task}
 
         return {"result": "error", "message": f"Task {task_id} not found."}
@@ -361,6 +357,70 @@ class TaskTrackerToolset(BaseToolset):
         current_agent = getattr(tool_context, "agent_name", None)
         cleaned_tasks = clean_tasks_for_agent(master_tasks, current_agent)
         return {"tasks": cleaned_tasks}
+
+
+#: Statuses a step does not come back from. A second work order from the same
+#: agent must not reopen a step the first one finished.
+TERMINAL_TASK_STATUSES = ("DONE", "CANCELLED", "FAILED")
+
+
+def set_task_status(state: Any, task_id: str, status: str,
+                    notes: str = "", agent: Optional[str] = None) -> bool:
+    """Move one task and refresh both views of the list. True if it moved.
+
+    Both keys are written together on purpose: `_master_active_tasks` is the
+    record and `active_tasks` is what the running agent reads, so writing one
+    without the other leaves the agent looking at a stale roadmap.
+    """
+    master = list(state.get("_master_active_tasks")
+                  or state.get("active_tasks") or [])
+    for task in master:
+        if not isinstance(task, dict) or task.get("id") != task_id:
+            continue
+        if task.get("status") == status:
+            return False
+        task["status"] = status
+        task["updated_at"] = datetime.now().isoformat()
+        if notes:
+            task["notes"] = task.get("notes", "") + (
+                f"\n[{datetime.now().isoformat()}] {notes}")
+        if agent:
+            # The one place that KNOWS who moved a step. `agent` was used only
+            # to redact the per-agent view and then thrown away, which is why
+            # `current_task_for_agent` below has to GUESS — "the agent's
+            # earliest unfinished task by PLANNED assignee" — and why nothing
+            # downstream could say who actually did a plan step.
+            seen = [a for a in (task.get("executors") or []) if a]
+            if agent not in seen:
+                task["executors"] = (seen + [agent])[:8]
+            task["last_executor"] = agent
+        state["_master_active_tasks"] = master
+        state["active_tasks"] = clean_tasks_for_agent(master, agent)
+        return True
+    return False
+
+
+def current_task_for_agent(state: Any, agent: str) -> Optional[Dict[str, Any]]:
+    """The task this agent is working on now: its earliest unfinished one.
+
+    There is no state key saying which task an agent was handed — the
+    orchestrator delegates in prose — but it delegates them in order and a
+    worker is given one at a time, so the agent's first non-terminal task is
+    the one in hand. Wrong by at most one step if a delegation is skipped, and
+    it can never mark an agent's whole column done at once, which is what
+    "every task assigned to this agent" would do: one agent holds four of the
+    five steps of a typical plan.
+    """
+    if not agent:
+        return None
+    for task in (state.get("_master_active_tasks")
+                 or state.get("active_tasks") or []):
+        if not isinstance(task, dict) or task.get("assignee") != agent:
+            continue
+        if str(task.get("status") or "").upper() in TERMINAL_TASK_STATUSES:
+            continue
+        return task
+    return None
 
 
 def clean_tasks_for_agent(
@@ -382,7 +442,12 @@ def clean_tasks_for_agent(
     for task in tasks:
         if not isinstance(task, dict):
             continue
-        cleaned = {k: v for k, v in task.items() if k not in ("created_at", "updated_at")}
+        # `executors`/`last_executor` are the record's bookkeeping, not the
+        # roadmap: an agent reading its task list has no use for who else
+        # touched it, and the column would only invite it to reason about that.
+        cleaned = {k: v for k, v in task.items()
+                   if k not in ("created_at", "updated_at",
+                                "executors", "last_executor")}
 
         if not cleaned.get("notes"):
             cleaned.pop("notes", None)

@@ -1,0 +1,20 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"request_id\": \"contract-dump-run-2\",\n  \"cancelled\": [\n    \"contract-dump-run-2\"\n  ],\n  \"already_terminal\": [],\n  \"cancellation_requested\": true\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "request_id": "contract-dump-run-2",
+    "cancelled": [
+      "contract-dump-run-2"
+    ],
+    "already_terminal": [],
+    "cancellation_requested": true
+  },
+  "isError": false
+}

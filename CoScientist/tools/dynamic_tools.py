@@ -46,7 +46,11 @@ def _disable_adk_mcp_mtls_probe() -> None:
 
 _disable_adk_mcp_mtls_probe()
 
-_SSE_READ_TIMEOUT = 60 * 5.0
+# A served tool may train a model: the Alembic-built Informer server ran a
+# two-epoch CPU training to completion after the client had given up at five
+# minutes (2026-09-23), so the wait is two hours and the result is not lost.
+_SSE_READ_TIMEOUT = float(os.getenv("MCP__SSE_READ_TIMEOUT", str(60 * 60 * 2.0)))
+_MCP_REQUEST_TIMEOUT = float(os.getenv("MCP__REQUEST_TIMEOUT", "60"))
 
 
 class DynamicMCPToolset(BaseToolset):
@@ -57,17 +61,44 @@ class DynamicMCPToolset(BaseToolset):
         # url -> McpToolset, cached so we don't reconnect every turn.
         self._by_url: Dict[str, McpToolset] = {}
 
-    async def _server_urls(self, state: dict) -> Dict[str, str]:
+    async def _server_urls(self, state: dict, scope=None) -> Dict[str, str]:
         """{url: name} for every MCP server selected for this task."""
         urls: Dict[str, str] = {}
 
         # Web MCPs deployed by WebToolsDeployerAgent (dicts already carry a url).
         for s in (state.get("deployed_mcps") or []):
-            if s.get("url"):
+            if isinstance(s, dict) and s.get("url"):
                 urls[s["url"]] = s.get("name", s["url"])
 
-        # Retrieved/filtered local tools reference a server_id -> resolve to a url.
-        server_ids = {t["server_id"] for t in (state.get("filtered_tools") or []) if t.get("server_id")}
+        # Filtered tools from plan already carry url.
+        for t in (state.get("filtered_tools") or []):
+            if isinstance(t, dict) and t.get("url"):
+                urls[t["url"]] = t.get("server_name") or t.get("name") or t["url"]
+
+        # Active task envelope mcp_servers.
+        envelope = state.get("experiment_active_envelope") or {}
+        task = envelope.get("task") or {}
+        for srv in task.get("mcp_servers") or []:
+            if isinstance(srv, dict) and srv.get("url"):
+                urls[srv["url"]] = srv.get("name") or srv["url"]
+
+        # Servers built by McpBuilderAgent in this process. That agent runs as a
+        # nested invocation, so the address it writes into session state does not
+        # always reach here, but the build record does. Only this session's builds.
+        try:
+            from CoScientist.tools.alembic_tools import live_build_servers
+
+            for url, name in live_build_servers(scope).items():
+                urls.setdefault(url, name)
+        except Exception as exc:  # noqa: BLE001 - never fatal for tool listing
+            logger.debug("alembic build registry unavailable: %s", exc)
+
+        # If all URLs were resolved from the plan/deployed MCPs, do not query Postgres.
+        if urls:
+            return urls
+
+        # Fallback only when URL is missing: resolve server_id via Postgres.
+        server_ids = {t["server_id"] for t in (state.get("filtered_tools") or []) if isinstance(t, dict) and t.get("server_id")}
         if server_ids:
             try:
                 from rag_tools.storage import PostgresClient
@@ -89,7 +120,10 @@ class DynamicMCPToolset(BaseToolset):
     async def get_tools(self, readonly_context: Optional[ReadonlyContext] = None) -> List[BaseTool]:
         state = dict(getattr(readonly_context, "state", {}) or {})
         try:
-            urls = await self._server_urls(state)
+            from CoScientist.graph.session_scope import session_key
+
+            scope = session_key(readonly_context) if readonly_context is not None else None
+            urls = await self._server_urls(state, scope)
         except Exception as exc:  # noqa: BLE001
             logger.warning("DynamicMCPToolset: %s", exc)
             return []
@@ -99,13 +133,25 @@ class DynamicMCPToolset(BaseToolset):
             ts = self._by_url.get(url)
             if ts is None:
                 ts = McpToolset(
-                    connection_params=StreamableHTTPConnectionParams(url=url, sse_read_timeout=_SSE_READ_TIMEOUT)
+                    connection_params=StreamableHTTPConnectionParams(
+                        url=url,
+                        timeout=_MCP_REQUEST_TIMEOUT,
+                        sse_read_timeout=_SSE_READ_TIMEOUT,
+                    )
                 )
                 self._by_url[url] = ts
             try:
                 tools.extend(await ts.get_tools(readonly_context))
             except Exception as exc:  # noqa: BLE001 — skip a dead server, keep the rest
                 logger.warning("DynamicMCPToolset: %s unreachable: %s", url, exc)
+        allowed = {
+            str(item.get("tool") or item.get("name") or "").strip()
+            for item in (state.get("filtered_tools") or [])
+            if isinstance(item, dict)
+        }
+        allowed.discard("")
+        if allowed:
+            tools = [t for t in tools if getattr(t, "name", None) in allowed]
         return tools
 
     async def close(self) -> None:

@@ -1,23 +1,350 @@
+    /* ── Themes ──────────────────────────────────────────────────────────
+       Colour tokens as bare RGB channels so Tailwind's `/opacity` modifiers
+       keep working (see tailwind.config in index.html). `html.dark` is the
+       default; `html.light` is set by the Interface → Theme switch. The
+       light palette pairs the same blue accent with navy #031629. */
+    :root {
+      /* UI font; Interface → Font overrides it inline (appearance.js). */
+      --font-ui: 'Source Sans 3', sans-serif;
+    }
+
+    /* Dark theme: neutral graphite surfaces a few steps apart, one calm blue
+       accent, and status colours kept for status. The cyan it replaced was
+       used for everything at once (links, fills, glows, borders), so nothing
+       stood out; it is still one click away as an accent preset. */
+    :root,
+    html.dark {
+      color-scheme: dark;
+      --c-primary: 91 157 255;
+      --c-primary-text: 122 176 255;
+      --c-on-primary: 8 16 29;
+      --c-primary-container: 36 62 102;
+      --c-on-primary-container: 225 236 255;
+      --c-secondary: 75 181 122;
+      --c-secondary-container: 46 140 90;
+      --c-tertiary: 226 163 59;
+      --c-error: 240 128 118;
+      --c-on-error: 60 8 4;
+      --c-error-container: 110 30 26;
+      --c-on-error-container: 255 218 214;
+      --c-background: 15 17 21;
+      --c-surface: 15 17 21;
+      --c-surface-dim: 15 17 21;
+      --c-surface-bright: 44 49 58;
+      --c-surface-container-lowest: 12 14 18;
+      --c-surface-container-low: 20 23 29;
+      --c-surface-container: 25 29 36;
+      --c-surface-container-high: 31 36 44;
+      --c-surface-container-highest: 40 46 56;
+      --c-surface-variant: 40 46 56;
+      --c-on-surface: 230 232 235;
+      --c-on-background: 230 232 235;
+      --c-on-surface-variant: 172 178 188;
+      --c-outline: 190 196 206;
+      --c-outline-variant: 139 146 158;
+      /* Not Tailwind tokens: card hairlines, the status shimmer highlight,
+         and a multiplier that softens black drop shadows on light surfaces. */
+      --c-hairline: 44 50 60;
+      --c-shimmer: 255 255 255;
+      --c-shadow: 0 0 0;
+      --c-scrim: 0 0 0;
+      --shadow-k: 1;
+    }
+
+    /* Light theme, tuned against glare: no surface is pure white, the page
+       itself is a cool grey-blue, and the
+       layers step down in small increments so cards separate by tone and a
+       soft shadow rather than by a white-on-grey jump. Text is a softened
+       brand navy (~13:1 instead of ~19:1), muted text stays >= 4.5:1 on
+       every surface, and the accent is one step deeper than the dark theme's
+       so fills and text both read on the grey-blue page. Surfaces and text are the
+       midpoint (DEFAULT_LIGHT_DIM) of the brightness ramp in appearance.js,
+       which takes over from here when the slider moves. */
+    html.light {
+      color-scheme: light;
+      --c-primary: 47 108 222;           /* the dark theme's blue, one step deeper */
+      --c-primary-text: 26 80 180;
+      --c-on-primary: 255 255 255;
+      --c-primary-container: 204 220 246;
+      --c-on-primary-container: 3 22 41;
+      --c-secondary: 14 100 52;
+      --c-secondary-container: 34 170 90;
+      --c-tertiary: 115 79 0;
+      --c-error: 160 29 29;
+      --c-on-error: 255 255 255;
+      --c-error-container: 236 206 203;
+      --c-on-error-container: 65 0 2;
+      --c-background: 217 222 229;
+      --c-surface: 217 222 229;
+      --c-surface-dim: 202 209 217;
+      --c-surface-bright: 230 234 239;
+      --c-surface-container-lowest: 230 234 239;
+      --c-surface-container-low: 223 228 234;
+      --c-surface-container: 211 217 224;
+      --c-surface-container-high: 204 211 219;
+      --c-surface-container-highest: 193 201 211;
+      --c-surface-variant: 193 201 211;
+      --c-on-surface: 16 32 51;
+      --c-on-background: 16 32 51;
+      --c-on-surface-variant: 53 68 88;
+      --c-outline: 52 65 84;
+      --c-outline-variant: 67 82 102;
+      --c-hairline: 183 192 204;
+      --c-shimmer: 26 80 180;
+      --c-shadow: 20 37 58;              /* navy-tinted, not black */
+      --c-scrim: 20 37 58;
+      --shadow-k: 0.3;
+    }
+
+    /* Elevation in the light theme: Tailwind's stock shadows are black and
+       sized for dark pages; here they become short, navy-tinted and faint.
+       `html.light` outranks the utility's single-class selector. */
+    html.light .shadow-sm {
+      --tw-shadow: 0 1px 2px rgb(var(--c-shadow) / 0.06);
+    }
+
+    html.light .shadow-lg {
+      --tw-shadow: 0 1px 2px rgb(var(--c-shadow) / 0.05), 0 6px 16px -6px rgb(var(--c-shadow) / 0.12);
+    }
+
+    html.light .shadow-xl,
+    html.light .shadow-2xl {
+      --tw-shadow: 0 2px 4px rgb(var(--c-shadow) / 0.05), 0 16px 40px -12px rgb(var(--c-shadow) / 0.2);
+    }
+
+    /* No glows. Markup rendered from JS still carries neon halos written as
+       literal cyan (`shadow-[0_0_15px_rgba(0,218,243,…)]`) and tinted drop
+       shadows under buttons (`shadow-primary/20`); a halo on every primary
+       element is what made the page look generated. Elevation is left to
+       tone and a hairline. */
+    [class*="rgba(0,218,243"],
+    [class*="shadow-primary"],
+    [class*="shadow-secondary"],
+    .rail-chip-busy,
+    .rail-chip-selected {
+      --tw-shadow: 0 0 #0000 !important;
+      --tw-shadow-colored: 0 0 #0000 !important;
+      box-shadow: none !important;
+    }
+
+    /* The blurred gradient halo drawn behind review cards. */
+    .blur-2xl.bg-gradient-to-r {
+      display: none;
+    }
+
+    /* Button labels with letter-spacing ("П р и н я т ь"): words, not a logo. */
+    [class*="tracking-[0.08em]"]:not(.font-mono) {
+      letter-spacing: 0 !important;
+    }
+
+    /* `transition-all` animates layout properties too; list the ones that
+       change on hover and focus instead. */
+    .transition-all {
+      transition-property: color, background-color, border-color, opacity, box-shadow, transform !important;
+    }
+
+    /* One visible focus ring for everything a keyboard can reach. Inputs that
+       drop the outline (`focus:outline-none`) show focus by their border. */
+    :focus-visible {
+      outline: 2px solid rgb(var(--c-primary) / 0.7);
+      outline-offset: 2px;
+    }
+
+    textarea:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline-offset: 0;
+    }
+
+    /* Numbers that sit in columns or tick every second must not jitter. */
+    .tabular-nums,
+    #metrics-total,
+    #metrics-duration,
+    #event-count,
+    #plan-tracker-count {
+      font-variant-numeric: tabular-nums;
+    }
+
+    kbd {
+      font-family: 'UI Mono', 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      padding: 0 5px;
+      border-radius: 4px;
+      border: 1px solid rgb(var(--c-hairline));
+      border-bottom-width: 2px;
+      color: rgb(var(--c-on-surface-variant));
+    }
+
+    /* The run's state in the top bar: a word and a dot, coloured by state. */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .status-pill-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    /* Session menu rows. */
+    .session-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 7px 12px;
+      text-align: left;
+      color: rgb(var(--c-on-surface));
+      transition: background-color .12s ease;
+    }
+
+    .session-menu-item .material-symbols-outlined {
+      color: rgb(var(--c-outline-variant));
+    }
+
+    .session-menu-item:hover,
+    .session-menu-item:focus-visible {
+      background: rgb(var(--c-surface-container-high));
+      outline: none;
+    }
+
+    /* The summary line over the conversation: agents, who works, what failed. */
+    .rail-summary-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 9px;
+      border-radius: 6px;
+      border: 1px solid rgb(var(--c-outline-variant) / 0.18);
+      background: rgb(var(--c-surface-container-low));
+      white-space: nowrap;
+      transition: border-color .12s ease;
+    }
+
+    .rail-summary-chip code {
+      font-family: 'UI Mono', 'IBM Plex Mono', monospace;
+      font-size: 12.5px;
+      color: rgb(var(--c-on-surface));
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Native <select> in dark mode on Windows ignores the page colours. */
+    select {
+      background-color: rgb(var(--c-surface-container-low));
+      color: rgb(var(--c-on-surface));
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .animate-pulse,
+      .animate-spin,
+      .rail-ping-anim,
+      .msg-enter {
+        animation: none !important;
+      }
+    }
+
+    /* Modal scrims: a light navy veil instead of 60-70% black. */
+    html.light .bg-black\/60,
+    html.light .bg-black\/70 {
+      background-color: rgb(var(--c-scrim) / 0.32);
+    }
+
+    html.light ::selection {
+      background-color: rgb(var(--c-primary) / 0.3);
+      color: rgb(var(--c-on-surface));
+    }
+
+
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: var(--font-ui);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Typographic hierarchy (matches the Alembic page): sentence case and
+       semibold instead of tiny bold wide-tracked capitals everywhere. The
+       brand <h1> and mono micro-labels keep their capitals. */
+    .uppercase:not(.font-mono):not(h1) {
+      text-transform: none !important;
+    }
+
+    .tracking-widest:not(.font-mono):not(h1),
+    .tracking-wider:not(.font-mono):not(h1) {
+      letter-spacing: 0.01em !important;
+    }
+
+    .font-bold {
+      font-weight: 600 !important;
+    }
+
+    .font-black {
+      font-weight: 700 !important;
+    }
+
+    h1.font-bold {
+      font-weight: 700 !important;
+    }
+
+    button[class~="text-[10px]"] {
+      font-size: 13px !important;
+    }
+
+    /* Source Sans has a lower x-height than Inter, so step body sizes up.
+       These two carry almost all the readable text on the page, so they sit at
+       the sizes a long read wants rather than at Tailwind's 14/12. */
+    .text-sm {
+      font-size: 17px !important;
+      line-height: 1.55 !important;
+    }
+
+    .text-xs {
+      font-size: 15px !important;
+      line-height: 1.5 !important;
+    }
+
+    /* Brand stays capitalised as the one accent, with a calmer tracking. */
+    h1.tracking-widest {
+      letter-spacing: 0.14em !important;
     }
 
     /* Readability floor: the dashboard leans on Tailwind arbitrary sizes as
        small as 8px for labels/telemetry (84x text-[10px] alone), often
        stacked with uppercase + tracking-widest. Below ~12px that combo is
        genuinely hard to read, so raise the floor globally rather than
-       editing every call site (including markup rendered from JS). */
+       editing every call site (including markup rendered from JS).
+       12px is the floor for anything anyone is expected to read; the steps
+       above it stay distinct so the hierarchy the markup intended survives. */
     [class~="text-[8px]"],
     [class~="text-[9px]"] {
-      font-size: 11px !important;
+      font-size: 12.5px !important;
     }
 
     [class~="text-[10px]"] {
-      font-size: 12px !important;
+      font-size: 13px !important;
     }
 
     [class~="text-[11px]"] {
-      font-size: 12.5px !important;
+      font-size: 14px !important;
+    }
+
+    [class~="text-[12px]"],
+    [class~="text-[13px]"] {
+      font-size: 15px !important;
+    }
+
+    [class~="text-[14px]"] {
+      font-size: 16px !important;
     }
 
     /* Wide letter-spacing reads fine on large headings but turns to visual
@@ -25,8 +352,37 @@
     [class~="text-[8px]"].tracking-widest,
     [class~="text-[9px]"].tracking-widest,
     [class~="text-[10px]"].tracking-widest,
-    [class~="text-[11px]"].tracking-widest {
+    [class~="text-[11px]"].tracking-widest,
+    [class~="text-[12px]"].tracking-widest,
+    [class~="text-[13px]"].tracking-widest {
       letter-spacing: 0.04em !important;
+    }
+
+    .font-mono.tracking-widest,
+    .font-mono.tracking-wider,
+    .font-mono.tracking-tighter {
+      letter-spacing: 0.02em !important;
+    }
+
+    /* Monospace only where fixed width carries meaning: numbers, ids, agent and
+       tool names, timestamps, code. Everything that reads as a word — section
+       labels, prose, form labels, user text — uses the UI face. (In `font-mono`
+       the Cyrillic already falls back to Source Sans via the "UI Mono" face,
+       but Latin words in these elements would still be monospace.) */
+    p.font-mono,
+    label.font-mono,
+    textarea.font-mono,
+    input.font-mono,
+    .font-mono.italic,
+    .font-mono.uppercase,
+    .font-mono[class*="tracking-"],
+    .si-activity-header {
+      font-family: var(--font-ui) !important;
+    }
+
+    .font-mono.uppercase {
+      font-size: 11px !important;
+      letter-spacing: 0.08em !important;
     }
 
     .material-symbols-outlined {
@@ -40,23 +396,84 @@
     .line-through-dim {
       text-decoration: line-through;
       text-decoration-color: #64748b;
-      color: #94a3b8;
+      color: rgb(var(--c-outline-variant));
+    }
+
+    /* The one-line strip a Work Order / Report folds into (hitl.js woStrip).
+       `list-none` hides the disclosure triangle everywhere but WebKit, which
+       draws its own; the strip has its chevron already. */
+    details[data-wo-strip]>summary::-webkit-details-marker {
+      display: none;
     }
 
     .topology-grid {
-      background-image: radial-gradient(rgba(0, 218, 243, 0.05) 1px, transparent 1px);
+      background-image: radial-gradient(rgb(var(--c-primary) / 0.05) 1px, transparent 1px);
       background-size: 24px 24px;
     }
 
     /* Collapsible left rail: the sidebar slides out of view and everything that
        was offset by its width (header, main) reclaims the space. */
+    :root {
+      --nav-w: 16rem;
+    }
+
     #side-nav {
+      width: var(--nav-w);
       transition: transform .25s ease;
+    }
+
+    #top-nav {
+      margin-left: var(--nav-w);
+      width: calc(100% - var(--nav-w));
+    }
+
+    #main-content {
+      margin-left: var(--nav-w);
     }
 
     #top-nav,
     #main-content {
       transition: margin-left .25s ease, width .25s ease;
+    }
+
+    /* The left rail's grip: on its right edge, same look as the right one's. */
+    #nav-grip {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: -5px;
+      width: 10px;
+      z-index: 1;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    #nav-grip::after {
+      content: '';
+      position: absolute;
+      top: 15%;
+      bottom: 15%;
+      left: 4px;
+      width: 2px;
+      border-radius: 2px;
+      background: transparent;
+      transition: background .15s ease;
+    }
+
+    #nav-grip:hover::after,
+    #nav-grip.on::after {
+      background: rgb(var(--c-primary));
+    }
+
+    body.nav-collapsed #nav-grip {
+      display: none;
+    }
+
+    /* Dragging must track the pointer, not ease after it. */
+    body.resizing #top-nav,
+    body.resizing #main-content,
+    body.resizing #side-rail {
+      transition: none;
     }
 
     body.nav-collapsed #side-nav {
@@ -72,15 +489,93 @@
       margin-left: 0;
     }
 
+    /* One centred reading column for the conversation and everything under it.
+       The feed is itself the scroll container and messages are appended
+       straight into it, so the column is set on its children rather than on a
+       wrapper that appendMsgToFeed() would have to know about; the id selector
+       beats the max-w-* class each message carries. Widen or narrow the whole
+       chat by changing this one value: 60rem keeps a line of the 17.5px
+       message text near 90 characters. */
+    #chat-feed>*,
+    #status-indicator>*,
+    #chat-form,
+    #attachment-chips,
+    #dataset-upload-widget {
+      width: 100%;
+      max-width: 60rem;
+      margin-inline: auto;
+    }
+
+    /* ── The right-hand rail ───────────────────────────────────────────────
+       Same idiom as the graph page's detail panel: a variable for the width,
+       a grip on the edge, the choice remembered per browser. Collapsed, it
+       leaves the whole window to the conversation. */
+    :root {
+      --rail-w: 20rem;
+    }
+
+    #side-rail {
+      width: var(--rail-w);
+      transition: width .2s ease, opacity .15s ease;
+    }
+
+    #rail-grip {
+      flex: 0 0 auto;
+      width: 10px;
+      margin: 0 -5px;
+      z-index: 1;
+      cursor: col-resize;
+      position: relative;
+      touch-action: none;
+    }
+
+    #rail-grip::after {
+      content: '';
+      position: absolute;
+      top: 15%;
+      bottom: 15%;
+      left: 4px;
+      width: 2px;
+      border-radius: 2px;
+      background: transparent;
+      transition: background .15s ease;
+    }
+
+    #rail-grip:hover::after,
+    #rail-grip.on::after {
+      background: rgb(var(--c-primary));
+    }
+
+    body.rail-collapsed #side-rail,
+    body.rail-collapsed #rail-grip {
+      display: none;
+    }
+
+    /* While dragging, the pointer must not select text or flip the cursor. */
+    body.resizing {
+      cursor: col-resize;
+      user-select: none;
+    }
+
+    /* Start mode "planner": until the plan is approved there is no Usage &
+       Cost card; afterwards the plan tracker sits above it. */
+    body.plan-gated #usage-panel {
+      display: none;
+    }
+
+    body.plan-first #plan-tracker {
+      order: -1;
+    }
+
     /* Chat composer: wraps text and grows with the content up to a ceiling. */
     #chat-input {
       resize: none;
       overflow-y: auto;
       white-space: pre-wrap;
       overflow-wrap: break-word;
-      min-height: 4.5rem;
+      min-height: 3.25rem;
       max-height: 15rem;
-      line-height: 1.5rem;
+      line-height: 1.55;
     }
 
     @keyframes fadeIn {
@@ -116,7 +611,7 @@
        right below it), so it is pinned to the `on-surface` token — which is
        what every animated phase renders in. */
     .si-shimmer {
-      background: linear-gradient(100deg, #e1e2eb 0%, #e1e2eb 40%, #ffffff 50%, #e1e2eb 60%, #e1e2eb 100%);
+      background: linear-gradient(100deg, rgb(var(--c-on-surface)) 0%, rgb(var(--c-on-surface)) 40%, rgb(var(--c-shimmer)) 50%, rgb(var(--c-on-surface)) 60%, rgb(var(--c-on-surface)) 100%);
       background-size: 220% 100%;
       -webkit-background-clip: text;
       background-clip: text;
@@ -175,7 +670,7 @@
 
       .si-shimmer {
         background: none;
-        color: #e1e2eb
+        color: rgb(var(--c-on-surface))
       }
     }
 
@@ -188,12 +683,12 @@
     }
 
     .tv-key {
-      color: #00daf3;
+      color: rgb(var(--c-primary-text));
       font-weight: 600;
     }
 
     .tv-bullet {
-      color: #94a3b8;
+      color: rgb(var(--c-outline-variant));
       margin-right: 6px;
     }
 
@@ -204,12 +699,22 @@
     }
 
     .tv-scalar {
-      color: #40e56c;
+      color: rgb(var(--c-secondary));
+    }
+
+    /* JSON view of the same values (Tools Viewer YAML/JSON toggle). */
+    .tv-json {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .tv-json-string {
+      color: #fbbf24;
     }
 
     .tv-null,
     .tv-empty {
-      color: #94a3b8;
+      color: rgb(var(--c-outline-variant));
       font-style: italic;
     }
 
@@ -224,7 +729,7 @@
     }
 
     .tv-collapsible {
-      max-height: 12rem;
+      max-height: 13.5rem;
       overflow: hidden;
       position: relative;
     }
@@ -241,14 +746,51 @@
       right: 0;
       bottom: 0;
       height: 2.25rem;
-      background: linear-gradient(to bottom, transparent, rgba(11, 14, 20, .92));
+      background: linear-gradient(to bottom, transparent, rgb(var(--c-surface-container-lowest) / .92));
       pointer-events: none;
     }
 
     /* Markdown-rendered agent messages (see renderMarkdown()). Tailwind's
-       preflight strips list styling/margins, so those are restored here. */
+       preflight strips list styling/margins, so those are restored here.
+
+       This is the one block on the page people actually read end to end, so it
+       sets its own size instead of inheriting a utility class: 16.5px at 1.65
+       is the band ChatGPT/Claude/Perplexity all sit in for message bodies, and
+       `ch` caps the measure at a readable line length even when the bubble is
+       allowed to be wider (tables and code still use the full width). */
     .md-body {
+      font-size: 17.5px;
+      line-height: 1.65;
+    }
+
+    /* Reasoning is context, not the deliverable: one step down, never below
+       the floor, and it keeps the muted colour it is given inline. */
+    .md-body-quiet {
+      font-size: 14.5px;
       line-height: 1.6;
+    }
+
+    /* Markdown inside a card field keeps the card's own size and alignment. */
+    .md-body.md-fit {
+      font-size: inherit;
+      line-height: inherit;
+    }
+
+    .md-body.md-fit p,
+    .md-body.md-fit li {
+      text-align: inherit;
+    }
+
+    .md-body.md-fit p {
+      margin: 0.25em 0;
+    }
+
+    .md-body.md-fit>*:first-child {
+      margin-top: 0;
+    }
+
+    .md-body.md-fit>*:last-child {
+      margin-bottom: 0;
     }
 
     .md-body>*:first-child {
@@ -261,6 +803,17 @@
 
     .md-body p {
       margin: 0.5em 0;
+    }
+
+    /* Justified prose in chat and the report viewer. Hyphenation (driven by
+       <html lang>, set from the UI language) keeps word gaps even in the
+       narrow side panel. Headings, tables and code stay left-aligned. */
+    .md-body p,
+    .md-body li,
+    .md-body blockquote {
+      text-align: justify;
+      hyphens: auto;
+      -webkit-hyphens: auto;
     }
 
     .md-body ul,
@@ -286,21 +839,31 @@
     .md-body h3,
     .md-body h4 {
       font-weight: 700;
-      margin: 0.8em 0 0.4em;
-      line-height: 1.3;
+      margin: 1.1em 0 0.45em;
+      line-height: 1.25;
+      color: rgb(var(--c-on-surface));
+    }
+
+    .md-body>h1:first-child,
+    .md-body>h2:first-child,
+    .md-body>h3:first-child {
+      margin-top: 0;
     }
 
     .md-body h1 {
-      font-size: 1.25em;
+      font-size: 1.55em;
     }
 
     .md-body h2 {
-      font-size: 1.15em;
+      font-size: 1.35em;
     }
 
-    .md-body h3,
+    .md-body h3 {
+      font-size: 1.18em;
+    }
+
     .md-body h4 {
-      font-size: 1.05em;
+      font-size: 1.06em;
     }
 
     .md-body strong {
@@ -315,13 +878,13 @@
       background: rgba(140, 144, 161, 0.15);
       border-radius: 4px;
       padding: 0.1em 0.35em;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'IBM Plex Mono', monospace;
       font-size: 0.85em;
     }
 
     .md-body pre {
       background: rgba(140, 144, 161, 0.1);
-      border: 1px solid rgba(66, 70, 86, 0.4);
+      border: 1px solid rgb(var(--c-hairline) / 0.4);
       border-radius: 8px;
       padding: 0.75em 1em;
       overflow-x: auto;
@@ -337,12 +900,12 @@
       border-left: 2px solid rgba(140, 144, 161, 0.4);
       padding-left: 0.75em;
       margin: 0.5em 0;
-      color: #c2c6d8;
+      color: rgb(var(--c-on-surface-variant));
     }
 
     .md-body hr {
       border: none;
-      border-top: 1px solid rgba(66, 70, 86, 0.4);
+      border-top: 1px solid rgb(var(--c-hairline) / 0.4);
       margin: 0.75em 0;
     }
 
@@ -354,7 +917,7 @@
 
     .md-body th,
     .md-body td {
-      border: 1px solid rgba(66, 70, 86, 0.4);
+      border: 1px solid rgb(var(--c-hairline) / 0.4);
       padding: 0.3em 0.6em;
       text-align: left;
     }
@@ -365,19 +928,19 @@
     }
 
     .roadmap-card:hover {
-      border-color: rgba(0, 218, 243, 0.35);
-      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
+      border-color: rgb(var(--c-primary) / 0.35);
+      box-shadow: 0 4px 20px -2px rgb(var(--c-shadow) / calc(0.4 * var(--shadow-k)));
     }
 
     .roadmap-card.highlighted {
       animation: roadmap-glow 2s ease-in-out;
-      border-color: #00daf3 !important;
+      border-color: rgb(var(--c-primary)) !important;
     }
 
     .roadmap-card.editing {
-      border-color: rgba(0, 218, 243, 0.45) !important;
-      box-shadow: 0 8px 30px -4px rgba(0, 218, 243, 0.15), 0 4px 16px rgba(0, 0, 0, 0.6) !important;
-      background: rgba(29, 32, 38, 0.98) !important;
+      border-color: rgb(var(--c-primary) / 0.45) !important;
+      box-shadow: 0 8px 30px -4px rgb(var(--c-primary) / 0.15), 0 4px 16px rgb(var(--c-shadow) / calc(0.6 * var(--shadow-k))) !important;
+      background: rgb(var(--c-surface-container) / 0.98) !important;
     }
 
     .roadmap-card.editing select {
@@ -391,15 +954,15 @@
 
     @keyframes roadmap-glow {
       0%, 100% {
-        box-shadow: 0 0 0 0 rgba(0, 218, 243, 0);
+        box-shadow: 0 0 0 0 rgb(var(--c-primary) / 0);
       }
       30%, 70% {
-        box-shadow: 0 0 25px 4px rgba(0, 218, 243, 0.45);
+        box-shadow: 0 0 25px 4px rgb(var(--c-primary) / 0.45);
       }
     }
 
     .roadmap-desc-clamp {
-      max-height: 4.5rem;
+      max-height: 5.4rem;
       overflow: hidden;
       position: relative;
       transition: max-height 0.25s ease;
@@ -416,7 +979,7 @@
       right: 0;
       bottom: 0;
       height: 2rem;
-      background: linear-gradient(to bottom, transparent, rgba(16, 19, 25, 0.95));
+      background: linear-gradient(to bottom, transparent, rgb(var(--c-background) / 0.95));
       pointer-events: none;
     }
 
@@ -424,21 +987,21 @@
     .si-mini-progress {
       height: 3px;
       border-radius: 2px;
-      background: rgba(66, 70, 86, 0.3);
+      background: rgb(var(--c-hairline) / 0.3);
       overflow: hidden;
     }
 
     .si-mini-progress-fill {
       height: 100%;
-      background: linear-gradient(90deg, #00daf3, #40e56c);
+      background: rgb(var(--c-primary));
       transition: width 0.4s ease;
     }
 
     /* ── Accessibility & Contrast Enhancements ─────────────────────────────
        Ensure all secondary, muted, and placeholder elements meet WCAG AA
-       contrast (>= 4.5:1) against dark backgrounds (#101319 / #191c22). */
+       contrast (>= 4.5:1) against the page backgrounds of either theme. */
     .text-\[\#424656\] {
-      color: #94a3b8 !important;
+      color: rgb(var(--c-outline-variant)) !important;
     }
 
     .bg-\[\#424656\] {
@@ -448,13 +1011,13 @@
     /* Improved contrast for form input placeholders */
     input::placeholder,
     textarea::placeholder {
-      color: #94a3b8 !important;
+      color: rgb(var(--c-outline-variant)) !important;
       opacity: 0.75 !important;
     }
 
     /* ── Activity Rail HUD Styles ────────────────────────────────────────── */
     #activity-rail {
-      box-shadow: inset 0 1px 0 0 rgba(0, 218, 243, 0.14), 0 10px 24px -6px rgba(0, 0, 0, 0.6);
+      box-shadow: none;
     }
 
     /* Micro-scrollbars for activity rail horizontal scrolling */
@@ -465,19 +1028,19 @@
 
     #activity-agents::-webkit-scrollbar-track,
     #activity-tools::-webkit-scrollbar-track {
-      background: rgba(22, 26, 35, 0.5);
+      background: rgb(var(--c-surface-container-low) / 0.5);
       border-radius: 9999px;
     }
 
     #activity-agents::-webkit-scrollbar-thumb,
     #activity-tools::-webkit-scrollbar-thumb {
-      background: rgba(148, 163, 184, 0.2);
+      background: rgb(var(--c-outline-variant) / 0.2);
       border-radius: 9999px;
     }
 
     #activity-agents:hover::-webkit-scrollbar-thumb,
     #activity-tools:hover::-webkit-scrollbar-thumb {
-      background: rgba(0, 218, 243, 0.5);
+      background: rgb(var(--c-primary) / 0.5);
     }
 
     /* Plan tracker: a visible thin scrollbar, since a long plan must be scrolled */
@@ -486,25 +1049,17 @@
     }
 
     #plan-tracker-list::-webkit-scrollbar-thumb {
-      background: rgba(148, 163, 184, 0.25);
+      background: rgb(var(--c-outline-variant) / 0.25);
       border-radius: 9999px;
     }
 
     #plan-tracker-list:hover::-webkit-scrollbar-thumb {
-      background: rgba(0, 218, 243, 0.5);
+      background: rgb(var(--c-primary) / 0.5);
     }
 
     #plan-tracker-list {
       scrollbar-width: thin;
-      scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
-    }
-
-    .rail-chip-busy {
-      box-shadow: 0 0 16px -2px rgba(0, 218, 243, 0.35), inset 0 0 8px rgba(0, 218, 243, 0.08);
-    }
-
-    .rail-chip-selected {
-      box-shadow: 0 0 12px -2px rgba(0, 218, 243, 0.3);
+      scrollbar-color: rgb(var(--c-outline-variant) / 0.25) transparent;
     }
 
     /* Radar ping dot for active computation */
@@ -524,3 +1079,371 @@
     html:not(.show-internal) .wo-internal {
       display: none !important;
     }
+
+    /* ── The document panel ────────────────────────────────────────────────
+       A document is read, not skimmed, and a plan or a work order is mostly
+       headings: they are what you navigate it by. `.md-body` sizes headings in
+       `em`, which in a 640px column left an h2 barely above the body — so the
+       panel sets its own scale, wider apart and heavier, with a rule under the
+       top two so the sections are visible before a word is read. */
+    #doc-viewer-body.md-body {
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    #doc-viewer-body.md-body h1,
+    #doc-viewer-body.md-body h2,
+    #doc-viewer-body.md-body h3,
+    #doc-viewer-body.md-body h4 {
+      font-weight: 700;
+      color: rgb(var(--c-on-surface));
+      letter-spacing: -0.01em;
+    }
+
+    #doc-viewer-body.md-body h1 {
+      font-size: 26px;
+      line-height: 1.2;
+      margin: 0 0 0.6em;
+      padding-bottom: 0.35em;
+      border-bottom: 2px solid rgb(var(--c-primary) / 0.35);
+    }
+
+    #doc-viewer-body.md-body h2 {
+      font-size: 21px;
+      line-height: 1.25;
+      margin: 1.5em 0 0.5em;
+      padding-bottom: 0.25em;
+      border-bottom: 1px solid rgb(var(--c-hairline));
+    }
+
+    #doc-viewer-body.md-body h3 {
+      font-size: 18px;
+      margin: 1.2em 0 0.4em;
+    }
+
+    #doc-viewer-body.md-body h4 {
+      font-size: 16.5px;
+      margin: 1em 0 0.3em;
+      color: rgb(var(--c-on-surface));
+    }
+
+    /* A table in a 640px column has to be able to scroll rather than squeeze
+       the prose around it. */
+    #doc-viewer-body.md-body table {
+      display: block;
+      overflow-x: auto;
+      white-space: nowrap;
+      font-size: 14px;
+    }
+
+    #doc-viewer-body.md-body th {
+      background: rgb(var(--c-hairline) / 0.5);
+      font-weight: 700;
+      color: rgb(var(--c-on-surface));
+    }
+
+    #doc-viewer-body.md-body li {
+      margin: 0.3em 0;
+    }
+
+    #doc-viewer-body.md-body code {
+      font-size: 0.9em;
+    }
+
+    /* ── The document button ───────────────────────────────────────────────
+       On a message, beside the HITL controls. The one whose document is on
+       screen reads differently, so a feed full of buttons still says which one
+       you are looking at. */
+    .doc-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.3rem 0.7rem;
+      border-radius: 0.375rem;
+      border: 1px solid rgb(var(--c-primary) / 0.35);
+      background: rgb(var(--c-primary) / 0.07);
+      color: rgb(var(--c-primary-text));
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s ease, border-color .15s ease;
+    }
+
+    .doc-btn:hover {
+      background: rgb(var(--c-primary) / 0.16);
+      border-color: rgb(var(--c-primary) / 0.6);
+    }
+
+    .doc-btn-open {
+      background: rgb(var(--c-primary));
+      border-color: rgb(var(--c-primary));
+      color: rgb(var(--c-on-primary));
+    }
+
+    /* The summary that replaced the body. Prose, not a label. */
+    .doc-summary {
+      font-size: 16px;
+      line-height: 1.55;
+      color: rgb(var(--c-on-surface));
+    }
+
+    /* ── Folds ─────────────────────────────────────────────────────────────
+       One mechanism for every long block in the feed — agent messages, their
+       deliverables, system notices, and the body of a HITL request. All of
+       them arrive folded: a first screen, a fade that says there is more, and
+       one button. `--fold-bg` is the surface the fade resolves to, so the same
+       markup works on a message bubble and on a review card. */
+    .fold-body {
+      position: relative;
+      max-height: 11rem;
+      overflow: hidden;
+    }
+
+    .fold-open>.fold-body {
+      max-height: none;
+      overflow: visible;
+    }
+
+    .fold-body::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 2.75rem;
+      background: linear-gradient(to bottom, transparent, var(--fold-bg, rgb(var(--c-surface-container-low))));
+      pointer-events: none;
+    }
+
+    .fold-open>.fold-body::after {
+      content: none;
+    }
+
+    /* Measured and found to overshoot the clip by too little to be worth a
+       click (settleFold in chat.js): shown whole, no fade, no button. */
+    .fold-fits>.fold-body {
+      max-height: none;
+      overflow: visible;
+    }
+
+    .fold-fits>.fold-body::after,
+    .fold-fits>.fold-btn {
+      display: none;
+    }
+
+    .fold-btn {
+      margin-top: 0.5rem;
+      font-size: 14px;
+      font-weight: 600;
+      color: rgb(var(--c-primary-text));
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      transition: filter .15s ease;
+    }
+
+    .fold-btn:hover {
+      filter: brightness(1.25);
+    }
+
+    .fold-btn::before {
+      content: '▸ ';
+      display: inline-block;
+      transition: transform .15s ease;
+    }
+
+    .fold-open>.fold-btn::before {
+      content: '▾ ';
+    }
+
+    /* The block a human is asked to approve: a plan, an agent's proposed
+       result, the question it wants answered. It is prose, and it was set in
+       IBM Plex Mono at 12.5px on a lighter grey slab — three separate reasons
+       it was hard to look at, of which the monospace was the worst, since a
+       four-task plan in Russian is a page of text, not a code listing.
+       The UI face (whichever one is chosen in the settings), the size of
+       any other message in the feed, and the card's own surface. */
+    .hitl-prose,
+    .md-body.hitl-prose {
+      font-family: var(--font-ui);
+      font-size: 17.5px;
+      line-height: 1.6;
+    }
+
+    /* ── Foldable panels ───────────────────────────────────────────────────
+       `<details>` carries the disclosure semantics, but both engines draw a
+       marker of their own next to it; the panels supply their own chevron, so
+       the built-in one is removed. `list-none` alone does not do it in WebKit. */
+    summary {
+      list-style: none;
+    }
+
+    summary::-webkit-details-marker,
+    summary::marker {
+      display: none;
+      content: '';
+    }
+
+    summary:focus-visible {
+      outline: 2px solid rgb(var(--c-primary) / 0.6);
+      outline-offset: -2px;
+      border-radius: 0.75rem;
+    }
+
+/* Sandbox artifacts panel: a folder listing, not a table — the interesting
+   column is the name, and the row is a click target for a directory. */
+.art-row { display: flex; align-items: center; gap: 10px; padding: 7px 11px; font-size: 12px; }
+.art-row[onclick] { cursor: pointer; }
+.art-row:hover { background: rgb(var(--c-on-surface) / .04); }
+.art-name { overflow-wrap: anywhere; }
+.art-size { margin-left: auto; color: rgb(var(--c-outline-variant)); font-size: 11px; white-space: nowrap; }
+.art-get, .art-open { font-size: 11px; white-space: nowrap; }
+.art-get { color: rgb(var(--c-primary-text)); background: none; border: none; cursor: pointer; }
+.art-get:hover { text-decoration: underline; }
+.art-get:disabled { color: rgb(var(--c-outline-variant) / .6); cursor: default; }
+.art-open { color: rgb(var(--c-secondary)); text-decoration: none; }
+.art-open:hover { text-decoration: underline; }
+
+/* Reading a workspace file in place: source as written, plots as plots, a
+   results CSV as a table. Nothing here is editable — this is a window, not an
+   editor, and the bytes never leave the page. */
+.art-text { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; line-height: 1.55; white-space: pre; overflow-wrap: normal;
+  color: rgb(var(--c-on-surface-variant)); margin: 0; }
+.art-text-rendered { font-size: 13px; }
+.art-image { max-width: 100%; height: auto; display: block; margin: 0 auto;
+  background: repeating-conic-gradient(rgb(var(--c-surface-container-high)) 0% 25%, rgb(var(--c-surface-container-lowest)) 0% 50%) 0 0 / 16px 16px; }
+.art-pdf { width: 100%; height: 55vh; border: 0; background: rgb(var(--c-surface-container-lowest)); }
+.art-table-wrap { overflow-x: auto; }
+.art-table { border-collapse: collapse; font-size: 11.5px; width: 100%; }
+.art-table th, .art-table td { border: 1px solid rgb(var(--c-hairline));
+  padding: 3px 7px; text-align: left; white-space: nowrap; }
+.art-table th { position: sticky; top: 0; background: rgb(var(--c-surface-container-high)); color: rgb(var(--c-on-surface)); }
+.art-table td { color: rgb(var(--c-on-surface-variant)); }
+
+/* ── Side-nav call graph (call_graph.js) ─────────────────────────────── */
+.cg-edge { fill: none; stroke: rgb(var(--c-outline-variant) / 0.55); stroke-width: 1.25; }
+.cg-edge-live { stroke: rgb(var(--c-primary) / 0.8); }
+.cg-box { fill: rgb(var(--c-surface-container-lowest)); stroke: rgb(var(--c-hairline)); stroke-width: 1; }
+.cg-label { fill: rgb(var(--c-on-surface)); font-family: inherit; }
+.cg-dot { fill: rgb(var(--c-secondary)); }
+.cg-root .cg-box { fill: rgb(var(--c-primary-container)); stroke: rgb(var(--c-primary) / 0.6); }
+.cg-root .cg-label { fill: rgb(var(--c-on-primary-container)); font-weight: 600; }
+.cg-root .cg-dot { fill: rgb(var(--c-primary)); }
+.cg-running .cg-box { stroke: rgb(var(--c-primary)); }
+.cg-running .cg-dot { fill: rgb(var(--c-primary)); animation: cgPulse 1.2s ease-in-out infinite; }
+.cg-stack { opacity: 0.55; }
+/* Stack unfold/fold: nodes glide to their new places, the view follows,
+   links fade back in once the nodes have arrived. */
+.cg-world { transform-origin: 0 0; }
+.cg-world.cg-anim { transition: transform .38s cubic-bezier(.2, .8, .2, 1); }
+.cg-anim .cg-node { transition: transform .38s cubic-bezier(.2, .8, .2, 1), opacity .3s ease; }
+.cg-anim .cg-edges { transition: opacity .25s ease .22s; }
+@media (prefers-reduced-motion: reduce) {
+  .cg-world.cg-anim, .cg-anim .cg-node, .cg-anim .cg-edges { transition: none; }
+}
+.cg-count { fill: rgb(var(--c-primary)); font-weight: 600; font-family: inherit; }
+.cg-group, .cg-member { cursor: pointer; }
+.cg-group:hover .cg-box:not(.cg-stack), .cg-member:hover .cg-box { stroke: rgb(var(--c-primary) / 0.7); }
+.cg-idle .cg-box { fill: transparent; stroke: rgb(var(--c-outline-variant) / 0.55); stroke-dasharray: 4 3; }
+.cg-idle .cg-label { fill: rgb(var(--c-outline-variant)); }
+.cg-idle .cg-dot { fill: none; stroke: rgb(var(--c-outline-variant) / 0.7); stroke-width: 1; }
+.cg-edge-idle { stroke: rgb(var(--c-outline-variant) / 0.35); stroke-dasharray: 3 3; }
+.cg-error .cg-box { stroke: rgb(var(--c-error) / 0.8); }
+.cg-error .cg-dot { fill: rgb(var(--c-error)); }
+#side-nav-panel:fullscreen { margin: 0; border-radius: 0; min-height: 0; background: rgb(var(--c-surface-container-low)); }
+#side-nav-panel:fullscreen #call-graph-title { font-size: 13px; }
+#call-graph-scroll { cursor: grab; touch-action: none; user-select: none; }
+#call-graph-scroll.dragging { cursor: grabbing; }
+@keyframes cgPulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .cg-running .cg-dot { animation: none; } }
+
+/* ── Call graph: the research-map design (call_graph.js) ─────────────── */
+:root {
+  --cg-done: 94 184 150;
+  --cg-wait: 167 139 250;
+  --cg-work: 45 212 191;
+  --cg-idle: 139 146 158;
+}
+html.light {
+  --cg-done: 16 128 96;
+  --cg-wait: 109 72 214;
+  --cg-work: 13 148 136;
+  --cg-idle: 110 118 130;
+}
+.cg-card-box { fill: rgb(var(--c-surface-container-lowest)); stroke: rgb(var(--c-hairline)); stroke-width: 1.2; }
+.cg-card-stack { opacity: .5; }
+.cg-st-work .cg-card-layer { stroke: rgb(var(--cg-work) / .5); }
+.cg-card-layer-1 { opacity: .6; }
+.cg-card-layer-2 { opacity: .32; }
+.cg-card-title { fill: rgb(var(--c-on-surface)); font-weight: 600; font-family: inherit; }
+.cg-card-sub, .cg-card-mark, .cg-card-count { fill: rgb(var(--c-outline-variant)); font-family: inherit; }
+.cg-card-group { letter-spacing: .08em; font-weight: 600; }
+.cg-card-count { font-variant-numeric: tabular-nums; }
+.cg-st-done .cg-card-box { stroke: rgb(var(--cg-done) / .5); fill: rgb(var(--cg-done) / .07); }
+.cg-st-done .cg-card-mark { fill: rgb(var(--cg-done)); }
+.cg-st-wait .cg-card-box { stroke: rgb(var(--cg-wait) / .85); fill: rgb(var(--cg-wait) / .11); }
+.cg-st-wait .cg-card-mark, .cg-st-wait .cg-card-sub { fill: rgb(var(--cg-wait)); }
+.cg-st-work .cg-card-box:not(.cg-card-stack):not(.cg-card-layer) {
+  stroke: rgb(var(--cg-work)); stroke-width: 2; fill: rgb(var(--cg-work) / .15);
+  filter: drop-shadow(0 0 6px rgb(var(--cg-work) / .5)); animation: cgBlink 1.4s ease-in-out infinite;
+}
+.cg-st-work .cg-card-mark, .cg-st-work .cg-card-sub { fill: rgb(var(--cg-work)); }
+.cg-st-idle .cg-card-box { fill: transparent; stroke: rgb(var(--cg-idle) / .45); stroke-dasharray: 4 3; }
+.cg-st-idle .cg-card-title, .cg-st-idle .cg-card-sub, .cg-st-idle .cg-card-mark, .cg-st-idle .cg-card-count { fill: rgb(var(--cg-idle) / .7); }
+.cg-st-error .cg-card-box { stroke: rgb(var(--c-error)); fill: rgb(var(--c-error) / .08); }
+.cg-st-error .cg-card-mark, .cg-st-error .cg-card-sub { fill: rgb(var(--c-error)); }
+.cg-link .cg-card-box { stroke-dasharray: 2 2; }
+.cg-clickable { cursor: pointer; }
+.cg-clickable:hover > .cg-card-box:not(.cg-card-stack):not(.cg-card-layer), .cg-frame-mas:hover > .cg-frame-box { stroke: rgb(var(--c-primary)); }
+@keyframes cgBlink { 50% { stroke-opacity: .35; } }
+.cg-frame-box { fill: rgb(var(--c-on-surface) / .015); stroke: rgb(var(--c-outline-variant) / .35); stroke-dasharray: 5 4; }
+.cg-frame-mas .cg-frame-box { stroke: rgb(var(--cg-wait) / .45); }
+.cg-frame-label { fill: rgb(var(--cg-wait)); font-weight: 700; letter-spacing: .04em; font-family: inherit; }
+.cg-frame-sub { fill: rgb(var(--c-outline-variant)); font-family: inherit; }
+.cg-edges .cg-edge { stroke: rgb(var(--c-outline-variant) / .7); stroke-width: 1.3; }
+.cg-edges .cg-edge-idle { stroke: rgb(var(--cg-idle) / .4); stroke-dasharray: 3 3; }
+.cg-edges .cg-edge-live { stroke: rgb(var(--cg-work) / .85); }
+.cg-arrowhead { fill: rgb(var(--c-outline-variant) / .8); }
+.cg-arrowhead-idle { fill: rgb(var(--cg-idle) / .45); }
+.cg-arrowhead-live { fill: rgb(var(--cg-work)); }
+@media (prefers-reduced-motion: reduce) { .cg-st-work .cg-card-box { animation: none; } }
+
+.cg-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; padding: 0 12px 4px; font-size: 11px; }
+.cg-crumb { color: rgb(var(--c-primary)); padding: 1px 4px; border-radius: 4px; }
+.cg-crumb:hover { background: rgb(var(--c-surface-container)); }
+.cg-crumb-sep { color: rgb(var(--c-outline-variant)); }
+.cg-crumb-here { color: rgb(var(--c-on-surface)); font-weight: 600; padding: 1px 4px; }
+.cg-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 2px 12px 6px; }
+.cg-stat { display: flex; flex-direction: column; min-width: 0; }
+.cg-stat b { font-size: 16px; line-height: 1.1; color: rgb(var(--c-on-surface)); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cg-stat b small { font-size: 11px; color: rgb(var(--c-outline-variant)); font-weight: 400; }
+.cg-stat span { font-size: 9.5px; color: rgb(var(--c-outline-variant)); line-height: 1.2; }
+.cg-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; padding: 0 12px 6px; font-size: 10px; color: rgb(var(--c-on-surface-variant)); }
+.cg-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.cg-legend-note { color: rgb(var(--c-outline-variant)); }
+.cg-sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.cg-sw-idle { background: rgb(var(--cg-idle) / .6); }
+.cg-sw-done { background: rgb(var(--cg-done)); }
+.cg-sw-wait { background: rgb(var(--cg-wait)); }
+.cg-sw-work { background: rgb(var(--cg-work)); }
+.cg-opts {
+  position: absolute; right: 8px; top: 100%; z-index: 20; display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; min-width: 13rem; font-size: 12px; color: rgb(var(--c-on-surface));
+  background: rgb(var(--c-surface-container)); border: 1px solid rgb(var(--c-outline-variant) / .25);
+  border-radius: 8px; box-shadow: 0 8px 24px rgb(var(--c-shadow) / .35);
+}
+.cg-opts label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.cg-opts small { color: rgb(var(--c-outline-variant)); }
+.cg-activity {
+  width: 16rem; flex-shrink: 0; overflow-y: auto; padding: 16px 18px; border-left: 1px solid rgb(var(--c-outline-variant) / .15);
+  font-size: 13px; color: rgb(var(--c-on-surface));
+}
+.cg-activity h4 { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: rgb(var(--c-outline-variant)); margin: 0 0 8px; }
+.cg-activity h4:not(:first-child) { margin-top: 20px; }
+.cg-activity ul { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cg-activity li { display: flex; align-items: center; gap: 8px; color: rgb(var(--cg-work)); }
+.cg-activity li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cg-muted { color: rgb(var(--c-outline-variant)); font-size: 11.5px; line-height: 1.45; }
+#side-nav-panel:fullscreen .cg-stats { max-width: 40rem; }
+#side-nav-panel:fullscreen .cg-stat b { font-size: 24px; }
+#side-nav-panel:fullscreen .cg-legend { font-size: 11px; }

@@ -101,6 +101,12 @@ class _ExitsAtStart(_Docker):
         return super().__call__(*args, timeout=timeout)
 
 
+@pytest.fixture(autouse=True)
+def _no_discovery(monkeypatch):
+    """Listing builds records unknown running servers; keep that off the real docker."""
+    monkeypatch.setattr(alembic_tools, "adopt_unclaimed_servers", lambda: [])
+
+
 @pytest.fixture
 def build(monkeypatch, tmp_path):
     monkeypatch.setattr(alembic_tools, "LOG_DIR", tmp_path)
@@ -108,10 +114,12 @@ def build(monkeypatch, tmp_path):
     monkeypatch.setattr(alembic_tools, "_SERVE_SETTLE_SECONDS", 0)
     monkeypatch.delenv("A2A_HOST", raising=False)
 
-    def serve_new_container_must_not_run(job, ref):
+    def serve_new_container_must_not_run(job, ref, port=None):
         raise AssertionError("a new container was started")
 
     monkeypatch.setattr(alembic_tools, "_serve_new_container", serve_new_container_must_not_run)
+    # The container's S3 settings match .env unless a test says otherwise.
+    monkeypatch.setattr(alembic_tools, "_s3_settings_changed", lambda name, repo_url: [])
 
     def make(docker, **meta):
         record = {"job_id": _JOB, "repo_url": _REPO, "status": "done", "container": _SERVE, **meta}
@@ -194,6 +202,32 @@ def test_a_catalogue_removal_that_failed_is_retried_by_the_next_stop(build, monk
     assert seen["removed"] == ["id-1"]
     assert docker.calls.count(("stop", _SERVE)) == 1  # already stopped: only the catalogue is retried
     assert meta().get("registered") is False
+
+
+def test_removing_the_container_keeps_the_image_and_other_builds_containers(build, monkeypatch):
+    docker = _Docker(images={f"alembic-tool:{_JOB}": _OWN},
+                     containers={**_running(), "alembic-serve-gget-hub": {"image_id": _OWN, "running": True}})
+    meta = build(docker, registered=True, server_id="id-1")
+    seen = _catalogue(monkeypatch)
+
+    res = alembic_tools.remove_build_container(_JOB)
+
+    assert res["ok"] is True and res["removed_container"] == _SERVE
+    assert _SERVE not in docker.containers
+    assert docker.containers["alembic-serve-gget-hub"]["running"] is True
+    assert not any(call[0] == "rmi" for call in docker.calls)
+    assert seen["removed"] == ["id-1"]
+    assert meta().get("registered") is False
+
+
+def test_removing_a_missing_container_does_nothing(build, monkeypatch):
+    docker = _Docker(images={f"alembic-tool:{_JOB}": _OWN})
+    build(docker)
+
+    res = alembic_tools.remove_build_container(_JOB)
+
+    assert res["ok"] is False and "no container" in res["error"]
+    assert not any(call[0] in ("stop", "rm") for call in docker.calls)
 
 
 # ── start / restart ──────────────────────────────────────────────────────────
@@ -528,3 +562,98 @@ def test_clearing_runs_in_the_background_and_the_list_reports_it(monkeypatch):
 
     assert accepted.status_code == 202
     assert cleanup["result"]["removed"] == ["gget-failed"]
+
+
+def test_the_builds_list_records_unknown_running_servers_before_listing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(alembic_tools, "adopt_unclaimed_servers", lambda: calls.append("adopt") or [])
+    monkeypatch.setattr(alembic_tools, "web_list_builds", lambda: calls.append("list") or [])
+    monkeypatch.setattr(alembic_tools, "docker_inventory",
+                        lambda: {"images": {}, "tags": {}, "containers": {}})
+
+    assert _client().get("/api/builds").status_code == 200
+    assert calls == ["adopt", "list"]
+
+
+class _UntaggedImage(_Docker):
+    """A daemon that also answers `docker image inspect` for images with no tag left."""
+
+    def __init__(self, sizes, **kw):
+        super().__init__(**kw)
+        self.sizes = sizes
+
+    def __call__(self, *args, timeout=120):
+        if args[:2] == ("image", "inspect") and "{{.Size}}" in args[3]:
+            self.calls.append(args)
+            rows = [f"{i}|{self.sizes[i]}" for i in args[4:] if i in self.sizes]
+            return subprocess.CompletedProcess(args, 0 if rows else 1, "\n".join(rows), "")
+        return super().__call__(*args, timeout=timeout)
+
+
+def test_a_server_whose_image_lost_its_tag_keeps_its_controls(build, monkeypatch):
+    """A newer build of mordred took alembic-tool:mordred. `docker images` stopped
+    listing the old image, and its running server showed "no image" and no buttons."""
+    docker = _UntaggedImage({_OTHER: 2509883259},
+                            containers={_SERVE: {"image_id": _OTHER, "running": True}})
+    build(docker, image_id=_OTHER)
+    monkeypatch.setattr(build_api.shutil, "which", lambda name: "/usr/bin/docker")
+
+    [listed] = build_api._annotate_container_status(alembic_tools.web_list_builds())
+
+    assert (listed["runnable"], listed["container_active"], listed["image_size"]) == (True, True, "2.51GB")
+    assert alembic_tools.clear_non_runnable_builds()["removed"] == []
+
+
+# ── a stopped container whose S3 settings are out of date ───────────────────
+
+def test_start_replaces_a_container_whose_s3_settings_changed_and_keeps_its_port(build, monkeypatch):
+    """.env moved from a local MinIO to the shared vault; docker start brought the
+    stopped container back with the endpoint and keys it was created with."""
+    docker = _Docker(images={f"alembic-tool:{_JOB}": _OWN}, containers=_running(running=False),
+                     ports={_SERVE: "25280"})
+    meta = build(docker, mcp_url="http://localhost:25280/mcp")
+    _catalogue(monkeypatch)
+    monkeypatch.setattr(alembic_tools, "_s3_settings_changed",
+                        lambda name, repo_url: ["S3__ENDPOINT_URL", "S3__SECRET_KEY"])
+    monkeypatch.setattr(alembic_tools, "_container_host_port", lambda name: "25280")
+    served = []
+
+    def serve_new(job, ref, port=None):
+        assert _SERVE not in docker.containers  # removed first, so its port is free
+        served.append((ref, port))
+        docker.containers["alembic-serve-gget-fresh1"] = {"image_id": _OWN, "running": True}
+        docker.ports["alembic-serve-gget-fresh1"] = port
+        return "alembic-serve-gget-fresh1", ""
+
+    monkeypatch.setattr(alembic_tools, "_serve_new_container", serve_new)
+
+    res = alembic_tools.start_build_server(_JOB)
+
+    assert res["ok"] is True
+    assert ("start", _SERVE) not in docker.calls
+    assert served == [(f"alembic-tool:{_JOB}", "25280")]
+    assert meta()["container"] == "alembic-serve-gget-fresh1"
+    assert meta()["mcp_url"] == "http://localhost:25280/mcp"
+    log = (alembic_tools.LOG_DIR / f"{_JOB}.log").read_text(encoding="utf-8")
+    assert "S3 settings changed (S3__ENDPOINT_URL, S3__SECRET_KEY)" in log
+
+
+def test_s3_settings_are_compared_with_keys_as_fingerprints(monkeypatch):
+    fp = alembic_tools._s3_fingerprint
+    monkeypatch.setattr(alembic_tools, "_container_env", lambda name: {
+        "S3__ENDPOINT_URL": "http://host.docker.internal:19000", "S3__BUCKET_NAME": "agent-vault",
+        "S3__SECRET_KEY": "old-secret", "ENDPOINT_URL": ""})
+    expected = {"S3__ENDPOINT_URL": "https://vault.example.org", "S3__BUCKET_NAME": "agent-vault",
+                "S3__SECRET_KEY": fp("S3__SECRET_KEY", "new-secret"), "ENDPOINT_URL": "",
+                "S3_REGION": ""}
+    monkeypatch.setattr(alembic_tools, "_expected_s3_settings", lambda repo_url: expected)
+
+    assert alembic_tools._s3_settings_changed("c", _REPO) == ["S3__ENDPOINT_URL", "S3__SECRET_KEY"]
+
+    expected.update({"S3__ENDPOINT_URL": "http://host.docker.internal:19000",
+                     "S3__SECRET_KEY": fp("S3__SECRET_KEY", "old-secret")})
+    assert alembic_tools._s3_settings_changed("c", _REPO) == []
+
+    monkeypatch.setattr(alembic_tools, "_expected_s3_settings", lambda repo_url: None)
+    assert alembic_tools._s3_settings_changed("c", _REPO) == []  # unreadable: keep the container
+    assert "new-secret" not in fp("S3__SECRET_KEY", "new-secret")

@@ -1,12 +1,47 @@
 import asyncio
 import importlib
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from CoScientist.web.app import APP_NAME, create_app
 
 web_app = importlib.import_module("CoScientist.web.app")
+
+
+def test_request_input_keeps_the_first_hitl_decision():
+    key = ("user_a", "session_a")
+    wait_event = asyncio.Event()
+    recorded = []
+
+    class _Handler:
+        @staticmethod
+        def resolve_request(*_args):
+            return False
+
+    runtime = SimpleNamespace(
+        hitl_handler=_Handler(),
+        pending_hitl={
+            "request-1": {
+                "event": wait_event,
+                "response": None,
+                "session_key": key,
+            }
+        },
+        record_event=lambda session_key, event: recorded.append((session_key, event)),
+    )
+
+    web_app._handle_hitl_response(runtime, key, {
+        "request_id": "request-1", "action": "approve", "approved": True,
+    })
+    web_app._handle_hitl_response(runtime, key, {
+        "request_id": "request-1", "action": "reject", "approved": False,
+    })
+
+    assert runtime.pending_hitl["request-1"]["response"]["approved"] is True
+    assert wait_event.is_set()
+    assert len(recorded) == 1
 
 
 def _create_user(client, nickname):
@@ -113,6 +148,28 @@ def test_finished_run_cannot_discard_a_new_owner():
 
         new_owner.cancel()
         await asyncio.gather(new_owner, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_settings_invalidation_rebuilds_the_cached_tree_without_replacing_manager():
+    async def scenario():
+        runtime = web_app.WebRuntime()
+        key = ("user_a", "session_a")
+        rebuilt = []
+
+        class StubManager:
+            async def rebuild_agent_tree(self):
+                rebuilt.append(True)
+
+        manager = StubManager()
+        runtime.registry.require_session = lambda *_: None
+        runtime.managers[key] = manager
+
+        assert runtime.invalidate_agent_trees() == 1
+        assert await runtime.get_manager(*key) is manager
+        assert rebuilt == [True]
+        assert key not in runtime.stale_manager_trees
 
     asyncio.run(scenario())
 
@@ -484,3 +541,25 @@ def test_truncated_tool_result_is_stashed_and_fetchable_on_demand():
             f"/api/users/{user['id']}/sessions/{session['id']}/tool-activity/no-such-call"
         )
         assert missing.status_code == 404
+
+
+
+def test_old_sessions_can_be_hidden_at_once_and_shown_again():
+    app = create_app()
+    with TestClient(app) as client:
+        user = _create_user(client, "Gleb")
+        old = _create_session(client, user["id"], "Old run")
+        current = _create_session(client, user["id"], "Current")
+        base = f"/api/users/{user['id']}/sessions"
+
+        response = client.post(f"{base}/hide-old", json={"keep": [current["id"]]})
+        assert response.status_code == 200
+        assert response.json() == {"hidden": 1}
+        listed = {item["id"]: item.get("hidden", False) for item in client.get(base).json()["sessions"]}
+        assert listed == {old["id"]: True, current["id"]: False}
+
+        assert client.post(f"{base}/hide-old", json={"keep": "nope"}).status_code == 400
+        assert client.post("/api/users/user_missing/sessions/hide-old", json={}).status_code == 404
+
+        assert client.post(f"{base}/unhide-all").json() == {"shown": 1}
+        assert not any(item.get("hidden") for item in client.get(base).json()["sessions"])

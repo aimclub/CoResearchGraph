@@ -1,0 +1,67 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"name_norm\": \"глицерин\",\n  \"name_raw\": \"Глицерин ч\",\n  \"similarity\": 1.0,\n  \"supplier\": \"АльфаФТО\",\n  \"best_price\": \"151.87\",\n  \"price_currency\": \"RUB\",\n  \"pack_qty\": \"0\",\n  \"pack_unit\": \"bulk\",\n  \"unit_price\": \"151.87\",\n  \"purity_grade\": \"ч.\",\n  \"offer_count\": 9\n}",
+      "annotations": null,
+      "meta": null
+    },
+    {
+      "type": "text",
+      "text": "{\n  \"name_norm\": \"глицерин (имп)\",\n  \"name_raw\": \"Глицерин (имп)\",\n  \"similarity\": 0.6923077,\n  \"supplier\": \"Лэнреактив\",\n  \"best_price\": \"64000.00\",\n  \"price_currency\": \"RUB\",\n  \"pack_qty\": \"250\",\n  \"pack_unit\": \"kg\",\n  \"unit_price\": \"256.0000\",\n  \"purity_grade\": null,\n  \"offer_count\": 2\n}",
+      "annotations": null,
+      "meta": null
+    },
+    {
+      "type": "text",
+      "text": "{\n  \"name_norm\": \"глицерин 98,50%\",\n  \"name_raw\": \"ГЛИЦЕРИН 98,50%\",\n  \"similarity\": 0.6,\n  \"supplier\": \"НеваРеактив\",\n  \"best_price\": \"413.00\",\n  \"price_currency\": \"RUB\",\n  \"pack_qty\": \"12.500\",\n  \"pack_unit\": \"kg\",\n  \"unit_price\": \"413.00\",\n  \"purity_grade\": \"ч.\",\n  \"offer_count\": 2\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "result": [
+      {
+        "name_norm": "глицерин",
+        "name_raw": "Глицерин ч",
+        "similarity": 1.0,
+        "supplier": "АльфаФТО",
+        "best_price": "151.87",
+        "price_currency": "RUB",
+        "pack_qty": "0",
+        "pack_unit": "bulk",
+        "unit_price": "151.87",
+        "purity_grade": "ч.",
+        "offer_count": 9
+      },
+      {
+        "name_norm": "глицерин (имп)",
+        "name_raw": "Глицерин (имп)",
+        "similarity": 0.6923077,
+        "supplier": "Лэнреактив",
+        "best_price": "64000.00",
+        "price_currency": "RUB",
+        "pack_qty": "250",
+        "pack_unit": "kg",
+        "unit_price": "256.0000",
+        "purity_grade": null,
+        "offer_count": 2
+      },
+      {
+        "name_norm": "глицерин 98,50%",
+        "name_raw": "ГЛИЦЕРИН 98,50%",
+        "similarity": 0.6,
+        "supplier": "НеваРеактив",
+        "best_price": "413.00",
+        "price_currency": "RUB",
+        "pack_qty": "12.500",
+        "pack_unit": "kg",
+        "unit_price": "413.00",
+        "purity_grade": "ч.",
+        "offer_count": 2
+      }
+    ]
+  },
+  "isError": false
+}

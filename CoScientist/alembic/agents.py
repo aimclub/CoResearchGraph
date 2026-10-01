@@ -10,6 +10,8 @@ import asyncio
 
 import litellm
 
+from CoScientist.execution_control import before_model_attempt
+
 litellm.suppress_debug_info = True
 
 from loguru import logger
@@ -19,7 +21,7 @@ from google.adk.models.lite_llm import LiteLlm
 from alembic import config
 from alembic.tools import (
     bash, bash_env, check_venv_compat, clone_repo, invoke_tool_function,
-    read_file, read_output_file, run_tool_tests, search, setup_venv,
+    read_file, read_output_file, run_tool_tests, search, set_sample_args, setup_venv,
     update_file, write_file, write_report,
 )
 from alembic.instructions import (
@@ -42,6 +44,15 @@ class ResilientLiteLlm(LiteLlm):
         while True:
             produced = False
             try:
+                effective_model = (
+                    getattr(llm_request, "model", None)
+                    or getattr(self, "model", "")
+                    or config.MODEL
+                )
+                await before_model_attempt(
+                    "alembic_adk_litellm",
+                    metadata={"model": effective_model, "retry": attempt},
+                )
                 async for resp in super().generate_content_async(llm_request, stream=stream):
                     produced = True
                     yield resp
@@ -85,7 +96,9 @@ explorer_agent = Agent(
     name="explorer",
     model=_model(),
     description="Clones a scientific GitHub repo and reports its functionality, environment needs, and proposed tools.",
-    instruction=_const(explorer_instruction),
+    # The tool count comes from ALEMBIC_MAX_TOOLS (config.explorer_tool_count_rule).
+    instruction=_const(explorer_instruction.replace(
+        "__TOOL_COUNT_RULE__", config.explorer_tool_count_rule())),
     tools=[clone_repo, read_file, bash, search, write_report],
 )
 
@@ -111,7 +124,7 @@ debugger_agent = Agent(
     description="Fixes a batch of reported failures — installs missing deps or edits tool/test files — and re-runs them to confirm.",
     instruction=_const(debugger_instruction),
     tools=[read_output_file, update_file, bash, bash_env,
-           invoke_tool_function, run_tool_tests],
+           invoke_tool_function, run_tool_tests, set_sample_args],
 )
 
 wrapper_agent = Agent(

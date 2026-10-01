@@ -1,0 +1,59 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"items\": [\n    {\n      \"input\": \"додеканол-1\",\n      \"kind\": \"name\",\n      \"canonical_smiles\": null,\n      \"inchikey\": null,\n      \"formula\": null,\n      \"molar_mass\": null,\n      \"method\": null,\n      \"confidence\": null,\n      \"translated_from\": null,\n      \"error\": \"unresolved\",\n      \"hint\": \"ни словарь, ни OPSIN, ни PubChem/CIR не знают такого имени; помогут английское систематическое имя или готовый SMILES\"\n    },\n    {\n      \"input\": \"хлорсульфоновая кислота\",\n      \"kind\": \"name\",\n      \"canonical_smiles\": null,\n      \"inchikey\": null,\n      \"formula\": null,\n      \"molar_mass\": null,\n      \"method\": null,\n      \"confidence\": null,\n      \"translated_from\": null,\n      \"error\": \"unresolved\",\n      \"hint\": \"ни словарь, ни OPSIN, ни PubChem/CIR не знают такого имени; помогут английское систематическое имя или готовый SMILES\"\n    },\n    {\n      \"input\": \"гидроксид натрия\",\n      \"kind\": \"name\",\n      \"canonical_smiles\": \"[Na+].[OH-]\",\n      \"inchikey\": \"HEMHJVSKTPXQMS-UHFFFAOYSA-M\",\n      \"formula\": \"HNaO\",\n      \"molar_mass\": \"39.997\",\n      \"method\": \"rule_ru_en\",\n      \"confidence\": 0.85,\n      \"translated_from\": \"sodium hydroxide\",\n      \"error\": null,\n      \"hint\": null\n    }\n  ],\n  \"by_method\": {\n    \"unresolved\": 2,\n    \"rule_ru_en\": 1\n  }\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "items": [
+      {
+        "input": "додеканол-1",
+        "kind": "name",
+        "canonical_smiles": null,
+        "inchikey": null,
+        "formula": null,
+        "molar_mass": null,
+        "method": null,
+        "confidence": null,
+        "translated_from": null,
+        "error": "unresolved",
+        "hint": "ни словарь, ни OPSIN, ни PubChem/CIR не знают такого имени; помогут английское систематическое имя или готовый SMILES"
+      },
+      {
+        "input": "хлорсульфоновая кислота",
+        "kind": "name",
+        "canonical_smiles": null,
+        "inchikey": null,
+        "formula": null,
+        "molar_mass": null,
+        "method": null,
+        "confidence": null,
+        "translated_from": null,
+        "error": "unresolved",
+        "hint": "ни словарь, ни OPSIN, ни PubChem/CIR не знают такого имени; помогут английское систематическое имя или готовый SMILES"
+      },
+      {
+        "input": "гидроксид натрия",
+        "kind": "name",
+        "canonical_smiles": "[Na+].[OH-]",
+        "inchikey": "HEMHJVSKTPXQMS-UHFFFAOYSA-M",
+        "formula": "HNaO",
+        "molar_mass": "39.997",
+        "method": "rule_ru_en",
+        "confidence": 0.85,
+        "translated_from": "sodium hydroxide",
+        "error": null,
+        "hint": null
+      }
+    ],
+    "by_method": {
+      "unresolved": 2,
+      "rule_ru_en": 1
+    }
+  },
+  "isError": false
+}

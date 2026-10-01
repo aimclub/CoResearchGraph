@@ -11,7 +11,9 @@ renderActivityRail();
 // Mount the live status indicator right under the chat feed.
 StatusIndicator.mount(document.getElementById('status-indicator'));
 
-applySideNavState();
+initSideNav();
+initSideRail();
+refreshPlanGate();
 bootstrap();
 loadSettings();
 connectDatasetLogsSSE();

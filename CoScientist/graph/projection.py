@@ -6,7 +6,7 @@ context — reproducibility is an evaluation metric. See docs/execution_graph.md
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 _MAX_ITEMS = 12
@@ -230,7 +230,11 @@ def turns(full: Dict[str, Any]) -> Dict[str, Any]:
     turn is, so recovering it from time is exact wherever the ids are silent.
     """
     nodes = {n["id"]: n for n in full.get("nodes", [])}
-    order = {"goal": 0, "tool_call": 1, "result": 2}
+    # A `decision` sits with the tool calls: it is something an agent did in the
+    # turn, with a start, an end and a verdict. The Experiment Module records
+    # its plan as one, and a trace that skipped it showed a run executing a plan
+    # the reader could not see.
+    order = {"goal": 0, "tool_call": 1, "decision": 1, "result": 2}
 
     members = [n for n in nodes.values() if n.get("kind") in order]
     members.sort(key=lambda n: (n.get("t_start") or 0.0, order[n["kind"]]))
@@ -245,7 +249,7 @@ def turns(full: Dict[str, Any]) -> Dict[str, Any]:
         members.sort(key=lambda n: (n.get("t_start") or 0.0, order[n["kind"]]))
         goal = next((m for m in members if m["kind"] == "goal"), None)
         result = next((m for m in members if m["kind"] == "result"), None)
-        calls = [m for m in members if m["kind"] == "tool_call"]
+        calls = [m for m in members if m["kind"] in ("tool_call", "decision")]
         started = min((m.get("t_start") or 0.0) for m in members)
         ended = max((m.get("t_end") or m.get("t_start") or 0.0) for m in members)
         out.append({
@@ -284,7 +288,8 @@ def _call_record(c: Dict[str, Any]) -> Dict[str, Any]:
 
 def execution_tree(full: Dict[str, Any],
                    turn: Optional[str] = None,
-                   collapse_tools: bool = True) -> Dict[str, Any]:
+                   collapse_tools: bool = True,
+                   scope: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
     """The call graph of ONE user request, ready to draw left to right.
 
     A session's worth of requests on one canvas was the wrong unit: lanes
@@ -364,7 +369,7 @@ def execution_tree(full: Dict[str, Any],
     _number_stages(nodes)
     for node in nodes.values():
         if node.get("kind") in _AGENTS:
-            node["artifacts"] = _artifacts_of(node)
+            node["artifacts"] = _artifacts_of(node, scope)
 
     children: Dict[str, List[str]] = {}
     for edge in edges:
@@ -544,29 +549,49 @@ def _number_stages(nodes: Dict[str, Dict[str, Any]]) -> None:
         node["runs"] = runs[name]
 
 
-_LINK = re.compile(r"(?:s3://|https?://)[^\s\"'<>()\[\]]+")
+_LINK = re.compile(r"(?:s3://|https?://)[^\s\"'`<>()\[\]]+")
 _SERVICE_PATH = re.compile(r"(?i)/mcp/?$")
 _MAX_ARTIFACTS = 40
 
 
-def _artifacts_of(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _artifacts_of(
+    agent: Dict[str, Any], scope: Optional[Tuple[str, str]] = None
+) -> List[Dict[str, Any]]:
     """What the agent left behind: files its tools produced (the S3 references
     recorded on each call) and the files and links its report points at.
     Inputs are not artifacts, and links inside tool results are not either —
     a search result is forty links and none of them is the agent's work. A
     tool server address (http://host:7338/mcp) is not one either: an agent
-    that echoes the endpoint it called did not produce a file."""
+    that echoes the endpoint it called did not produce a file.
+
+    Each entry gains an ``href``: ``uri`` stays the durable reference, which is
+    what a reader should see, while ``href`` is what the anchor points at. A
+    ``file`` entry used to have no href at all and was drawn as plain text —
+    non-clickable by construction, even though ``/api/artifact/`` could have
+    served it all along.
+    """
+    from CoScientist.utils.report_links import resolve_ref
+
     seen, out = set(), []
 
     def add(uri: str, tool: Optional[str]) -> None:
-        uri = uri.rstrip(".,;:")
+        uri = uri.rstrip(".,;:`")          # a link written inside markdown code keeps its backtick
         if not uri or uri in seen or len(out) >= _MAX_ARTIFACTS:
             return
         if not uri.startswith("s3://") and _SERVICE_PATH.search(urlsplit(uri).path):
             return
+        # A value cut short by `_short()` carries its ellipsis into the regex
+        # match. That is a link that can never resolve, and listing it as an
+        # artifact only tells the reader something exists that does not.
+        if "…" in uri:
+            return
         seen.add(uri)
-        out.append({"uri": uri, "kind": "file" if uri.startswith("s3://") else "link",
-                    "tool": tool})
+        out.append({
+            "uri": uri,
+            "kind": "file" if uri.startswith(("s3://", "cos-artifact:")) else "link",
+            "tool": tool,
+            "href": resolve_ref(uri, scope) or "",
+        })
 
     for call in agent.get("calls") or []:
         for uri in call.get("output_files") or []:
@@ -646,6 +671,21 @@ _PHASE_OF_AGENT = {
     "McpBuilderAgent": "experiment",
     "ToolPipelineAgent": "experiment",
     "ToolPreparerAgent": "experiment",
+    # The Experiment Module runs as one contiguous stretch — discover, plan,
+    # execute, review — so its stages share the band rather than scattering the
+    # module across three of them. An agent nobody names here inherits the phase
+    # of the next one that is named, which is how these read before.
+    "ExperimentModuleAgent": "experiment",
+    "ExperimentPlannerAgent": "experiment",
+    "ExperimentExecutorAgent": "experiment",
+    "ExperimentResultReviewAgent": "experiment",
+    "ParallelToolSearcherAgent": "experiment",
+    "LocalToolsExtractorAgent": "experiment",
+    "ToolRetrieverAgent": "experiment",
+    "ToolReranker": "experiment",
+    "ToolWebSearcherAgent": "experiment",
+    "FullSetToolReranker": "experiment",
+    "WebToolsDeployerAgent": "experiment",
 
     "ResultAggregatorAgent": "report",
 }

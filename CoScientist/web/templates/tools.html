@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>CoScientist — каталог MCP-инструментов</title>
+  <link rel="stylesheet" href="/static/css/tool_catalog.css">
+  <script defer src="/static/js/tool_catalog.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="CoScientist">CoScientist<span>.</span></a>
+    <span id="catalog-state" class="state-pill" role="status">Загрузка</span>
+    <div class="top-actions">
+      <button id="language-button" class="button ghost" type="button" aria-label="Change language">EN</button>
+      <button id="refresh-button" class="button primary" type="button">Обновить сейчас</button>
+      <a class="button ghost" href="/">К приложению</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <header class="page-heading">
+        <p class="eyebrow">MCP · Model Context Protocol</p>
+        <h1 id="page-title">Каталог инструментов</h1>
+        <p id="page-lede" class="lede">Подключённые научные инструменты CoScientist: какие задачи они решают, откуда доступны и когда их список был обновлён.</p>
+        <p id="checked-at" class="checked-at"></p>
+      </header>
+
+      <div id="notice" aria-live="polite"></div>
+
+      <section class="metrics" aria-label="Краткая статистика">
+        <article class="metric hero">
+          <span id="metric-tools" class="metric-value">—</span>
+          <span id="metric-tools-label" class="metric-label">актуальных инструментов</span>
+        </article>
+        <article class="metric">
+          <span id="metric-servers" class="metric-value">—</span>
+          <span id="metric-servers-label" class="metric-label">серверов отвечают</span>
+        </article>
+        <article class="metric">
+          <span id="metric-categories" class="metric-value">—</span>
+          <span id="metric-categories-label" class="metric-label">предметных категорий</span>
+        </article>
+        <article class="metric attention">
+          <span id="metric-attention" class="metric-value">—</span>
+          <span id="metric-attention-label" class="metric-label">требуют внимания</span>
+        </article>
+      </section>
+
+      <section id="featured-section" class="section" hidden>
+        <div id="featured-card"></div>
+      </section>
+
+      <section class="section catalogue-section">
+        <div class="section-heading">
+          <div>
+            <p id="catalog-eyebrow" class="eyebrow">Все подключения</p>
+            <h2 id="catalog-heading">Инструменты</h2>
+          </div>
+          <span id="visible-count" class="result-count"></span>
+        </div>
+
+        <div class="filters" role="search">
+          <label class="search-field">
+            <span id="search-label">Поиск</span>
+            <input id="search-input" type="search" placeholder="Название, задача или сервер" autocomplete="off">
+          </label>
+          <label>
+            <span id="category-label">Категория</span>
+            <select id="category-filter"><option value="">Все категории</option></select>
+          </label>
+          <label>
+            <span id="server-label">Сервер</span>
+            <select id="server-filter"><option value="">Все серверы</option></select>
+          </label>
+          <label>
+            <span id="availability-label">Доступность</span>
+            <select id="availability-filter">
+              <option value="">Все инструменты</option>
+              <option value="available">Доступные</option>
+              <option value="attention">Требуют внимания</option>
+            </select>
+          </label>
+          <label>
+            <span id="role-label">Назначение</span>
+            <select id="role-filter">
+              <option value="">Все назначения</option>
+              <option value="scientific">Научные</option>
+              <option value="supporting">Служебные</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="tools-grid" class="tool-grid" aria-live="polite"></div>
+        <p id="empty-result" class="empty" hidden>По заданным фильтрам инструменты не найдены.</p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

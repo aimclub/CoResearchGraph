@@ -1,0 +1,140 @@
+name: Deploy web UI (ext host)
+
+# The ext host serves three deployments. Branch main feeds port 8000. Branch
+# dev_1 feeds two copies, on port 8001 and 8002.
+#
+# The incumbent host keeps its own workflow, deploy-web.yml, which serves main
+# on port 7000. The two files are independent on purpose. They deploy different
+# machines, different directories and different .env files.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dev_1]
+
+# A group of its own. The incumbent host must not queue behind this one, and a
+# constant group still stops two runs of this workflow from overlapping. The
+# deployments here are worktrees that share one object store.
+concurrency:
+  group: deploy-web-ext
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # The ext label is what separates this runner from the coscientist-vm one.
+    runs-on: [self-hosted, coscientist-ext]
+    # A job whose labels match no online runner stays queued for hours. Fail
+    # instead, so a stopped runner is visible.
+    timeout-minutes: 30
+    steps:
+      - name: Select the deploy targets for this branch
+        # A job-level env: block cannot expand $HOME or run id(1). Resolve the
+        # targets here, put uv on PATH, and set the user-bus variables. These
+        # land in the environment of every later step.
+        #
+        # One branch can feed more than one deployment. Each field is
+        # directory:service:port:env-file. Branch dev_1 serves two copies.
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            main)
+              targets="coscientist_main/CoScientist:coscientist-main:8000:main.env"
+              ;;
+            dev_1)
+              targets="coscientist_dev:coscientist-dev:8001:dev.env coscientist_miflu:coscientist-miflu:8002:miflu.env"
+              ;;
+            *)
+              echo "No deploy target is defined for ref '$GITHUB_REF_NAME'."
+              exit 1
+              ;;
+          esac
+          {
+            echo "DEPLOY_TARGETS=$targets"
+            echo "DEPLOY_REF=$GITHUB_REF_NAME"
+            echo "XDG_RUNTIME_DIR=/run/user/$(id -u)"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus"
+          } >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "ref $GITHUB_REF_NAME feeds: $targets"
+
+      - name: Fetch once and resolve the commit
+        # All worktrees share one object store, so a single fetch updates every
+        # one. Resolve the commit now and deploy that exact SHA to each target.
+        # A push between two targets then cannot split them onto two commits.
+        run: |
+          set -euo pipefail
+          cd "$HOME/coscientist_main/CoScientist"
+          rm -f "$(git rev-parse --git-common-dir)/packed-refs.lock"
+          git fetch --prune origin
+          sha="$(git rev-parse "origin/$DEPLOY_REF")"
+          echo "DEPLOY_SHA=$sha" >> "$GITHUB_ENV"
+          git log -1 --format="target commit %h %s" "$sha"
+
+      - name: Deploy each target
+        # Every command carries an explicit || return, so the exit status of a
+        # step never depends on set -e inside a function. A failure on one
+        # target is recorded and the next target still gets the new code.
+        run: |
+          set -uo pipefail
+
+          health() {
+            svc="$1"; port="$2"
+            i=1
+            while [ "$i" -le 30 ]; do
+              if curl -fsS "http://127.0.0.1:$port/" >/dev/null 2>&1; then
+                echo "  $svc is healthy on port $port after $i tries"
+                return 0
+              fi
+              sleep 2
+              i=$((i + 1))
+            done
+            echo "  $svc did not answer on port $port"
+            systemctl --user status "$svc" --no-pager || true
+            journalctl --user -u "$svc" -n 80 --no-pager || true
+            return 1
+          }
+
+          deploy_one() {
+            dir="$1"; svc="$2"; port="$3"; envf="$4"
+            path="$HOME/$dir"
+            echo "::group::$svc ($dir, port $port)"
+            cd "$path" || { echo "  no such directory: $path"; echo "::endgroup::"; return 1; }
+            # The deployments are worktrees, so .git is a file and the real path
+            # comes from rev-parse. Never run gc or fsck: the store is shared.
+            rm -f "$(git rev-parse --git-dir)/index.lock"
+            # Detach rather than check out the branch. A local branch can only be
+            # checked out in one worktree, and two copies track the same branch.
+            git checkout --detach "$DEPLOY_SHA" || { echo "  checkout failed"; echo "::endgroup::"; return 1; }
+            uv sync --frozen || { echo "  uv sync failed"; echo "::endgroup::"; return 1; }
+            ln -sfn "$HOME/.config/coscientist/$envf" "$path/.env" || { echo "  link of $envf failed"; echo "::endgroup::"; return 1; }
+            systemctl --user restart "$svc" || { echo "  restart failed"; echo "::endgroup::"; return 1; }
+            health "$svc" "$port" || { echo "::endgroup::"; return 1; }
+            echo "::endgroup::"
+            return 0
+          }
+
+          failed=""
+          for t in $DEPLOY_TARGETS; do
+            # Split dir:service:port:env-file with parameter expansion. A
+            # heredoc here would depend on the indentation of this block.
+            rest="$t"
+            dir="${rest%%:*}";  rest="${rest#*:}"
+            svc="${rest%%:*}";  rest="${rest#*:}"
+            port="${rest%%:*}"; envf="${rest#*:}"
+            # A three-field target leaves a non-numeric port, so check the port
+            # digits as well as the empty fields and a leftover colon.
+            badport=""
+            case "$port" in ""|*[!0-9]*) badport=1 ;; esac
+            if [ -z "$dir" ] || [ -z "$svc" ] || [ -z "$envf" ] \
+               || [ -n "$badport" ] || [ "$envf" != "${envf#*:}" ]; then
+              echo "malformed target '$t', expected dir:service:port:env-file"
+              failed="$failed ${svc:-$t}"
+              continue
+            fi
+            deploy_one "$dir" "$svc" "$port" "$envf" || failed="$failed $svc"
+          done
+
+          if [ -n "$failed" ]; then
+            echo "these deployments failed:$failed"
+            exit 1
+          fi
+          echo "every deployment is up to date at $DEPLOY_SHA"

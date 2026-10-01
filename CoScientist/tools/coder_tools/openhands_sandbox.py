@@ -1698,6 +1698,103 @@ def stop_sandbox_session(
 # Workspace access
 # ---------------------------------------------------------------------------
 
+#: The sandbox only keeps a container alive while the task runs and for a
+#: short cooldown after; ``/files`` answers 409 for anything else. Browsing is
+#: therefore offered for these states and refused, with the reason, for the rest.
+BROWSABLE_STATUSES = ("running", "cooldown", "soft_stopping")
+
+
+def _workspace_entry(
+    entry: Dict[str, Any], *, bound: Optional[str], seen: Dict[str, Dict[str, Any]]
+) -> None:
+    """Fold one task record from ``/status`` into the workspace list."""
+    sandbox_id = str(entry.get("task_id") or "").strip()
+    if not sandbox_id:
+        return
+    status = str(entry.get("status") or "unknown")
+    # A task shows up in several sections of one /status answer (the running
+    # task is both ``current_task`` and an element of ``active_tasks``); the
+    # richer record wins, and the first section visited is the richest.
+    known = seen.get(sandbox_id)
+    if known is not None:
+        if not known.get("task") and entry.get("task"):
+            known["task"] = str(entry.get("task"))[:200]
+        return
+    seen[sandbox_id] = {
+        "sandbox_id": sandbox_id,
+        "status": status,
+        "task": str(entry.get("task") or entry.get("summary") or "")[:200],
+        "started_at": entry.get("started_at"),
+        "finished_at": entry.get("finished_at"),
+        "current": sandbox_id == bound,
+        "browsable": status in BROWSABLE_STATUSES,
+    }
+
+
+def list_sandbox_tasks(
+    *,
+    session_id: Optional[str] = None,
+    tool_context: Any = None,
+    sandbox_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List every workspace the sandbox still knows about, ours first.
+
+    A person watching a run can only reach the container bound to their own
+    session, yet the sandbox holds the neighbouring ones too — the task id in
+    its own console URL is the whole address. ``/status`` without a task id
+    already answers with the running tasks, the queue and the last twenty that
+    finished, so the list costs one request.
+    """
+    try:
+        api_url = _api(resolve_sandbox_url(sandbox_url))
+    except SandboxConfigError as exc:
+        return _error(str(exc))
+
+    session = resolve_session_key(session_id, tool_context)
+    bound = read_binding(session, tool_context)
+
+    try:
+        response = httpx.get(f"{api_url}/status", timeout=DEFAULT_STATUS_TIMEOUT)
+        response.raise_for_status()
+        payload = response.json() or {}
+    except httpx.HTTPStatusError as exc:
+        return _error(
+            f"Status request failed: HTTP {exc.response.status_code} — {_detail(exc.response)}",
+            session=session,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(f"Status request failed: {exc}", session=session)
+
+    seen: Dict[str, Dict[str, Any]] = {}
+    current = payload.get("current_task")
+    if isinstance(current, dict):
+        _workspace_entry(current, bound=bound, seen=seen)
+    for section in ("active_tasks", "queue", "completed_tasks"):
+        for entry in payload.get(section) or []:
+            if isinstance(entry, dict):
+                _workspace_entry(entry, bound=bound, seen=seen)
+
+    # The session's own sandbox may have dropped off the last-twenty list while
+    # still being the one the reader means by "current"; ask for it by name.
+    if bound and bound not in seen:
+        try:
+            details = _fetch_task(api_url, bound)
+        except Exception:  # noqa: BLE001
+            details = None
+        if details:
+            _workspace_entry({**details, "task_id": bound}, bound=bound, seen=seen)
+
+    workspaces = list(seen.values())
+    # Ours first, then what can still be opened, then the rest as they came.
+    workspaces.sort(key=lambda w: (not w["current"], not w["browsable"]))
+    return {
+        "status": "ok",
+        "session": session,
+        "sandbox_id": bound,
+        "workspaces": workspaces,
+    }
+
+
 def list_sandbox_files(
     path: str = "/workspace",
     *,
@@ -1741,6 +1838,70 @@ def list_sandbox_files(
         "sandbox_id": target,
         "path": payload.get("path", path),
         "entries": entries,
+    }
+
+
+def read_sandbox_file(
+    remote_path: str,
+    *,
+    max_bytes: int,
+    session_id: Optional[str] = None,
+    sandbox_id: Optional[str] = None,
+    tool_context: Any = None,
+    sandbox_url: Optional[str] = None,
+    timeout: float = 120.0,
+) -> Dict[str, Any]:
+    """Read up to ``max_bytes`` of a workspace file into memory.
+
+    :func:`download_sandbox_file` writes the whole thing to disk, which is what
+    a transfer wants and what a look at a file does not: a workspace holds
+    training logs and checkpoints, and showing the first megabyte of one beats
+    refusing to show it at all. The stream stops at the cap and says it did.
+    """
+    try:
+        api_url = _api(resolve_sandbox_url(sandbox_url))
+    except SandboxConfigError as exc:
+        return _error(str(exc))
+
+    session = resolve_session_key(session_id, tool_context)
+    target = sandbox_id or read_binding(session, tool_context)
+    if not target:
+        return _error("No sandbox is bound to this session.", session=session)
+
+    chunks: List[bytes] = []
+    read = 0
+    truncated = False
+    try:
+        with httpx.stream(
+            "GET",
+            f"{api_url}/files/download",
+            params={"path": remote_path, "task_id": target},
+            timeout=timeout,
+        ) as response:
+            response.raise_for_status()
+            for chunk in response.iter_bytes():
+                chunks.append(chunk)
+                read += len(chunk)
+                if read > max_bytes:
+                    truncated = True
+                    break
+    except httpx.HTTPStatusError as exc:
+        return _error(
+            f"Read failed: HTTP {exc.response.status_code}",
+            session=session, sandbox_id=target,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(f"Read failed: {exc}", session=session, sandbox_id=target)
+
+    data = b"".join(chunks)[:max_bytes]
+    return {
+        "status": "ok",
+        "session": session,
+        "sandbox_id": target,
+        "remote_path": remote_path,
+        "data": data,
+        "size_bytes": len(data),
+        "truncated": truncated,
     }
 
 
@@ -1894,8 +2055,10 @@ __all__ = [
     "sandbox_run_digest",
     "reset_sandbox_session",
     "stop_sandbox_session",
+    "list_sandbox_tasks",
     "list_sandbox_files",
     "download_sandbox_file",
+    "read_sandbox_file",
 ]
 
 

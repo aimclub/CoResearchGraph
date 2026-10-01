@@ -13,16 +13,29 @@ contract (update_work_order), which puts the change in front of the human.
 The guard also keeps the journal the Work Report shows next to the agent's
 claims (calls per tool), and ``make_work_report_fallback`` puts a report before
 the human when the agent finished without submitting one.
+
+In step-review mode a call must also belong to an in-progress step, and
+``make_work_step_journal`` records every call (arguments and an excerpt of the
+answer) on that step, so the human judges the step on what really went out and
+came back, not only on the agent's summary.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from google.genai import types as genai_types
 
-from CoScientist.hitl.work_order import WorkReport, load_order, order_key, save_order
+from CoScientist.hitl.work_order import (
+    STEP_CALL_ARGS_CHARS,
+    STEP_CALL_RESULT_CHARS,
+    WorkReport,
+    load_order,
+    order_key,
+    save_order,
+)
 from CoScientist.hitl.work_order_risk import ORIENTATION_TOOLS, exempt_tools
 
 logger = logging.getLogger("CoScientist.hitl.work_order")
@@ -114,6 +127,20 @@ def make_work_order_guard(
                 "and report why the task was not carried out.",
             )
 
+        if (
+            order.step_review
+            and tool_name in order.planned_tools
+            and order.step_for_call(tool_name) is None
+        ):
+            active = [s.id for s in order.steps if s.status == "in_progress"]
+            return _blocked(
+                "no_active_step", tool_name,
+                f"BLOCKED: step review is on — every call belongs to a step. Mark the "
+                f"step that calls `{tool_name}` in_progress with update_work_step first"
+                + (f" (in progress now: {active}; none of them declares this tool)."
+                   if active else "."),
+            )
+
         if tool_name in order.planned_tools or tool_name in ORIENTATION_TOOLS:
             order.tool_calls[tool_name] = order.tool_calls.get(tool_name, 0) + 1
             save_order(state, order)
@@ -129,6 +156,81 @@ def make_work_order_guard(
         return block
 
     return work_order_guard
+
+
+def tool_result_excerpt(response: Any) -> Tuple[str, bool]:
+    """(short text, is_error) of a tool answer, for the step journal.
+
+    Handles what ADK hands the callback: a dumped MCP CallToolResult
+    (``structuredContent`` preferred over the text ``content``), the
+    ``{"error": ...}`` dict of a failed MCP call, or any other value.
+    """
+    is_error = False
+    payload: Any = response
+    if isinstance(response, dict):
+        is_error = bool(
+            response.get("isError") or response.get("is_error")
+            or (set(response) == {"error"} and response.get("error"))
+        )
+        if response.get("structuredContent") is not None:
+            payload = response["structuredContent"]
+        elif isinstance(response.get("content"), list):
+            payload = "\n".join(
+                str(c.get("text") or "") for c in response["content"] if isinstance(c, dict)
+            )
+    if isinstance(payload, str):
+        text = payload
+    else:
+        try:
+            text = json.dumps(payload, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(payload)
+    if len(text) > STEP_CALL_RESULT_CHARS:
+        text = text[:STEP_CALL_RESULT_CHARS] + " …"
+    return text, is_error
+
+
+def make_work_step_journal(agent_name: str, internal_tools: Iterable[str] = ()):
+    """after_tool callback: record each call on the step it belongs to.
+
+    Only in step-review mode. The order is rewritten whole (see work_order.py:
+    AgentTool forwards only whole-key deltas). The tool answer is not changed.
+    """
+    exempt = exempt_tools(internal_tools)
+
+    def work_step_journal(
+        tool=None, args=None, tool_context=None, tool_response=None, **kwargs
+    ) -> None:
+        from CoScientist.hitl.callbacks import format_tool_args
+
+        context = tool_context if tool_context is not None else kwargs.get("tool_context")
+        if context is None:
+            return None
+        tool_name = str(getattr(tool, "name", "") or tool or "")
+        if not tool_name or tool_name in exempt:
+            return None
+        order = load_order(context.state, agent_name)
+        if order is None or not order.step_review or order.status != "approved":
+            return None
+        step = order.step_for_call(tool_name)
+        if step is None:
+            return None
+        response = tool_response if tool_response is not None else kwargs.get("response")
+        # ADK runs after_tool callbacks even when a before_tool callback answered
+        # the call: a call the guard blocked never reached the tool.
+        if isinstance(response, dict) and response.get("blocked_by") == "work_order_guard":
+            return None
+        excerpt, is_error = tool_result_excerpt(response)
+        step.calls.append({
+            "tool": tool_name,
+            "args": format_tool_args(args if args is not None else {})[:STEP_CALL_ARGS_CHARS],
+            "result_excerpt": excerpt,
+            "is_error": is_error,
+        })
+        save_order(context.state, order)
+        return None
+
+    return work_step_journal
 
 
 def make_reset_work_order(agent_name: str):

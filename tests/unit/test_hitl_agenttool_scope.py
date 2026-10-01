@@ -126,8 +126,11 @@ def test_hitl_approval_resolves_scope_only_once(monkeypatch):
 
 
 @pytest.mark.parametrize("callback_kind", ["before", "after"])
-def test_hitl_callback_uses_parent_scope_in_agenttool_child_session(callback_kind):
+def test_hitl_callback_uses_parent_scope_in_agenttool_child_session(callback_kind, monkeypatch):
     async def scenario():
+        from CoScientist.config import get_settings
+
+        monkeypatch.setattr(get_settings().web, "hitl_enabled", True)
         handler = _RecordingHandler()
         agent = SimpleNamespace(output_key="delegated_output")
         child, parent_key, child_session_id = _agenttool_child_context(agent=agent)

@@ -9,9 +9,10 @@ while their graphs and artifacts stay on disk.
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 from uuid import uuid4
 
 
@@ -163,6 +164,28 @@ class LocalSessionRegistry:
             self._save()
             return dict(session)
 
+    def set_agent_configuration(
+        self,
+        user_id: str,
+        session_id: str,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist the agent-selection overlay and advance its revision."""
+        with self._lock:
+            session = self._sessions.get((user_id, session_id))
+            if not session:
+                raise KeyError(f"Unknown session '{session_id}' for user '{user_id}'.")
+            previous = session.get("agent_configuration") or {}
+            revision = int(previous.get("revision") or 0) + 1
+            session["agent_configuration"] = {
+                "revision": revision,
+                "settings": copy.deepcopy(settings),
+            }
+            session["updated_at"] = _now()
+            self._users[user_id]["last_session_id"] = session_id
+            self._save()
+            return copy.deepcopy(session["agent_configuration"])
+
     def rename_session(self, user_id: str, session_id: str, title: str) -> dict[str, Any]:
         if not isinstance(title, str):
             raise ValueError("Session title must be a string.")
@@ -180,6 +203,40 @@ class LocalSessionRegistry:
             self._users[user_id]["last_session_id"] = session_id
             self._save()
             return dict(session)
+
+    def hide_old_sessions(self, user_id: str, keep: Iterable[str] = ()) -> int:
+        """Hide every session of the user from the picker except ``keep``.
+
+        Only a display flag: history, graphs and artifacts stay on disk, and
+        ``updated_at`` is left alone. A running session is never hidden.
+        Returns how many sessions became hidden.
+        """
+        self.require_user(user_id)
+        keep = set(keep)
+        with self._lock:
+            count = 0
+            for (owner_id, session_id), session in self._sessions.items():
+                if owner_id != user_id or session_id in keep or session.get("hidden"):
+                    continue
+                if session.get("status") == "processing":
+                    continue
+                session["hidden"] = True
+                count += 1
+            if count:
+                self._save()
+            return count
+
+    def unhide_sessions(self, user_id: str) -> int:
+        """Return every hidden session of the user to the picker."""
+        self.require_user(user_id)
+        with self._lock:
+            count = 0
+            for (owner_id, _), session in self._sessions.items():
+                if owner_id == user_id and session.pop("hidden", None):
+                    count += 1
+            if count:
+                self._save()
+            return count
 
     def require_user(self, user_id: str) -> dict[str, Any]:
         user = self.get_user(user_id)
@@ -256,4 +313,8 @@ class LocalSessionRegistry:
             }
             self._sessions[key] = session
             self._users[user_id]["last_session_id"] = session_id
+            # Written through like create_session: an import that lived only in
+            # memory vanished from the list on the next server restart, while
+            # its files stayed on disk.
+            self._save()
             return dict(session)

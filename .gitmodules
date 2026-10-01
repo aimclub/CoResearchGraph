@@ -1,3 +1,7 @@
 [submodule "infrastructure/openchemie"]
 	path = infrastructure/openchemie
 	url = https://github.com/RodionGolovinsky/OpenChemIE_service.git
+[submodule "infrastructure/fedot-mas-gui"]
+	path = infrastructure/fedot-mas-gui
+	url = https://github.com/florentiner/FEDOT.MAS.git
+	branch = gui-demo

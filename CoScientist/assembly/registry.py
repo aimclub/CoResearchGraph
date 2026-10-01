@@ -78,6 +78,27 @@ class ToolEntry:
 
 
 @dataclass(frozen=True)
+class ToolLimit:
+    """The per-agent budget a limiter callback enforces, as the web settings
+    offer it: an agent carrying the callback gets a number field in its row,
+    stored as ``settings.agents.overrides[<agent>].limit``.
+
+    kind: what one unit counts — "searches" (search calls per run of the
+        agent) or "perTool" (calls of each tool, counted per tool).
+    default: the budget when the operator sets none (zero-argument, so a
+        default read from settings stays current).
+    setting: the appSettings path of the field that default comes from, if
+        any — the modal shows its draft value as the placeholder.
+    """
+
+    kind: str
+    default: Callable[[], int]
+    setting: Optional[str] = None
+    minimum: int = 1
+    maximum: int = 50
+
+
+@dataclass(frozen=True)
 class CallbackEntry:
     """A named agent callback.
 
@@ -91,6 +112,8 @@ class CallbackEntry:
     kind: str  # one of CALLBACK_KINDS
     func: Optional[Callable] = None
     factory: Optional[Callable[[Any], Callable]] = None
+    # Set on limiter callbacks: the agent's budget is then operator-editable.
+    limit: Optional[ToolLimit] = None
 
     def __post_init__(self) -> None:
         if self.kind not in CALLBACK_KINDS:
@@ -121,6 +144,14 @@ class Registry:
 
     def register_tool(self, entry: ToolEntry) -> None:
         self._put(self.tools, entry.key, entry, "tool")
+
+    def tool_limit(self, callback_names: Sequence[str]) -> Optional[ToolLimit]:
+        """The budget of the first limiter among an agent's callbacks, if any."""
+        for name in callback_names:
+            entry = self.callbacks.get(name)
+            if entry is not None and entry.limit is not None:
+                return entry.limit
+        return None
 
     def register_callback(self, entry: CallbackEntry) -> None:
         self._put(self.callbacks, entry.key, entry, "callback")

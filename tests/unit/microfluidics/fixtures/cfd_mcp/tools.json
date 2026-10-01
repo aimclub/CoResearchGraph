@@ -1,0 +1,435 @@
+[
+  {
+    "name": "cfd_run_reactor_experiment",
+    "description": "Run a complete reactor experiment and return the physical result. This is the\ntool to use: it chains import -> flow -> mixing -> reaction as ONE request, and\nderives every file the solver needs from the chosen mesh. Nothing here is a\nserver-side path.\n\nCHOOSE A REACTOR by id from the enum (cfd_list_reactors describes each, with its\ninlet count and whether it can dose two reactants separately). Reaction: either\nthe simple form -- concentration_a_mol_per_m3, concentration_b_mol_per_m3 and\nrate_constant_m3_per_mol_s for A + B -> C -- or the general form, mechanism plus\ninlet_feeds. Everything else has a default.\n\nDERIVED FROM THE MESH, never asked for: the zone names and their roles, the\nfluid volume, the inlet areas, the throughput, the residence time\ntau = V / Q, the time step, all four step budgets, the checkpoint stride and the\nmesh fingerprint. The step budgets are sized so the run covers `turnovers`\nflow-through times; the default 4 is the smallest value that reliably clears the\n3-turnover gate below.\n\nWHICH WAY TO STEP, measured on these meshes:\n* Conversion too low? Raise rate_constant_m3_per_mol_s or the concentrations\n  first. Lowering inlet_speed_m_per_s also works -- it raises the residence time\n  in proportion -- but it lengthens the solve by the same factor.\n* Do NOT reach for species_diffusivity_m2_s. On a mesh of this resolution the\n  numerical diffusion from the advection scheme (about u*h/2, measured at\n  5.7e-6 m^2/s at 0.15 m/s) dominates any liquid-phase value: raising D by 100x\n  changed conversion by 0.75%, while raising the rate constant by 100x changed\n  it 89-fold. A conversion that only appears at large D is a mesh artifact.\n* Damkohler is the dial to watch: below ~0.1 the mixture leaves before reacting,\n  above ~10 it finishes well inside the reactor. Aim for 1-10. Note the cost is\n  not symmetric - a case at Da ~2 solved in 6 minutes while the same case at\n  ~200 had not finished in 110.\n* Flow not converging? Lower inlet_speed_m_per_s. Cost measured on ss316:\n  0.15 m/s needed 11,556 steps (4.7 h), 0.02 m/s needed 2,850 (1.3 h).\n\nTWO THINGS THAT INVALIDATE A RESULT rather than merely degrade it. A run\ncovering under 3 residence times reports a conversion near zero that means\n'the domain is still filling', not 'the reaction does not proceed' - raise\nturnovers, and `blocking` carries the value to use. And a flow stage that\nstopped at its step ceiling is refused by the reaction stage outright.\n\nRETURNS 'results' (the physical values: pressure_drop_pa across the reactor,\nresidence_time_s, damkohler, conversion_by_reactant, outlet concentrations,\nmixing index), 'derived' (everything computed from the mesh), 'trustworthy'\n(the chain's weakest verdict) and 'blocking' (what stands in the way, tagged\nwith the stage that found it).\n\nwait_seconds bounds how long THIS CALL blocks, not the experiment. On expiry the tool returns status='pending' with the request_id rather than raising, because an MCP client's own request timeout is far shorter than a converging flow solve and an exception would read as a failed experiment. Pass 0 to return immediately. Either way, fetch the outcome later with cfd_get_experiment_result(request_id). request_id is a caller-owned idempotency key. While the run is in flight, and afterwards for as long as the service still holds a succeeded or cancelled record of it, reusing it returns that same run instead of starting a second one; reusing it with different arguments is rejected. A run that failed is not replayed - reusing its request_id deliberately starts a fresh run. Records are capped and evicted oldest-first and are lost on restart, so a request_id reused long after its run finished may start a fresh run.",
+    "inputSchema": {
+      "properties": {
+        "reactor": {
+          "enum": [
+            "ss316_t_junction_narrow_tubes",
+            "t_junction",
+            "multi_port",
+            "one_inlet_two_outlets",
+            "vertical_pipe_500"
+          ],
+          "title": "Reactor",
+          "type": "string"
+        },
+        "inlet_speed_m_per_s": {
+          "title": "Inlet Speed M Per S",
+          "type": "number"
+        },
+        "concentration_a_mol_per_m3": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Concentration A Mol Per M3"
+        },
+        "concentration_b_mol_per_m3": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Concentration B Mol Per M3"
+        },
+        "rate_constant_m3_per_mol_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rate Constant M3 Per Mol S"
+        },
+        "activation_energy_j_per_mol": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Activation Energy J Per Mol"
+        },
+        "reaction_enthalpy_j_per_mol": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reaction Enthalpy J Per Mol"
+        },
+        "reactant_a": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reactant A"
+        },
+        "reactant_b": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reactant B"
+        },
+        "product": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Product"
+        },
+        "molecular_weight_a_g_per_mol": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Molecular Weight A G Per Mol"
+        },
+        "molecular_weight_b_g_per_mol": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Molecular Weight B G Per Mol"
+        },
+        "mechanism": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mechanism"
+        },
+        "inlet_feeds": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inlet Feeds"
+        },
+        "temperature_k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature K"
+        },
+        "pressure_pa": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pressure Pa"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "isothermal",
+                "nonisothermal"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "density_kg_per_m3": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Density Kg Per M3"
+        },
+        "kinematic_viscosity_m2_per_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kinematic Viscosity M2 Per S"
+        },
+        "species_diffusivity_m2_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Species Diffusivity M2 S"
+        },
+        "heat_capacity_j_per_kg_k": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heat Capacity J Per Kg K"
+        },
+        "thermal_diffusivity_m2_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thermal Diffusivity M2 S"
+        },
+        "turnovers": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turnovers"
+        },
+        "include_mixing_stage": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Include Mixing Stage"
+        },
+        "device": {
+          "anyOf": [
+            {
+              "enum": [
+                "cpu",
+                "cuda",
+                "auto"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device"
+        },
+        "wait_seconds": {
+          "default": 600.0,
+          "title": "Wait Seconds",
+          "type": "number"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        }
+      },
+      "required": [
+        "reactor",
+        "inlet_speed_m_per_s"
+      ],
+      "title": "cfd_run_reactor_experimentArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "cfd_run_reactor_experimentDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cfd_get_experiment_result",
+    "description": "Fetch a reactor experiment by request_id. Use it after cfd_run_reactor_experiment returned status='pending' because its wait expired, or any time later to re-read a finished one. status='pending' means the chain is still running - keep polling; 'succeeded', 'failed' and 'cancelled' are terminal. The payload is identical to what a waiting run returns: 'results', 'derived', 'trustworthy', 'blocking' and a per-stage breakdown.",
+    "inputSchema": {
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "cfd_get_experiment_resultArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "cfd_get_experiment_resultDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cfd_list_reactors",
+    "description": "List the reactor geometries this deployment carries. Each entry gives the id to pass to cfd_run_reactor_experiment, the cell count and mesh size, the named inlets, outlets and walls, and 'supports_two_reactant_feed' - false for a single-inlet geometry, which cannot dose two reactants separately and so cannot host an A + B reaction. 'available: false' means the mesh file is not on this host.",
+    "inputSchema": {
+      "properties": {},
+      "title": "cfd_list_reactorsArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "cfd_list_reactorsDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cfd_list_artifacts",
+    "description": "Page through local artifacts produced by a run.",
+    "inputSchema": {
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "cfd_list_artifactsArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "cfd_list_artifactsDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "cfd_cancel_run",
+    "description": "Stop a running local solver subprocess.",
+    "inputSchema": {
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "cfd_cancel_runArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "cfd_cancel_runDictOutput",
+      "type": "object"
+    }
+  }
+]

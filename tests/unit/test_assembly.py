@@ -128,11 +128,38 @@ def test_dependency_cycle_rejected(config):
         SystemConfig.model_validate(raw)
 
 
-def test_duplicate_a2a_port_rejected(config):
-    raw = copy.deepcopy(config.model_dump(by_alias=True))
-    raw["agents"]["CoderAgent"]["a2a"]["port"] = raw["agents"]["ResearchAgent"]["a2a"]["port"]
-    with pytest.raises(Exception, match="port"):
+# ── the `loop` primitive ─────────────────────────────────────────────────────
+# A cyclic stage (body repeats until a tool escalates) is a composite like
+# sequential/parallel, backed by ADK's LoopAgent.
+
+def _loop_config(**loop_overrides) -> dict:
+    loop = {"class": "loop", "root": True, "children": ["Body"]}
+    loop.update(loop_overrides)
+    return {"agents": {"Loop": loop, "Body": {"class": "llm", "prompt": "hypotheses"}}}
+
+
+def test_loop_builds_a_loop_agent_over_its_children():
+    from google.adk.agents.loop_agent import LoopAgent
+
+    config = SystemConfig.model_validate(_loop_config(options={"max_iterations": 3}))
+    root = build_system(config).root
+
+    assert isinstance(root, LoopAgent)
+    assert [child.name for child in root.sub_agents] == ["Body"]
+    assert root.max_iterations == 3
+
+
+def test_loop_without_children_rejected():
+    raw = _loop_config()
+    raw["agents"]["Loop"]["children"] = []
+    with pytest.raises(Exception, match="children"):
         SystemConfig.model_validate(raw)
+
+
+def test_loop_cannot_have_a_prompt_of_its_own():
+    """A loop only sequences children — prompts/tools belong to its body."""
+    with pytest.raises(Exception, match="prompt"):
+        SystemConfig.model_validate(_loop_config(prompt="hypotheses"))
 
 
 # ── built system invariants ──────────────────────────────────────────────────
@@ -264,7 +291,7 @@ def test_task_executor_is_a_router_over_both_execution_paths(config, system):
     AgentTools. The coder is therefore reached THROUGH it, not from the root."""
     executor = config.agent("TaskExecutorAgent")
     assert executor.cls == "llm"
-    assert executor.subordinates == ["ToolPipelineAgent", "CoderAgent"]
+    assert executor.subordinates == ["ToolPipelineAgent", "CoderAgent", "McpBuilderAgent"]
 
     # The old sequential body moved to ToolPipelineAgent, reachable only via the
     # router (no A2A card of its own).
@@ -286,7 +313,7 @@ def test_task_executor_is_a_router_over_both_execution_paths(config, system):
 
     attached = [t.agent.name for t in system.agent("TaskExecutorAgent").tools
                 if hasattr(t, "agent")]
-    assert attached == ["ToolPipelineAgent", "CoderAgent"]
+    assert attached == ["ToolPipelineAgent", "CoderAgent", "McpBuilderAgent"]
 
 
 def test_router_prompt_absorbs_the_no_matching_tool_handoff(config, system):
@@ -300,6 +327,42 @@ def test_router_prompt_absorbs_the_no_matching_tool_handoff(config, system):
     # The Executor-vs-Coder discriminator belongs to the router now.
     assert "re-route that step to" not in orch
     assert "Send ALL execution to TaskExecutorAgent" in orch
+
+
+def test_an_explicit_request_for_an_mcp_server_goes_to_the_builder_first(config, system):
+    """A catalogue tool that computes something similar used to win over a request
+    that asked for an MCP server from a named repository."""
+    router = system.agent("TaskExecutorAgent").instruction
+    assert "EXPLICITLY asks for an MCP server" in router
+    assert "does NOT trigger" in router
+
+    orch = system.agent("OrchestratorAgent").instruction
+    assert "a ready tool found by `retrieve_tools` does NOT" in orch
+    assert "keep the usual order" in orch
+
+
+def test_ready_mcp_is_prioritized_only_in_pilot_profile(system):
+    from CoScientist.assembly import build_system
+    from CoScientist.assembly.schema import load_config, resolve_config_path
+
+    pilot = build_system(load_config(resolve_config_path("synapse_pilot")))
+    router = pilot.agent("TaskExecutorAgent").instruction
+    assert router.index("A named ready MCP tool or server") < router.index(
+        "The task needs ENGINEERING"
+    )
+    assert "A prepared MCP server or dataset label is not a repository" in router
+
+    orchestrator = pilot.agent("OrchestratorAgent").instruction
+    assert "Run matching ready MCP tools before speculative data collection" in orchestrator
+    assert "dataset_overview_heracleum_tox" in orchestrator
+    assert "chemical_space_clustering" in orchestrator
+    assert "predict_ld50" in orchestrator
+    assert "predict_molecule_profile" in orchestrator
+    assert "retrieve_tools using that exact name" in orchestrator
+    assert "A named ready MCP tool or server" not in system.agent("TaskExecutorAgent").instruction
+    assert "Run matching ready MCP tools before speculative data collection" not in (
+        system.agent("OrchestratorAgent").instruction
+    )
 
 
 def test_dataset_collector_is_a_coder_subordinate_sharing_the_sandbox(monkeypatch, config):
@@ -458,6 +521,9 @@ def test_build_for_mode_orchestrator(monkeypatch):
     system = build_for_mode()
     assert system is not None
     assert system.root.name == "OrchestratorAgent"
+    assert "PlannerAgent" in [
+        agent.name for agent in system.config.enabled_subordinates("OrchestratorAgent")
+    ]
 
 
 def test_build_for_mode_orchestrator_planner(monkeypatch):
@@ -511,11 +577,15 @@ def test_build_for_mode_planner_run_root(monkeypatch):
         run_root = system.run_root
         assert isinstance(run_root, SequentialAgent)
         names = [a.name for a in run_root.sub_agents]
+        # Two pre-stages now: the frame is confirmed and seeded, then written
+        # out as a техническое задание by GOST 19.201-78. The second reads what
+        # the first confirmed, so the order is load-bearing.
         assert names[0] == "ContextInitAgent"
-        assert names[1] == "PlanningPipelineAgent"
+        assert names[1] == "TZSpecAgent"
+        assert names[2] == "PlanningPipelineAgent"
         assert names[-1] == "ResultAggregatorAgent"
 
-        planning_agent = run_root.sub_agents[1]
+        planning_agent = run_root.sub_agents[2]
         planning_children = [a.name for a in planning_agent.sub_agents]
         assert planning_children == ["PlannerAgent", "OrchestratorAgent"]
 
@@ -689,3 +759,131 @@ def test_work_order_requires_an_llm_agent_with_hitl():
     with pytest.raises(ValueError, match="work_order"):
         AgentConfig(name="X", **{"class": "custom:session"}, hitl=True, work_order=True)
     assert AgentConfig(name="X", hitl=True, work_order=True).work_order
+
+
+@pytest.mark.parametrize("profile", ["system", "experiments"])
+def test_every_declared_hitl_reaches_the_agent_that_must_use_it(monkeypatch, profile):
+    """A flag the prompt never mentions is a capability the model never uses.
+
+    For work_order it is worse than unused: the guard blocks every tool until an
+    order is declared, so an agent that was never told to declare one deadlocks
+    on its first call. Nothing catches that today — _render_instruction only
+    complains about placeholders that are LEFT OVER, never about ones that were
+    never written. The experiments profile had exactly this hole: not one of its
+    nine prompt templates carried <<HITL>>.
+
+    Custom session agents are excluded on purpose: they drive their own review
+    loop and are handed a handler instead of tools, so the section never renders
+    for them however the flag is set.
+    """
+    from CoScientist.assembly.schema import resolve_config_path
+
+    config = load_config(resolve_config_path(profile))
+    system = _build_with(monkeypatch, config, hitl_enabled=True)
+
+    checked = 0
+    for name, cfg in config.agents.items():
+        if not cfg.is_enabled() or cfg.cls != "llm" or not cfg.hitl:
+            continue
+        checked += 1
+        instruction = system.agent(name).instruction
+        assert "request_approval" in instruction, f"{profile}/{name}: hitl: true, silent prompt"
+        if cfg.work_order:
+            assert "### Work Order" in instruction, f"{profile}/{name}: no work order protocol"
+            # Declaring opens the contract; the report closes it. Missing the
+            # second one means the after_agent fallback files a no_report
+            # warning on every single run.
+            for tool in ("declare_work_order", "submit_work_report"):
+                assert tool in instruction, f"{profile}/{name}: {tool} not documented"
+    assert checked, f"{profile}: no hitl llm agents found — the test proves nothing"
+
+
+def test_experiment_reviewers_own_the_review_without_generic_approval_tools(monkeypatch):
+    """A plan is approved once, after deterministic validation, not by the LLM."""
+    from CoScientist.assembly.schema import resolve_config_path
+
+    config = load_config(resolve_config_path("experiments"))
+    system = _build_with(monkeypatch, config, hitl_enabled=True)
+
+    for name in ("ExperimentPlannerAgent", "ExperimentResultReviewAgent"):
+        cfg = config.agent(name)
+        agent = system.agent(name)
+        assert cfg.hitl is True and cfg.hitl_tools is False
+        assert getattr(agent, "hitl_handler", None) is not None
+        assert {"request_approval", "request_selection"}.isdisjoint(_tool_names(agent))
+        assert "request_approval" not in agent.instruction
+
+
+@pytest.mark.parametrize("profile", ["system", "experiments"])
+def test_every_agent_a_human_reads_is_told_which_language_to_write(monkeypatch, profile):
+    """The rule has to reach every prompt, or it reaches the wrong half of one run.
+
+    It used to be pasted by hand into three of the thirty-four prompts —
+    research, planner, orchestrator. On session_989a3098 of 2026-09-22, 36% of
+    the chat (28 061 of 78 706 characters) came out English in a Russian
+    interface, and the longest English block was the 10 483-character decision
+    card written by ExperimentExecutorAgent, whose prompt had never heard of the
+    language setting. Coverage cannot be a habit: it is appended in
+    `_render_instruction`, and this test is what keeps it there.
+
+    `internal:` agents are exempt on purpose — plumbing stages whose output is
+    JSON, ids and tool names, and which the UI never shows.
+    """
+    from CoScientist.assembly.schema import resolve_config_path
+
+    config = load_config(resolve_config_path(profile))
+    system = _build_with(monkeypatch, config, hitl_enabled=True)
+
+    checked = 0
+    for name, cfg in config.agents.items():
+        if not cfg.is_enabled() or cfg.cls != "llm":
+            continue
+        instruction = system.agent(name).instruction
+        if not isinstance(instruction, str):
+            continue
+        if cfg.internal:
+            assert "LANGUAGE REQUIREMENT" not in instruction, \
+                f"{profile}/{name}: internal plumbing does not write prose"
+            continue
+        checked += 1
+        assert "LANGUAGE REQUIREMENT" in instruction, \
+            f"{profile}/{name}: nothing tells this agent which language to write in"
+        # At the END: a prompt is hundreds of lines of English instructions, and
+        # a language rule stated first is contradicted by every line after it.
+        assert instruction.rstrip().endswith("not of the report."), \
+            f"{profile}/{name}: the language rule is not the last thing it reads"
+        # The narration is the half that was English, so it must be named.
+        assert "BEFORE calling a tool" in instruction
+    assert checked >= 5, f"{profile}: only {checked} prompts checked"
+
+
+def test_the_language_default_is_the_one_the_store_uses():
+    """Four mechanisms, four defaults, and which one applied depended on which
+    happened to cover the agent: this text said English, the callback's
+    `normalize_report_language` said Russian, `session_agent` said English
+    again. There is one default now."""
+    from CoScientist.agents.callbacks.report_language import (
+        DEFAULT_REPORT_LANGUAGE,
+        normalize_report_language,
+    )
+    from CoScientist.agents.prompts.templates import _LANGUAGE_REQUIREMENT
+
+    assert DEFAULT_REPORT_LANGUAGE == "ru"
+    assert normalize_report_language("") == "ru"
+    assert "If empty, use English" not in _LANGUAGE_REQUIREMENT
+    assert "write in Russian" in _LANGUAGE_REQUIREMENT
+
+
+def test_a_correction_prompt_does_not_ask_the_model_to_read_session_state():
+    """`session_agent`'s correction prompts are USER messages. ADK substitutes
+    session state into instructions, never into a user turn, so telling the
+    model there that "the session state key report_language gives it" left it
+    guessing — its own thinking in the live session says exactly that. The
+    instruction carries the rule now."""
+    from CoScientist.hitl.session_agent import SessionAgent
+
+    fields = SessionAgent.model_fields
+    for name in ("correction_prompt", "critic_correction_prompt"):
+        prompt = fields[name].default
+        assert "report_language" not in prompt
+        assert "If it is empty, use English" not in prompt

@@ -12,7 +12,11 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: [self-hosted]
+    # Pin to the label of the coscientist-vm runner. Every self-hosted runner
+    # carries the implicit label self-hosted, and that label cannot be removed,
+    # so a bare [self-hosted] would also match the runner on the ext host and
+    # GitHub would send this job to whichever runner is idle.
+    runs-on: [self-hosted, cosci-vm]
     env:
       DEPLOY_BRANCH: main
       SERVICE: coscientist-web

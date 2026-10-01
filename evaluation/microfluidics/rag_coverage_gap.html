@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Пробел в RAG-базе</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#F1F4EF; --surface:#FFFFFF; --ink:#161F19; --ink-muted:#586459; --ink-faint:#8B968C;
+    --line:#D9DFD5; --line-soft:#E7EBE3; --teal:#1E6F62; --teal-deep:#12463D; --teal-soft:#E2EFEA;
+    --reject:#B3453A; --reject-soft:#F7E7E4;
+    --shadow: 0 1px 2px rgba(22,31,25,0.06), 0 6px 20px -10px rgba(22,31,25,0.18);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#10140F; --surface:#161C15; --ink:#E7EDE4; --ink-muted:#9CAA98; --ink-faint:#6C7A6A;
+      --line:#2A332A; --line-soft:#232B22; --teal:#4FB39E; --teal-deep:#8FD2C1; --teal-soft:#17251F;
+      --reject:#E28379; --reject-soft:#2A1613;
+      --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 10px 28px -12px rgba(0,0,0,0.55);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#10140F; --surface:#161C15; --ink:#E7EDE4; --ink-muted:#9CAA98; --ink-faint:#6C7A6A;
+    --line:#2A332A; --line-soft:#232B22; --teal:#4FB39E; --teal-deep:#8FD2C1; --teal-soft:#17251F;
+    --reject:#E28379; --reject-soft:#2A1613;
+    --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 10px 28px -12px rgba(0,0,0,0.55);
+  }
+  *{box-sizing:border-box;}
+  body{background:var(--paper); color:var(--ink); font-family:"IBM Plex Sans", -apple-system, "Segoe UI", sans-serif; line-height:1.55;}
+  ::selection{ background:#EDB94E; color:#241905; }
+  .page{ max-width:760px; margin:0 auto; padding:56px 24px 96px; }
+  h1,h2,h3{ font-family:"IBM Plex Serif", Georgia, serif; text-wrap:balance; margin:0; color:var(--ink); }
+  .mono{ font-family:"IBM Plex Mono", monospace; }
+  .eyebrow{ font-family:"IBM Plex Mono", monospace; font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--teal); font-weight:500; }
+  header{ margin-bottom:36px; }
+  header h1{ font-size:32px; font-weight:600; margin-top:10px; letter-spacing:-.01em; }
+  header .sub{ margin-top:10px; font-size:16px; color:var(--ink-muted); max-width:60ch; }
+  .meta-row{ display:flex; flex-wrap:wrap; gap:8px 10px; margin-top:20px; }
+  .chip{ font-family:"IBM Plex Mono", monospace; font-size:11.5px; padding:5px 10px; border-radius:5px; border:1px solid var(--line); color:var(--ink-muted); background:var(--surface); }
+
+  section{ margin-bottom:40px; }
+  .block-label{ font-family:"IBM Plex Mono", monospace; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint); margin-bottom:10px; }
+  .card{ border:1px solid var(--line); border-radius:12px; background:var(--surface); box-shadow:var(--shadow); overflow:hidden; }
+
+  .query-block{ padding:18px 22px; }
+  .query-block .q{ font-family:"IBM Plex Mono", monospace; font-size:13px; line-height:1.7; color:var(--ink); background:var(--paper); border:1px solid var(--line-soft); border-radius:8px; padding:14px 16px; }
+  .query-block .endpoint{ margin-top:10px; font-size:12px; color:var(--ink-faint); }
+
+  .verdict{ border-left:4px solid var(--reject); background:var(--reject-soft); border-radius:0 10px 10px 0; padding:18px 22px; }
+  .verdict .block-label{ color:var(--reject); }
+  .verdict p{ margin:0 0 12px; font-size:14.5px; line-height:1.75; color:var(--ink); }
+  .verdict p:last-child{ margin-bottom:0; }
+  .verdict .src{ font-family:"IBM Plex Mono", monospace; font-size:11px; color:var(--ink-faint); margin-top:14px; }
+
+  .breakdown{ display:flex; gap:8px; margin:14px 0 18px; height:28px; border-radius:6px; overflow:hidden; }
+  .breakdown .seg{ display:flex; align-items:center; justify-content:center; font-family:"IBM Plex Mono", monospace; font-size:11px; font-weight:600; color:#fff; }
+  .breakdown .seg.catalysis{ background:var(--reject); flex:7; }
+  .breakdown .seg.oliveoil{ background:#C98A3E; flex:1; }
+  .breakdown .seg.other{ background:var(--ink-faint); flex:2; }
+  .legend2{ display:flex; flex-wrap:wrap; gap:14px; font-size:12px; color:var(--ink-muted); margin-bottom:16px; }
+  .legend2 .dot{ display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+  .legend2 .dot.catalysis{ background:var(--reject); } .legend2 .dot.oliveoil{ background:#C98A3E; } .legend2 .dot.other{ background:var(--ink-faint); }
+
+  table.papers{ width:100%; border-collapse:collapse; font-size:13px; }
+  table.papers th{ text-align:left; font-family:"IBM Plex Mono", monospace; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); font-weight:500; padding:0 22px 8px; border-bottom:1px solid var(--line); }
+  table.papers td{ padding:10px 22px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  table.papers tr:last-child td{ border-bottom:none; }
+  table.papers .n{ font-family:"IBM Plex Mono", monospace; color:var(--ink-faint); width:1.5em; }
+  table.papers .tag{ display:inline-block; font-family:"IBM Plex Mono", monospace; font-size:10.5px; padding:2px 7px; border-radius:4px; white-space:nowrap; }
+  table.papers .tag.catalysis{ background:var(--reject-soft); color:var(--reject); }
+  table.papers .tag.oliveoil{ background:#F3E3CC; color:#8A5A1E; }
+  table.papers .tag.other{ background:var(--line-soft); color:var(--ink-faint); }
+
+  .corroborate{ padding:18px 22px; }
+  .corroborate p{ font-size:14px; color:var(--ink-muted); margin:0 0 10px; }
+  .corroborate .match{ display:flex; gap:14px; align-items:center; margin-top:12px; font-size:12.5px; }
+  .corroborate .run{ flex:1; border:1px solid var(--line); border-radius:8px; padding:10px 14px; background:var(--paper); }
+  .corroborate .run .date{ font-family:"IBM Plex Mono", monospace; font-size:11px; color:var(--teal-deep); font-weight:600; }
+  .corroborate .run .title{ margin-top:4px; color:var(--ink); }
+  .corroborate .run .score{ margin-top:4px; font-family:"IBM Plex Mono", monospace; font-size:11px; color:var(--reject); }
+  .corroborate .eq{ font-size:20px; color:var(--ink-faint); }
+
+  footer{ margin-top:48px; padding-top:20px; border-top:1px solid var(--line); font-size:12.5px; color:var(--ink-faint); }
+  footer p{ margin:0 0 8px; max-width:64ch; }
+  footer code{ font-family:"IBM Plex Mono", monospace; font-size:11.5px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="eyebrow">CoScientist · профиль «микрофлюидика» · проверка источника</div>
+    <h1>RAG отвечает — но не по теме</h1>
+    <p class="sub">Прямой живой вызов <code class="mono">explore_scientific_database</code> с реальным запросом
+      из свода ТЗ (LIT-01, Запрос 1) — и разбор того, что́ на самом деле лежит в базе.</p>
+    <div class="meta-row">
+      <span class="chip">live-вызов · 31.08.2026</span>
+      <span class="chip">10.32.11.45:7334/mcp · PaperAnalysis v3.1.1</span>
+      <span class="chip">MCP tools/call, JSON-RPC, полный сырой ответ</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="block-label">Запрос (дословно из свода)</div>
+    <div class="card query-block">
+      <div class="q">hindered phenolic antioxidant bisphenol thioether phenol motor oil lubricant thermal
+        stability alternative to BHT</div>
+      <div class="endpoint">→ tools/call <span class="mono">explore_scientific_database</span>(task=…)</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="block-label">Ответ RAG — дословно, без сокращений</div>
+    <div class="card verdict">
+      <p><strong>answer:</strong> "I am sorry, but the provided context does not contain information about
+        hindered phenolic antioxidants, bisphenol thioethers, or their use as alternatives to BHT for improving
+        the thermal stability of motor oil lubricants. The documents discuss the synthesis and polymerization
+        reactivity of transition-metal complexes, specifically permethylindenyl-phenoxy (PHENI*) complexes and
+        bis(indenyl)zirconium dihydrides, as well as the extraction of phenolic compounds from olive oil using
+        deep eutectic solvents. Therefore, I cannot answer your question based on the given context."</p>
+      <p><strong>explanation:</strong> "…I scanned all provided text chunks and image descriptions for keywords
+        such as 'hindered phenolic antioxidant', 'bisphenol thioether', 'motor oil lubricant', 'thermal
+        stability', and 'BHT'. None of these terms or related concepts were found in the context. The context
+        primarily focuses on organometallic chemistry (synthesis and polymerization with zirconium and titanium
+        complexes) and the extraction of phenolic compounds from olive oil, which are unrelated to the user's
+        specific query about lubricant additives."</p>
+      <div class="src">structuredContent.answer / .explanation, полный JSON-RPC ответ сервера</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="block-label">Что реально вернул retrieval — все 10 статей</div>
+    <div class="card" style="padding-top:18px;">
+      <div style="padding:0 22px;">
+        <div class="breakdown">
+          <div class="seg catalysis">7</div>
+          <div class="seg oliveoil">1</div>
+          <div class="seg other">2</div>
+        </div>
+        <div class="legend2">
+          <span><span class="dot catalysis"></span>Zr/Ti-катализ полимеризации олефинов</span>
+          <span><span class="dot oliveoil"></span>экстракция фенолов из оливкового масла</span>
+          <span><span class="dot other"></span>прочее (гетероциклы, пена при вытеснении нефти)</span>
+          <span style="margin-left:auto;color:var(--ink-faint)">0 — про антиоксиданты для масел</span>
+        </div>
+      </div>
+      <table class="papers">
+        <tbody>
+          <tr><td class="n">1</td><td>Trends in Structure and Ethylene Polymerization Reactivity of
+            Transition-Metal Permethylindenyl-phenoxy (PHENI*) Complexes</td>
+            <td><span class="tag catalysis">Zr/Ti-катализ</span></td></tr>
+          <tr><td class="n">2</td><td>Preparation of Polymer-Supported Zirconocene Catalysts and Olefin
+            Polymerization</td><td><span class="tag catalysis">Zr/Ti-катализ</span></td></tr>
+          <tr><td class="n">3</td><td>From Unstable to Stable: Half-Metallocene Catalysts for Olefin
+            Polymerization</td><td><span class="tag catalysis">Zr/Ti-катализ</span></td></tr>
+          <tr><td class="n">4</td><td>Visualizing oil displacement with foam in a microfluidic device with
+            permeability contrast</td><td><span class="tag other">EOR-пена</span></td></tr>
+          <tr><td class="n">5</td><td>Extraction of phenolic compounds from virgin olive oil by deep eutectic
+            solvent (DES)</td><td><span class="tag oliveoil">оливковое масло</span></td></tr>
+          <tr><td class="n">6</td><td>Activation of an Aryl C-H Bond Converts Chelating Diphenolate Ligands
+            Bound to Zirconium into Trianionic Pincer Ligands</td><td><span class="tag catalysis">Zr/Ti-катализ</span></td></tr>
+          <tr><td class="n">7</td><td>Bimetallic Zirconium Amine Bis(phenolate) Polymerization Catalysts</td>
+            <td><span class="tag catalysis">Zr/Ti-катализ</span></td></tr>
+          <tr><td class="n">8</td><td>Synthesis, Structure, and Olefin Polymerization Catalytic Behavior of
+            Aryl-Substituted Zirconocene Dichlorides</td><td><span class="tag catalysis">Zr/Ti-катализ</span></td></tr>
+          <tr><td class="n">9</td><td>One step cyclocondensation of (thio)barbituric acid with chalcones</td>
+            <td><span class="tag other">гетероциклы</span></td></tr>
+          <tr><td class="n">10</td><td>Synthesis of Bis(indenyl)zirconium Dihydrides and Subsequent
+            Rearrangement to η⁵,η³-4,5-Dihydroindenediyl Ligands</td><td><span class="tag catalysis">Zr/Ti-катализ</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="block-label">Это не случайность retrieval — то же самое было и 19.08.2026</div>
+    <div class="card corroborate">
+      <p>Тот же LIT-01 (Запрос 1) уже прогонялся раньше через <span class="mono">find_papers_in_db</span> —
+        отчёт <code class="mono">evaluation/microfluidics/literature_results.html</code>. Топ-статья
+        совпадает буквально, спустя 12 дней и другой инструмент:</p>
+      <div class="match">
+        <div class="run">
+          <div class="date">19.08.2026 · find_papers_in_db</div>
+          <div class="title">Trends in Structure and Ethylene Polymerization Reactivity of…(PHENI*) Complexes</div>
+          <div class="score">rerank 18% — top match</div>
+        </div>
+        <div class="eq">=</div>
+        <div class="run">
+          <div class="date">31.08.2026 · explore_scientific_database</div>
+          <div class="title">Trends in Structure and Ethylene Polymerization Reactivity of…(PHENI*) Complexes</div>
+          <div class="score">answer #1 из 10</div>
+        </div>
+      </div>
+      <p style="margin-top:14px;">Корпус статичен: два разных инструмента, две разные даты — retrieval
+        стабильно ведёт в один и тот же нерелевантный кластер (металлоорганический катализ), а не шумит
+        случайно. Это структурный пробел в наполнении базы, а не разовый сбой запроса.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>Воспроизвести: <code>curl -X POST http://10.32.11.45:7334/mcp -H 'Content-Type: application/json'
+      -H 'Accept: application/json, text/event-stream' -H 'mcp-session-id: &lt;id&gt;' -d
+      '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explore_scientific_database",
+      "arguments":{"task":"hindered phenolic antioxidant bisphenol thioether phenol motor oil lubricant
+      thermal stability alternative to BHT"}}}'</code> (после <code>initialize</code>).</p>
+    <p>Полный сырой JSON-ответ сохранён локально; сравнение с прошлым прогоном — в
+      <code>evaluation/microfluidics/literature_results.html</code> (раздел «Запрос 1 → LIT-01»).</p>
+  </footer>
+
+</div>
+</body>
+</html>

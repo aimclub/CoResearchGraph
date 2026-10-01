@@ -3,7 +3,10 @@ on a clean image, two habits of that live session break it, so the commands are
 normalised as they are written rather than patched by whoever replays them.
 """
 
-from _codegen_loader import load_codegen
+try:
+    from tests.unit._codegen_loader import load_codegen
+except ImportError:
+    from _codegen_loader import load_codegen
 
 cg = load_codegen()
 portable_command = cg.portable_command

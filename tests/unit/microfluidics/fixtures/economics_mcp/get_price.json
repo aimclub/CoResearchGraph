@@ -1,0 +1,85 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"name_raw\": \"Ацетон ч\",\n  \"name_norm\": \"ацетон\",\n  \"supplier\": \"АльфаФТО\",\n  \"supplier_key\": \"alfa_ftor\",\n  \"purity_grade\": \"ч.\",\n  \"pack_qty\": \"0\",\n  \"pack_unit\": \"bulk\",\n  \"pack_raw\": \"н/ф\",\n  \"price\": \"120.11\",\n  \"price_currency\": \"RUB\",\n  \"unit_price\": \"120.11\",\n  \"price_basis\": \"per_unit\",\n  \"price_basis_suspect\": false,\n  \"category\": null,\n  \"gost_tu\": null,\n  \"catalog_no\": null,\n  \"price_list_date\": null\n}",
+      "annotations": null,
+      "meta": null
+    },
+    {
+      "type": "text",
+      "text": "{\n  \"name_raw\": \"Ацетон ч 200л\",\n  \"name_norm\": \"ацетон ч 200л\",\n  \"supplier\": \"АльфаФТО\",\n  \"supplier_key\": \"alfa_ftor\",\n  \"purity_grade\": null,\n  \"pack_qty\": \"160\",\n  \"pack_unit\": \"kg\",\n  \"pack_raw\": \"160кг\",\n  \"price\": \"19940.28\",\n  \"price_currency\": \"RUB\",\n  \"unit_price\": \"124.6268\",\n  \"price_basis\": \"per_package\",\n  \"price_basis_suspect\": false,\n  \"category\": null,\n  \"gost_tu\": null,\n  \"catalog_no\": null,\n  \"price_list_date\": null\n}",
+      "annotations": null,
+      "meta": null
+    },
+    {
+      "type": "text",
+      "text": "{\n  \"name_raw\": \"Ацетон ч, фас 4\",\n  \"name_norm\": \"ацетон ч, фас 4\",\n  \"supplier\": \"АльфаФТО\",\n  \"supplier_key\": \"alfa_ftor\",\n  \"purity_grade\": null,\n  \"pack_qty\": \"0\",\n  \"pack_unit\": \"\",\n  \"pack_raw\": \"\",\n  \"price\": \"130.47\",\n  \"price_currency\": \"RUB\",\n  \"unit_price\": \"130.47\",\n  \"price_basis\": \"per_unit\",\n  \"price_basis_suspect\": false,\n  \"category\": null,\n  \"gost_tu\": null,\n  \"catalog_no\": null,\n  \"price_list_date\": null\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "result": [
+      {
+        "name_raw": "Ацетон ч",
+        "name_norm": "ацетон",
+        "supplier": "АльфаФТО",
+        "supplier_key": "alfa_ftor",
+        "purity_grade": "ч.",
+        "pack_qty": "0",
+        "pack_unit": "bulk",
+        "pack_raw": "н/ф",
+        "price": "120.11",
+        "price_currency": "RUB",
+        "unit_price": "120.11",
+        "price_basis": "per_unit",
+        "price_basis_suspect": false,
+        "category": null,
+        "gost_tu": null,
+        "catalog_no": null,
+        "price_list_date": null
+      },
+      {
+        "name_raw": "Ацетон ч 200л",
+        "name_norm": "ацетон ч 200л",
+        "supplier": "АльфаФТО",
+        "supplier_key": "alfa_ftor",
+        "purity_grade": null,
+        "pack_qty": "160",
+        "pack_unit": "kg",
+        "pack_raw": "160кг",
+        "price": "19940.28",
+        "price_currency": "RUB",
+        "unit_price": "124.6268",
+        "price_basis": "per_package",
+        "price_basis_suspect": false,
+        "category": null,
+        "gost_tu": null,
+        "catalog_no": null,
+        "price_list_date": null
+      },
+      {
+        "name_raw": "Ацетон ч, фас 4",
+        "name_norm": "ацетон ч, фас 4",
+        "supplier": "АльфаФТО",
+        "supplier_key": "alfa_ftor",
+        "purity_grade": null,
+        "pack_qty": "0",
+        "pack_unit": "",
+        "pack_raw": "",
+        "price": "130.47",
+        "price_currency": "RUB",
+        "unit_price": "130.47",
+        "price_basis": "per_unit",
+        "price_basis_suspect": false,
+        "category": null,
+        "gost_tu": null,
+        "catalog_no": null,
+        "price_list_date": null
+      }
+    ]
+  },
+  "isError": false
+}

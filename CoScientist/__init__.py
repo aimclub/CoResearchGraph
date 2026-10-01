@@ -24,6 +24,7 @@ from CoScientist.storage import RetrievalFinalResult, RetrievalToolResult
 
 from CoScientist.hitl import (
     HITLAction,
+    HITLDecisionSource,
     HITLRequest,
     HITLResponse,
     AbstractHITLHandler,
@@ -52,6 +53,7 @@ __all__ = [
     "tool_agent",
     # HITL
     "HITLAction",
+    "HITLDecisionSource",
     "HITLRequest",
     "HITLResponse",
     "AbstractHITLHandler",

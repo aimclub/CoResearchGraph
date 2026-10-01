@@ -28,4 +28,4 @@ app = create_app()
 if __name__ == "__main__":
     from CoScientist.cli import run_web
 
-    run_web()
+    run_web(port=int(os.environ.get("COSCIENTIST_WEB_PORT", "8000")))

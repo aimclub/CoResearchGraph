@@ -16,6 +16,7 @@ from CoScientist.logging.metrics import UsageMetricsPlugin
 from CoScientist.graph.plugin import GraphMemoryPlugin
 from CoScientist.graph.research.validator import BackgroundValidatorPlugin
 from CoScientist.agents.truncation_plugin import ToolResultTruncationPlugin
+from CoScientist.tools.paper_capture_plugin import PaperCapturePlugin
 from CoScientist.tools.mcp_artifact_plugin import McpArtifactCapturePlugin
 from CoScientist.tools.session_scope_plugin import SessionScopePlugin
 from CoScientist.main import _compaction_config
@@ -42,6 +43,11 @@ app = App(
         SessionScopePlugin(),
         # Capture runs before truncation, so it still sees the full URL.
         McpArtifactCapturePlugin(),
+        # After the capture plugin on purpose: a PDF it already mirrored is
+        # re-filed as a paper here rather than downloaded a second time.
+        PaperCapturePlugin(),
+        # Last by habit, no longer by necessity: it answers None now, so it no
+        # longer early-exits the chain. It cuts for the model at before_model.
         ToolResultTruncationPlugin(),
     ],
     events_compaction_config=_compaction_config(),

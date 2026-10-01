@@ -12,7 +12,7 @@ from CoScientist.agents.callbacks.med_callbacks import (
     before_model_modifier,
     med_agent_before_model,
 )
-from CoScientist.agents.callbacks.json_output import sanitize_json_output
+from CoScientist.agents.callbacks.json_output import sanitize_json_output, unwrap_model_response_args
 from CoScientist.agents.callbacks.link_registry import (
     expand_link_refs,
     redact_link_urls,
@@ -22,6 +22,8 @@ from CoScientist.agents.callbacks.link_registry import (
 )
 from CoScientist.agents.callbacks.report_language import inject_report_language
 from CoScientist.agents.callbacks.research_callbacks import (
+    capture_literature_reactions,
+    capture_literature_smiles,
     cleanup_uploaded_papers,
     ensure_local_papers_uploaded,
     papers_agent_before_model,
@@ -29,21 +31,28 @@ from CoScientist.agents.callbacks.research_callbacks import (
 from CoScientist.agents.callbacks.tool_callbacks import (
     after_fullset_reranker_agent,
     after_tool_reranker_agent,
+    after_tool_reranker_model,
     before_get_task,
     before_tool_reranker_model,
     shortlist_reranker_tools,
     capture_mcp_artifacts,
+    mirror_plan_after_create,
+    mirror_plan_before_agent,
     inject_dataset_context,
     inject_fedot_candidates,
     inject_graph_root,
     make_plan_registration_guard,
     make_unknown_tool_guard,
+    ForbidExploreMyPapersGuard,
+    resolve_hallucinated_tool,
     inject_original_query,
     print_research_agent_tool_call,
     redirect_when_no_tools,
+    announce_attached_tools,
 )
 
 __all__ = [
+    "ForbidExploreMyPapersGuard",
     "make_pre_action_critique",
     "make_post_action_critique",
     "make_plan_critique",
@@ -52,14 +61,21 @@ __all__ = [
     "papers_agent_before_model",
     "ensure_local_papers_uploaded",
     "cleanup_uploaded_papers",
+    "capture_literature_smiles",
+    "capture_literature_reactions",
     "before_tool_reranker_model",
     "shortlist_reranker_tools",
     "after_tool_reranker_agent",
+    "after_tool_reranker_model",
     "after_fullset_reranker_agent",
     "print_research_agent_tool_call",
     "capture_mcp_artifacts",
+    "mirror_plan_after_create",
+    "mirror_plan_before_agent",
     "redirect_when_no_tools",
+    "announce_attached_tools",
     "make_unknown_tool_guard",
+    "resolve_hallucinated_tool",
     "make_plan_registration_guard",
     "inject_original_query",
     "before_get_task",
@@ -68,6 +84,7 @@ __all__ = [
     "inject_fedot_candidates",
     "inject_report_language",
     "sanitize_json_output",
+    "unwrap_model_response_args",
     "user_links",
     "redact_link_urls",
     "resolve_link_refs",

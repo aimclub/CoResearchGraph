@@ -1,0 +1,151 @@
+/* The research desk skin is scoped so earlier views keep their appearance. */
+.workshop-paper { display: none; }
+body[data-design="workshop"] {
+  color-scheme: light;
+  --bg: #173e59; --surface: #f2e7d2; --surface-2: #e7d8bf; --line: #bba580;
+  --text: #302a24; --muted: #615447; --faint: #776b5d; --primary: #245776; --secondary: #3e6b5b; --warning: #8b5429;
+  background: #a7794d url('/static/images/workshop/research-desk.png') center / cover;
+}
+body[data-design="workshop"] .topbar { flex-basis: 58px; background: #f4ebdced; border-color: #c1a580; box-shadow: 0 2px 8px #46301d30; }
+body[data-design="workshop"] .heading h1 { font: 600 19px Georgia, serif; }
+body[data-design="workshop"] .heading p { color: #6b6254; }
+body[data-design="workshop"] .brand { color: #f6ecd9; background: #1f4c68; border-radius: 50%; }
+body[data-design="workshop"] .back { background: #f7eddd; font-size: 12px; border-color: #b69c76; }
+body[data-design="workshop"] .design-bar { min-height: 44px; padding: 5px 20px; gap: 12px; background: #eadcc6ed; border-color: #a88a63; }
+body[data-design="workshop"] .design-options { background: #ede2cf; padding: 2px; border-color: #c5b18e; border-radius: 5px; }
+body[data-design="workshop"] .design-options button { border-radius: 3px; padding: 4px 12px; }
+body[data-design="workshop"] .design-options button[aria-pressed="true"] { color: #fff5e6; background: #285b7c; border-color: #16445f; }
+body[data-design="workshop"] main { display: block; }
+body[data-design="workshop"] .canvas-wrap {
+  --sheet-left: 52px; --sheet-right: 46px;
+  width: 100%; height: 100%; background: transparent; isolation: isolate;
+}
+body[data-design="workshop"] .workshop-paper {
+  display: block; position: absolute; z-index: -1; inset: 16px var(--sheet-right) 24px var(--sheet-left);
+  background-color: #154463;
+  background-image: url('/static/images/workshop/paper-grain.svg'),
+    linear-gradient(#b7d9e318 1px, transparent 1px), linear-gradient(90deg, #b7d9e318 1px, transparent 1px),
+    linear-gradient(#b7d9e307 1px, transparent 1px), linear-gradient(90deg, #b7d9e307 1px, transparent 1px),
+    radial-gradient(ellipse at 40% 30%, #245778, #10374f);
+  background-size: 220px 220px, 80px 80px, 80px 80px, 10px 10px, 10px 10px, 100% 100%;
+  border: 1px solid #376684; border-radius: 1px; box-shadow: 2px 5px 9px #321e135c;
+  color: #bfd3dd; pointer-events: none;
+}
+body[data-design="workshop"] .workshop-paper::after { content: ''; position: absolute; inset: 13px; border: 1px solid #bddae350; }
+.paper-heading { position: absolute; top: 20px; left: 25px; padding-bottom: 8px; border-bottom: 1px solid #b6d4e349; font: 20px Georgia, serif; }
+.paper-heading span { font-size: 16px; }
+.paper-tape { position: absolute; z-index: 1; top: -5px; width: 60px; height: 24px; background: #e2d3b9bf; box-shadow: inset 0 0 4px #f5efdc70; }
+.tape-left { left: -15px; transform: rotate(-43deg); }
+.tape-right { right: -15px; transform: rotate(43deg); }
+.paper-note, .paper-footnote { position: absolute; font: italic 14px Georgia, serif; color: #b1cddb8f; line-height: 1.5; }
+.paper-note { top: 84px; left: 32px; transform: rotate(-6deg); }
+.paper-footnote { bottom: 31px; left: 48%; transform: rotate(-4deg); }
+.paper-scale { position: absolute; bottom: 18px; left: 24px; font: 10px 'IBM Plex Mono', monospace; line-height: 1.8; color: #accad596; }
+body[data-design="workshop"] #network { left: calc(var(--sheet-left) + 20px); top: 65px; width: calc(100% - var(--sheet-left) - var(--sheet-right) - 40px); height: calc(100% - 131px); }
+body[data-design="workshop"] .agent-node { --role: #3e3429; filter: url(#workshop-shadow); }
+body[data-design="workshop"] .node-card { fill: transparent; stroke: transparent; stroke-width: 1.3; }
+.workshop-material { pointer-events: none; }
+body[data-design="workshop"] .workshop-base { fill: #9d7950; stroke: #725439; stroke-width: 1.5; }
+body[data-design="workshop"] .workshop-glaze { fill: none; stroke: #fff9ea96; stroke-width: 1; pointer-events: none; }
+body[data-design="workshop"] .node-title { fill: #30291f; font-family: Georgia, 'Times New Roman', serif; font-weight: 600; }
+body[data-design="workshop"] .node-icon { stroke: #3e362c; stroke-width: 1.6; }
+body[data-design="workshop"] .agent-node:hover .node-card,
+body[data-design="workshop"] .agent-node:focus-visible .node-card { fill: #fff3d914; stroke: #efd19b; stroke-width: 2; }
+body[data-design="workshop"] .agent-node.selected .node-card { fill: transparent; stroke: #f8ce7e; stroke-width: 2; }
+body[data-design="workshop"] .agent-node.selected .workshop-glaze { stroke: #c4964f; }
+body[data-design="workshop"] .workshop-terminal { pointer-events: none; filter: drop-shadow(1px 2px 1px #08203399); }
+body[data-design="workshop"] .edge { stroke: #d3e6ec; stroke-width: 1.6; }
+body[data-design="workshop"] .edge.delegate { stroke: #bed1dc; stroke-width: 1.15; }
+body[data-design="workshop"] .edge.settings { stroke: #acc5d2; stroke-width: 1; }
+body[data-design="workshop"] .edge.selected { stroke: #ffdc99; stroke-width: 2.2; }
+body[data-design="workshop"] marker path { fill: #d3e6ec; }
+body[data-design="workshop"] .workflow-group.lane rect { fill: none; stroke: #a2c7d256; stroke-dasharray: 6 5; }
+body[data-design="workshop"] .workflow-group.lane text { fill: #b8d1dc; font: italic 12px Georgia, serif; letter-spacing: 0; }
+body[data-design="workshop"] .graph-toolbar { right: calc(var(--sheet-right) + 24px); bottom: 35px; padding: 0; border: 1px solid #b6d2de80; background: #123b56e8; border-radius: 4px; gap: 0; }
+body[data-design="workshop"] .graph-toolbar button { color: #dce6e9; background: transparent; border: 0; border-radius: 0; border-left: 1px solid #b6d2de38; font-size: 11px; padding: 6px 8px; }
+body[data-design="workshop"] .graph-toolbar button:hover { background: #ffffff15; }
+body[data-design="workshop"] .graph-toolbar output { color: #dce6e9; min-width: 34px; }
+body[data-design="workshop"] .legend { left: calc(var(--sheet-left) + 24px); bottom: 78px; border: 0; background: transparent; color: #afcbd9; font-size: 10px; padding: 0; gap: 12px; }
+body[data-design="workshop"] .line.flow { border-color: #d3e6ec; }
+body[data-design="workshop"] .line.delegate { border-color: #bed1dc; border-top-width: 1px; }
+body[data-design="workshop"] .canvas-help { bottom: 5px; left: var(--sheet-left); color: #fff0dd; text-shadow: 0 1px 3px #312116; font-size: 10px; }
+body[data-design="workshop"] .layout-note { color: #e5cca2; }
+body[data-design="workshop"] .error { z-index: 5; left: max(16px, var(--sheet-left)); right: max(16px, var(--sheet-right)); }
+
+/* A real settings menu on a paper clipboard, rather than labels in a bitmap. */
+body[data-design="workshop"] .agent-menu { top: 48px; left: 16px; width: 228px; max-height: calc(100% - 136px);
+  color: #372d23; border: 1px solid #91734c; border-radius: 7px; padding: 6px;
+  background: linear-gradient(105deg, #c9a16c, #927043); box-shadow: 3px 6px 8px #2c1d1466, inset 0 0 0 2px #d8b586; }
+body[data-design="workshop"] .agent-menu::before { content: ''; position: absolute; width: 80px; height: 17px; left: calc(50% - 40px); top: -10px;
+  border: 1px solid #72522a; border-radius: 3px; background: linear-gradient(#b48942, #f2d897 25%, #8d632e 65%, #c39c53); box-shadow: 0 2px 3px #54361355; z-index: 1; }
+body[data-design="workshop"] .agent-menu-toggle { background: #f6ecd8; font: 600 17px Georgia, serif; padding: 20px 12px 14px; border-radius: 3px 3px 0 0; }
+body[data-design="workshop"] .menu-symbol { display: none; }
+body[data-design="workshop"] #agent-menu-count { color: #766445; font-size: 10px; }
+body[data-design="workshop"] .menu-chevron { font-size: 15px; }
+body[data-design="workshop"] .agent-menu-content { background: #f6ecd8 url('/static/images/workshop/paper-grain.svg'); border-color: #bcaa8b; border-radius: 0 0 3px 3px; }
+body[data-design="workshop"] .agent-menu-hint { color: #74664f; margin: 9px 12px; font-size: 11px; }
+body[data-design="workshop"] #agent-menu-search { color: #463828; background: #fffbef; border-color: #cbb89b; margin: 0 10px 10px; }
+body[data-design="workshop"] #agent-menu-search::placeholder { color: #80725f; }
+body[data-design="workshop"] .agent-menu-list { scrollbar-color: #c0a779 #eee2ca; }
+body[data-design="workshop"] .agent-menu-row { border-color: #ad967528; padding: 10px 12px; gap: 10px; }
+body[data-design="workshop"] .agent-menu-row:hover { background: #ddcaaa35; }
+body[data-design="workshop"] .agent-menu-row > span { order: 1; }
+body[data-design="workshop"] .agent-menu-name { font: 14px Georgia, serif; line-height: 1.25; }
+body[data-design="workshop"] .agent-menu-row small { color: #877456; font-size: 9px; }
+body[data-design="workshop"] .agent-menu-row input { width: 32px; height: 18px; border-color: #9d8a6c; background: #d8c9ae; box-shadow: inset 0 1px 2px #785e384d; }
+body[data-design="workshop"] .agent-menu-row input:checked { background: #2b6b94; border-color: #1c4d6d; }
+body[data-design="workshop"] .agent-menu-row input::after { top: 1px; left: 1px; width: 14px; height: 14px; background: linear-gradient(#fffbf0, #dcc8aa); box-shadow: 1px 1px 2px #46351f66; }
+body[data-design="workshop"] .agent-menu-row input:checked::after { left: 15px; background: linear-gradient(#fffbf0, #dcc8aa); }
+body[data-design="workshop"] .agent-menu-row input:focus-visible { outline-color: #285a78; }
+body[data-design="workshop"] .agent-menu-status { color: #726149; font-size: 10px; border-color: #c1ad8a; padding: 10px 12px; }
+body[data-design="workshop"] .agent-menu-status.failed { color: #923d25; }
+body[data-design="workshop"] #agent-menu-retry { background: #f5e6c9; border-color: #a38a61; }
+
+/* Agent descriptions live on the notebook at the right edge of the desk. */
+body[data-design="workshop"] .details { position: absolute; top: 26px; right: 14px; bottom: 68px; height: auto; width: 270px; z-index: 4;
+  display: none; padding: 44px 25px 30px; color: #3d342b; border: 1px solid #b6976d; border-left: 5px solid #b78e56;
+  border-radius: 7px 4px 4px 7px; background: #f6ecd9 url('/static/images/workshop/paper-grain.svg');
+  box-shadow: 3px 4px 0 #d9c3a0, 5px 7px 0 #947248, 7px 10px 15px #2d201d66; }
+body[data-design="workshop"] .details.open { display: block; }
+body[data-design="workshop"] .details::before { content: ''; position: absolute; top: 22px; bottom: 22px; right: 3px; width: 12px;
+  background: repeating-linear-gradient(0deg, transparent 0 14px, #60462d 15px, #c4a97a 17px, #51371b 19px, transparent 20px 24px); pointer-events: none; }
+body[data-design="workshop"] .details h2 { font: 600 24px Georgia, serif; border-bottom: 1px solid #bfa788; padding-bottom: 18px; }
+body[data-design="workshop"] .details h3 { font: 600 15px Georgia, serif; }
+body[data-design="workshop"] .description { color: #5a4d3f; font: 15px/1.65 Georgia, serif; }
+body[data-design="workshop"] .related { color: #77654f; }
+body[data-design="workshop"] .eyebrow { color: #8b795e; }
+body[data-design="workshop"] .tool-button { color: #fff4df; background: #2a6185; border-color: #1d4f71; border-radius: 5px; box-shadow: 0 2px 2px #49372624; }
+body[data-design="workshop"] .tool-button:hover { background: #34759c; }
+body[data-design="workshop"] .technical { color: #7b6b52; }
+body[data-design="workshop"] .icon { background: #ddcbb066; color: #6b5841; }
+body[data-design="workshop"] .modal-card { background: #f5ebd8; }
+body[data-design="workshop"] .badge { background: #e1e7d3; }
+body[data-design="workshop"] .badge.pinned { background: #eddbb4; }
+body[data-design="workshop"] .badge.off, body[data-design="workshop"] .badge.neutral { background: #e8ddca; }
+@media (min-width: 1100px) {
+  body[data-design="workshop"] .canvas-wrap:has(#agent-menu-toggle[aria-expanded="true"]) { --sheet-left: 250px; }
+  body[data-design="workshop"] main:has(.details.open) .canvas-wrap { --sheet-right: 305px; }
+}
+body[data-design="workshop"] .agent-menu:has(#agent-menu-toggle[aria-expanded="false"]) { width: 220px; top: 20px; }
+body[data-design="workshop"] .agent-menu:has(#agent-menu-toggle[aria-expanded="false"]) .agent-menu-toggle { padding: 9px 12px; font-size: 14px; }
+body[data-design="workshop"] .agent-menu:has(#agent-menu-toggle[aria-expanded="false"])::before { display: none; }
+@media (max-width: 1250px) {
+  body[data-design="workshop"] .design-label { display: none; }
+  body[data-design="workshop"] .legend { bottom: 72px; }
+  .paper-footnote { display: none; }
+}
+@media (max-width: 1099px) {
+  body[data-design="workshop"] .canvas-wrap { --sheet-left: 18px; --sheet-right: 18px; }
+  body[data-design="workshop"] .agent-menu { top: 76px; }
+  body[data-design="workshop"] .details { top: 76px; }
+  body[data-design="workshop"] .design-bar { overflow-x: auto; }
+  body[data-design="workshop"] .design-options button { padding: 4px 9px; }
+  .paper-note { display: none; }
+}
+@media (max-width: 650px) {
+  body[data-design="workshop"] .paper-heading { font-size: 17px; }
+  body[data-design="workshop"] .paper-heading span { display: none; }
+  body[data-design="workshop"] .legend { display: none; }
+  body[data-design="workshop"] .graph-toolbar { right: 38px; }
+  .paper-scale { display: none; }
+}

@@ -1,0 +1,58 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"items\": [\n    {\n      \"input\": \"1-dodecanol\",\n      \"kind\": \"name\",\n      \"canonical_smiles\": \"CCCCCCCCCCCCO\",\n      \"inchikey\": \"LQZZUXJYWNFBMV-UHFFFAOYSA-N\",\n      \"formula\": \"C12H26O\",\n      \"molar_mass\": \"186.339\",\n      \"method\": \"pubchem\",\n      \"confidence\": 0.88,\n      \"translated_from\": null,\n      \"error\": null,\n      \"hint\": null\n    },\n    {\n      \"input\": \"chlorosulfonic acid\",\n      \"kind\": \"name\",\n      \"canonical_smiles\": \"O=S(=O)(O)Cl\",\n      \"inchikey\": \"XTHPWXDJESJLNJ-UHFFFAOYSA-N\",\n      \"formula\": \"HClO3S\",\n      \"molar_mass\": \"116.525\",\n      \"method\": \"pubchem\",\n      \"confidence\": 0.88,\n      \"translated_from\": null,\n      \"error\": null,\n      \"hint\": null\n    },\n    {\n      \"input\": \"sodium dodecyl sulfate\",\n      \"kind\": \"name\",\n      \"canonical_smiles\": \"CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]\",\n      \"inchikey\": \"DBMJMQXJHONAFJ-UHFFFAOYSA-M\",\n      \"formula\": \"C12H25NaO4S\",\n      \"molar_mass\": \"288.385\",\n      \"method\": \"pubchem\",\n      \"confidence\": 0.88,\n      \"translated_from\": null,\n      \"error\": null,\n      \"hint\": null\n    }\n  ],\n  \"by_method\": {\n    \"pubchem\": 3\n  }\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "items": [
+      {
+        "input": "1-dodecanol",
+        "kind": "name",
+        "canonical_smiles": "CCCCCCCCCCCCO",
+        "inchikey": "LQZZUXJYWNFBMV-UHFFFAOYSA-N",
+        "formula": "C12H26O",
+        "molar_mass": "186.339",
+        "method": "pubchem",
+        "confidence": 0.88,
+        "translated_from": null,
+        "error": null,
+        "hint": null
+      },
+      {
+        "input": "chlorosulfonic acid",
+        "kind": "name",
+        "canonical_smiles": "O=S(=O)(O)Cl",
+        "inchikey": "XTHPWXDJESJLNJ-UHFFFAOYSA-N",
+        "formula": "HClO3S",
+        "molar_mass": "116.525",
+        "method": "pubchem",
+        "confidence": 0.88,
+        "translated_from": null,
+        "error": null,
+        "hint": null
+      },
+      {
+        "input": "sodium dodecyl sulfate",
+        "kind": "name",
+        "canonical_smiles": "CCCCCCCCCCCCOS(=O)(=O)[O-].[Na+]",
+        "inchikey": "DBMJMQXJHONAFJ-UHFFFAOYSA-M",
+        "formula": "C12H25NaO4S",
+        "molar_mass": "288.385",
+        "method": "pubchem",
+        "confidence": 0.88,
+        "translated_from": null,
+        "error": null,
+        "hint": null
+      }
+    ],
+    "by_method": {
+      "pubchem": 3
+    }
+  },
+  "isError": false
+}

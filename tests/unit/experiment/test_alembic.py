@@ -1,0 +1,709 @@
+"""Alembic build route, await, auto-record, critique."""
+from __future__ import annotations
+
+import asyncio
+
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+
+from CoScientist.config.settings import ExperimentsSettings
+from CoScientist.experiments.critique import critique_plan
+from CoScientist.experiments.runtime import (
+    ExperimentRuntimeError,
+    approve_plan,
+    initialize_runtime,
+    mark_route_returned,
+    on_route_agent_returned,
+    await_alembic_job_if_experiment,
+    record_result,
+    start_task,
+)
+from CoScientist.experiments.schemas import ExperimentTask
+
+from .helpers import (
+    _route_return,
+    _alembic_started_state,
+    _alembic_task,
+    _inventory,
+    _plan,
+    _task,
+    _tool_context,
+)
+
+def test_alembic_task_requires_repo_and_post_build_route():
+    bare = _alembic_task()
+    del bare["repo_url"]
+    with pytest.raises(ValidationError):
+        ExperimentTask.model_validate(bare)
+    missing_post = _alembic_task()
+    missing_post["post_build_route"] = None
+    with pytest.raises(ValidationError):
+        ExperimentTask.model_validate(missing_post)
+    with pytest.raises(ValidationError):
+        ExperimentTask.model_validate(
+            {**_task("EXP-1", route="coder"), "post_build_route": "fedot_mas"}
+        )
+
+
+def test_start_task_rejects_alembic_when_route_disabled():
+    plan = _plan(_alembic_task())
+    critique = critique_plan(
+        plan,
+        settings=ExperimentsSettings(route_alembic=False),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Fixture"}],
+    )
+    assert critique.verdict == "revise"
+    assert any("alembic_build" in i.message for i in critique.issues)
+
+    # Bypass critique to assert runtime gate.
+    state: dict = {}
+    initialize_runtime(
+        state,
+        plan,
+        critique={"verdict": "approve", "issues": [], "summary": "forced"},
+    )
+    approve_plan(state)
+    with pytest.raises(ExperimentRuntimeError) as exc:
+        start_task(state, "EXP-1", settings=ExperimentsSettings(route_alembic=False))
+    assert exc.value.code == "route_disabled"
+
+
+def test_alembic_success_reopens_task_on_post_build_route():
+    plan = _plan(_alembic_task())
+    state: dict = {}
+    initialize_runtime(
+        state,
+        plan,
+        critique={"verdict": "approve", "issues": [], "summary": "forced"},
+    )
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    assert started["route_agent"] == "McpBuilderAgent"
+    mark_route_returned(state, "McpBuilderAgent")
+    recorded = record_result(
+        state,
+        "EXP-1",
+        started["attempt_id"],
+        {
+            "status": "success",
+            "summary": "Built MCP",
+            "outputs": {
+                "mcp_url": "http://127.0.0.1:9000/mcp",
+                "mcp_endpoint": "http://127.0.0.1:9000/mcp",
+                "tools": ["synspace_score"],
+            },
+            "criteria_checks": [
+                {
+                    "criterion_id": "EXP-1-C1",
+                    "passed": True,
+                    "details": "mcp_url present",
+                }
+            ],
+        },
+        settings=settings,
+    )
+    assert recorded["status"] == "success"
+    assert recorded["post_build"]["post_build_route"] == "react_tools"
+    runtime = state["experiment_runtime"]
+    task_runtime = runtime["tasks"]["EXP-1"]
+    assert task_runtime["status"] == "ready"
+    assert task_runtime["current_route"] == "react_tools"
+    assert task_runtime["task"]["mcp_servers"][0]["source"] == "alembic"
+    assert task_runtime["task"]["mcp_servers"][0]["url"] == "http://127.0.0.1:9000/mcp"
+    assert task_runtime["task"]["mcp_servers"][0]["tools"][0]["name"] == "synspace_score"
+    assert state["deployed_mcps"][0]["url"] == "http://127.0.0.1:9000/mcp"
+
+    second = start_task(state, "EXP-1", settings=settings)
+    assert second["route_agent"] == "ExperimentAgent"
+    assert second["route"] == "react_tools"
+
+
+def test_alembic_success_defers_scientific_evidence_to_post_build(monkeypatch):
+    """One task may list MCP + science artifacts; build attempt only owes MCP."""
+    monkeypatch.setattr(
+        "CoScientist.tools.alembic_tools.list_served_mcp_tools",
+        lambda *a, **k: [{"name": "synspace_score", "description": "score"}],
+    )
+    task = _alembic_task()
+    task["expected_artifacts"] = [
+        {
+            "name": "mcp_endpoint",
+            "role": "mcp_server",
+            "description": "Served Alembic MCP URL",
+            "required": True,
+        },
+        {
+            "name": "candidates.csv",
+            "role": "data",
+            "media_type": "text/csv",
+            "description": "Scientific table",
+            "required": True,
+        },
+    ]
+    task["success_criteria"] = [
+        {
+            "criterion_id": "EXP-1-C1",
+            "description": "MCP URL ready",
+            "kind": "execution",
+            "verification": "outputs.mcp_url is an http(s) URL.",
+            "required": True,
+        },
+        {
+            "criterion_id": "EXP-1-C2",
+            "description": "candidates.csv exists",
+            "kind": "artifact_exists",
+            "verification": "Confirm output file presence",
+            "required": True,
+        },
+    ]
+    plan = _plan(task)
+    state: dict = {}
+    initialize_runtime(
+        state,
+        plan,
+        critique={"verdict": "approve", "issues": [], "summary": "forced"},
+    )
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    recorded = record_result(
+        state,
+        "EXP-1",
+        started["attempt_id"],
+        {
+            "status": "success",
+            "summary": "Built MCP",
+            "outputs": {
+                "mcp_url": "http://127.0.0.1:9000/mcp",
+                "mcp_endpoint": "http://127.0.0.1:9000/mcp",
+            },
+            "criteria_checks": [
+                {
+                    "criterion_id": "EXP-1-C1",
+                    "passed": True,
+                    "details": "mcp_url present",
+                }
+            ],
+        },
+        settings=settings,
+    )
+    assert recorded["status"] == "success"
+    assert recorded["post_build"]["post_build_route"] == "react_tools"
+    assert state["experiment_runtime"]["tasks"]["EXP-1"]["status"] == "ready"
+
+
+def test_await_alembic_job_waits_until_done(monkeypatch):
+    from CoScientist.experiments.runtime import await_alembic_job_if_experiment
+
+    state = _alembic_started_state()
+    done = {
+        "job_id": "dockstring-abc",
+        "status": "done",
+        "mcp_url": "http://127.0.0.1:9000/mcp",
+        "tools": ["dock"],
+    }
+
+    def _wait(job_id, **kwargs):
+        assert job_id == "dockstring-abc"
+        return done
+
+    monkeypatch.setattr(
+        "CoScientist.tools.alembic_tools.wait_mcp_build", _wait,
+    )
+    running = {"job_id": "dockstring-abc", "status": "running"}
+    out = asyncio.run(await_alembic_job_if_experiment(
+        SimpleNamespace(name="build_mcp_server"),
+        {"repo_url": "https://github.com/dockstring/dockstring"},
+        _tool_context(state),
+        running,
+    ))
+    assert out["status"] == "done"
+    assert out["mcp_url"] == "http://127.0.0.1:9000/mcp"
+    attempt = state["experiment_runtime"]["tasks"]["EXP-1"]["attempts"]
+    att = next(iter(attempt.values()))
+    assert att["alembic_job_id"] == "dockstring-abc"
+    assert att["alembic_snapshot"]["status"] == "done"
+
+
+def test_auto_record_alembic_success_with_mcp_url():
+    from CoScientist.experiments.runtime.guards import (
+        _auto_record_result_payload,
+        on_route_agent_returned,
+    )
+
+    state = _alembic_started_state()
+    snap = {
+        "job_id": "dockstring-abc",
+        "status": "done",
+        "mcp_url": "http://127.0.0.1:9000/mcp",
+        "tools": ["dock"],
+    }
+    att_id = state["experiment_runtime"]["active_attempt_id"]
+    att = state["experiment_runtime"]["tasks"]["EXP-1"]["attempts"][att_id]
+    att["alembic_snapshot"] = snap
+    on_route_agent_returned(
+        SimpleNamespace(name="McpBuilderAgent"), {}, _tool_context(state), "still running prose"
+    )
+    stored = state["experiment_last_route_response"]
+    assert stored["mcp_url"] == "http://127.0.0.1:9000/mcp"
+    payload = _auto_record_result_payload(
+        state, state["experiment_runtime"]["tasks"]["EXP-1"], att,
+    )
+    assert payload["status"] == "success"
+    assert payload["outputs"]["mcp_url"] == "http://127.0.0.1:9000/mcp"
+
+
+def test_critique_approves_alembic_when_enabled_with_repo_and_post_build():
+    plan = _plan(_alembic_task())
+    critique = critique_plan(
+        plan,
+        settings=ExperimentsSettings(route_alembic=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Fixture"}],
+        repo_candidates=[{"url": "https://github.com/whitead/synspace", "repo_name": "synspace"}],
+    )
+    assert critique.verdict == "approve"
+
+
+def test_schema_forbids_alembic_when_code_must_change():
+    task = _alembic_task()
+    task["code_assessment"] = {
+        "requirement": "modify",
+        "evidence": "The objective function must be replaced.",
+        "entrypoints": ["synspace_score"],
+    }
+    with pytest.raises(ValidationError, match="requires code_assessment.requirement=reuse"):
+        ExperimentTask.model_validate(task)
+
+
+def test_coder_is_valid_when_repository_code_must_change():
+    task = _task("EXP-1", route="coder")
+    task["code_assessment"] = {
+        "requirement": "modify",
+        "evidence": "The objective function must be replaced.",
+        "entrypoints": ["train.py"],
+    }
+    critique = critique_plan(
+        _plan(task),
+        settings=ExperimentsSettings(route_alembic=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Fixture"}],
+    )
+    assert critique.verdict == "approve"
+
+
+def test_alembic_preflight_reports_docker_dns_failure_without_starting_a_job():
+    from CoScientist.tools.alembic_tools import alembic_preflight
+
+    calls = []
+
+    def _runner(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="dial tcp: lookup b.dgx: no such host",
+        )
+
+    result = alembic_preflight(runner=_runner)
+    assert result["available"] is False
+    assert "b.dgx" in result["reason"]
+    assert calls[0][0][:2] == ["docker", "info"]
+
+
+def test_critique_blocks_alembic_repo_not_in_candidates():
+    plan = _plan(_alembic_task())
+    critique = critique_plan(
+        plan,
+        settings=ExperimentsSettings(route_alembic=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Fixture"}],
+        repo_candidates=[{"url": "https://github.com/other/unrelated"}],
+    )
+    assert critique.verdict == "revise"
+    assert any("not in" in i.message and "repo_candidates" in i.message for i in critique.issues)
+
+
+def test_critique_blocks_alembic_with_premature_mcp_servers():
+    task = _alembic_task()
+    task["mcp_servers"] = [
+        {
+            "name": "synspace",
+            "server_id": "synspace",
+            "url": "http://example.invalid/mcp",
+            "source": "alembic",
+            "tools": [{"name": "generate", "description": "x"}],
+        }
+    ]
+    plan = _plan(task)
+    critique = critique_plan(
+        plan,
+        settings=ExperimentsSettings(route_alembic=True),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Fixture"}],
+        repo_candidates=[{"url": "https://github.com/whitead/synspace"}],
+    )
+    assert critique.verdict == "revise"
+    assert any("mcp_servers empty" in i.message for i in critique.issues)
+
+
+def _fedot_post_build_task() -> dict:
+    task = _alembic_task()
+    task["post_build_route"] = "fedot_mas"
+    return task
+
+
+def test_critique_blocks_a_fedot_post_build_route_while_fedot_is_off():
+    critique = critique_plan(
+        _plan(_fedot_post_build_task()),
+        settings=ExperimentsSettings(route_alembic=True, route_fedot=False),
+        available_tools=_inventory(),
+        hypothesis_refs=[{"hypothesis_id": "H1", "statement": "Fixture"}],
+        repo_candidates=[{"url": "https://github.com/whitead/synspace"}],
+    )
+    assert critique.verdict == "revise"
+    issue = next(i for i in critique.issues if "post_build_route" in i.message)
+    assert issue.severity == "blocker"
+    assert "react_tools" in issue.suggestion
+
+
+def test_alembic_success_reopens_on_react_tools_while_fedot_is_off():
+    """A built server is still used - through ExperimentAgent, not FEDOT.MAS."""
+    state: dict = {}
+    initialize_runtime(
+        state,
+        _plan(_fedot_post_build_task()),
+        critique={"verdict": "approve", "issues": [], "summary": "forced"},
+    )
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True, route_fedot=False)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    recorded = record_result(
+        state,
+        "EXP-1",
+        started["attempt_id"],
+        {
+            "status": "success",
+            "summary": "Built MCP",
+            "outputs": {
+                "mcp_url": "http://127.0.0.1:9000/mcp",
+                "mcp_endpoint": "http://127.0.0.1:9000/mcp",
+                "tools": ["synspace_score"],
+            },
+            "criteria_checks": [
+                {"criterion_id": "EXP-1-C1", "passed": True, "details": "mcp_url present"}
+            ],
+        },
+        settings=settings,
+    )
+    assert recorded["post_build"]["post_build_route"] == "react_tools"
+    task_runtime = state["experiment_runtime"]["tasks"]["EXP-1"]
+    assert task_runtime["current_route"] == "react_tools"
+    assert task_runtime["task"]["route"] == "react_tools"
+    assert task_runtime["route_history"][-1]["route"] == "react_tools"
+
+
+def test_await_alembic_job_also_waits_on_a_status_poll(monkeypatch):
+    """A build another agent started earlier comes back as a running job the
+    builder only polls; the module must wait inside that poll, and inside a
+    poll the repeat-call guard refused (no job_id in the response then)."""
+    from CoScientist.experiments.runtime import await_alembic_job_if_experiment
+
+    state = _alembic_started_state()
+    done = {"job_id": "dockstring-abc", "status": "done",
+            "mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["dock"]}
+    monkeypatch.setattr("CoScientist.tools.alembic_tools.wait_mcp_build", lambda job_id, **kw: done)
+
+    running = {"job_id": "dockstring-abc", "status": "running", "elapsed_seconds": 8}
+    out = asyncio.run(await_alembic_job_if_experiment(
+        SimpleNamespace(name="check_mcp_build"), {"job_id": "dockstring-abc"}, _tool_context(state), running,
+    ))
+    assert out["status"] == "done" and out["mcp_url"] == "http://127.0.0.1:9000/mcp"
+
+    blocked = {"status": "blocked", "blocked_by": "repeat_call_guard", "repeats": 8}
+    out = asyncio.run(await_alembic_job_if_experiment(
+        SimpleNamespace(name="check_mcp_build"), {"job_id": "dockstring-abc"}, _tool_context(state), blocked,
+    ))
+    assert out["status"] == "done"
+    assert asyncio.run(await_alembic_job_if_experiment(
+        SimpleNamespace(name="list_mcp_builds"), {}, _tool_context(state), {"builds": []},
+    )) is None
+
+
+def test_a_build_result_with_only_the_served_address_passes_the_evidence_gate():
+    """The executor reported mcp_url and the served tools, no criteria_checks
+    and no artifacts: the address is the evidence, every criterion is attested
+    on it, and the task reopens on its post-build route."""
+    from CoScientist.experiments.runtime import state_machine
+
+    state = _alembic_started_state()
+    mark_route_returned(state, "McpBuilderAgent")
+    runtime = state["experiment_runtime"]
+    attempt_id = next(iter(runtime["tasks"]["EXP-1"]["attempts"]))
+    stored = state_machine.record_result(state, "EXP-1", attempt_id, {
+        "status": "success",
+        "summary": "MCP server for the repository is served",
+        "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["dock"], "job_id": "dockstring-abc"},
+    }, settings=ExperimentsSettings(route_fedot=True))
+    assert stored["status"] == "success"
+    ids = {c["criterion_id"] for c in stored["task_result"]["criteria_checks"]}
+    assert ids >= {c["criterion_id"] for c in runtime["tasks"]["EXP-1"]["task"]["success_criteria"]}
+    assert all(c["passed"] for c in stored["task_result"]["criteria_checks"])
+
+
+
+def _plan_with_a_consumer_of_the_served_mcp():
+    build = _alembic_task("EXP-1")
+    build["expected_artifacts"] = [
+        {"name": "informer2020-mcp-server", "role": "mcp_server", "description": "served MCP", "required": True},
+        {"name": "informer2020_build_report.md", "role": "report", "media_type": "text/markdown", "description": "build report"},
+    ]
+    rep = _task("EXP-2", route="react_tools", depends_on=["EXP-1"])
+    rep["input_data"] = [{"kind": "task_artifact", "source_task_id": "EXP-1", "source_artifact_id": "informer2020-mcp-server"}]
+    ctl = _task("EXP-3", route="react_tools", depends_on=["EXP-2"])
+    return _plan(build, rep, ctl)
+
+
+def test_a_served_mcp_resolves_as_the_artifact_the_planner_named(tmp_path, monkeypatch):
+    """Run 10 of the blind Informer check: EXP-2 listed EXP-1's expected artifact
+    ``informer2020-mcp-server`` as a task_artifact input. The build reported an
+    address, no artifact of that name existed, readiness blocked EXP-2 and EXP-3
+    while EXP-1 was done, and the run went to reporting after one task."""
+    outputs_file = tmp_path / "family_outputs.json"
+    outputs_file.write_text("{}")
+    cfg = ExperimentsSettings(route_alembic=True)
+    # The route guard asks the settings singleton, which conftest turns off.
+    from CoScientist.config import get_settings
+    monkeypatch.setattr(get_settings().experiments, "route_alembic", True)
+    state = {}
+    initialize_runtime(state, _plan_with_a_consumer_of_the_served_mcp(), critique={"verdict": "approve", "issues": [], "summary": "forced"}); approve_plan(state)
+    rt = state["experiment_runtime"]
+    start_task(state, "EXP-1", settings=cfg)
+    _route_return(state, "McpBuilderAgent")
+    att = rt["tasks"]["EXP-1"]["attempt_order"][-1]
+    record_result(state, "EXP-1", att, {"status": "success", "summary": "served", "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["t"]}}, settings=cfg)
+    start_task(state, "EXP-1", settings=cfg)
+    _route_return(state, "ExperimentAgent")
+    att = rt["tasks"]["EXP-1"]["attempt_order"][-1]
+    r = record_result(state, "EXP-1", att, {"status": "success", "summary": "smoke ok", "artifacts": [{"name": "family_outputs.json", "role": "data", "workspace_path": str(outputs_file)}], "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "mcp_endpoint": "http://127.0.0.1:9000/mcp"}, "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "ok"}]}, settings=cfg)
+    assert rt["phase"] == "execution"
+    assert rt["tasks"]["EXP-2"]["status"] == "ready"
+    served = [a for a in rt["results"][-1]["artifacts"] if a["role"] == "mcp_server"]
+    assert [a["name"] for a in served] == ["informer2020-mcp-server"]
+    assert served[0]["external_url"] == "http://127.0.0.1:9000/mcp"
+
+
+def test_a_coder_task_reopened_on_the_tool_route_no_longer_promises_scripts():
+    """The fork converts a Coder task to alembic_build without touching what it
+    promises; the post-build attempt on react_tools then owes a wrapper script
+    and a "file exists" criterion it can never satisfy (KM-ARL run 4)."""
+    task = _alembic_task()
+    task["expected_artifacts"] = [
+        {"name": "km_toolkit_wrapper.py", "role": "code", "media_type": "text/x-python",
+         "required": True, "description": "Wrapper script"},
+        {"name": "smoke_test_output.json", "role": "data", "media_type": "application/json",
+         "required": True, "description": "Four estimates"},
+    ]
+    task["design"]["analysis_artifacts"] = [
+        {"name": "km_toolkit_wrapper.py", "role": "code", "prepare_via": "coder", "path_or_tool": "km_toolkit_wrapper.py"},
+        {"name": "smoke_test_output.json", "role": "metrics_table", "prepare_via": "coder", "path_or_tool": "smoke_test_output.json"},
+    ]
+    task["success_criteria"] = [
+        {"criterion_id": "EXP-1-C1", "description": "km_toolkit_wrapper.py is written to disk.",
+         "kind": "artifact_exists", "verification": "the file km_toolkit_wrapper.py exists"},
+        {"criterion_id": "EXP-1-C2", "description": "All four estimates are finite numbers.",
+         "kind": "execution", "verification": "values in smoke_test_output.json are numbers"},
+    ]
+    plan = _plan(task)
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_KME", "cusum_detect"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    reopened = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]
+    assert reopened["route"] == "react_tools"
+    assert [a["name"] for a in reopened["expected_artifacts"]] == ["smoke_test_output.json"]
+    analysis = reopened["design"]["analysis_artifacts"]
+    assert [a["name"] for a in analysis] == ["smoke_test_output.json"]
+    assert analysis[0]["prepare_via"] == "mcp"
+    assert [c["criterion_id"] for c in reopened["success_criteria"]] == ["EXP-1-C2"]
+    assert any("tool results are the artifacts" in w for w in reopened["warnings"])
+    # The plan copy the module shows to the planner and the reviewer follows.
+    plan_task = next(t for t in state["experiment_runtime"]["plan"]["tasks"] if t["id"] == "EXP-1")
+    assert [a["name"] for a in plan_task["expected_artifacts"]] == ["smoke_test_output.json"]
+
+
+def test_builder_tool_labels_with_notes_become_the_served_names(monkeypatch):
+    """The builder reported "estimate_arl_add (унифицированный диспетчер ARL/ADD)";
+    taken whole as a tool name it filtered every served tool out (run 6)."""
+    from CoScientist.experiments.runtime import alembic_bridge
+
+    monkeypatch.setattr(alembic_bridge, "_served_tool_names",
+                        lambda url: ["estimate_arl_add", "kme_arl", "cusum_detect"])
+    plan = _plan(_alembic_task())
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp",
+                     "tools": ["estimate_arl_add (унифицированный диспетчер ARL/ADD, включая flag_less_biased)",
+                               "kme_arl (calc_KME)", "made_up_tool (never served)"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    servers = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]["mcp_servers"]
+    assert [t["name"] for t in servers[0]["tools"]] == ["estimate_arl_add", "kme_arl"]
+    assert servers[0]["tools"][0]["description"].startswith("унифицированный диспетчер")
+    start_task(state, "EXP-1", settings=settings)
+    assert [t["tool"] for t in state["filtered_tools"]] == ["estimate_arl_add", "kme_arl"]
+
+
+def test_builder_names_none_of_which_are_served_fall_back_to_the_served_list(monkeypatch):
+    from CoScientist.experiments.runtime import alembic_bridge
+
+    monkeypatch.setattr(alembic_bridge, "_served_tool_names", lambda url: ["kme_arl", "cusum_detect"])
+    plan = _plan(_alembic_task())
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_KME (guessed)"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    servers = state["experiment_runtime"]["tasks"]["EXP-1"]["task"]["mcp_servers"]
+    assert [t["name"] for t in servers[0]["tools"]] == ["kme_arl", "cusum_detect"]
+
+
+def test_downstream_inputs_that_named_a_dropped_script_are_scrubbed():
+    """EXP-2 required EXP-1:km_toolkit_wrapper.py; once the tool route dropped
+    that script from EXP-1, readiness blocked EXP-2 for good (run 8)."""
+    producer = _alembic_task()
+    producer["expected_artifacts"] = [
+        {"name": "km_toolkit_wrapper.py", "role": "code", "media_type": "text/x-python",
+         "required": True, "description": "Wrapper script"},
+        {"name": "smoke.json", "role": "data", "media_type": "application/json",
+         "required": True, "description": "Smoke results"},
+    ]
+    consumer = _task("EXP-2", route="coder", depends_on=["EXP-1"])
+    consumer["input_data"] = [
+        {"data_id": "wrapper", "kind": "task_artifact", "source_task_id": "EXP-1",
+         "source_artifact_id": "km_toolkit_wrapper.py", "required": True, "description": "the wrapper"},
+        {"data_id": "smoke", "kind": "task_artifact", "source_task_id": "EXP-1",
+         "source_artifact_id": "smoke.json", "required": True, "description": "smoke results"},
+    ]
+    plan = _plan(producer, consumer)
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_KME"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    runtime = state["experiment_runtime"]
+    refs = runtime["tasks"]["EXP-2"]["task"]["input_data"]
+    assert [r["source_artifact_id"] for r in refs] == ["smoke.json"]
+    plan_task = next(t for t in runtime["plan"]["tasks"] if t["id"] == "EXP-2")
+    assert [r["source_artifact_id"] for r in plan_task["input_data"]] == ["smoke.json"]
+
+
+def test_the_coder_request_carries_the_served_servers_and_a_client():
+    from CoScientist.experiments.runtime.alembic_bridge import pin_coder_mcp_request
+
+    task = _task("EXP-2", route="coder")
+    task["mcp_servers"] = [{
+        "name": "alembic-km", "server_id": "alembic-km", "url": "http://127.0.0.1:9000/mcp",
+        "source": "alembic", "health": "healthy",
+        "tools": [{"name": "calc_kme_arl", "description": "KM-ARL", "input_schema": {"type": "object"}}],
+    }]
+    args = {"request": '{"task_id": "EXP-2", "goal": "sweep"}'}
+    assert pin_coder_mcp_request(args, {"task": task}) is True
+    payload = args["request"]
+    assert payload["goal"] == "sweep"
+    assert payload["mcp_servers"][0]["url"] == "http://127.0.0.1:9000/mcp"
+    assert payload["mcp_servers"][0]["tools"][0]["name"] == "calc_kme_arl"
+    assert "streamablehttp_client" in payload["mcp_client"]["python"]
+    assert "calc_kme_arl" in payload["instruction"]
+
+    plain = _task("EXP-3", route="coder")
+    args = {"request": "just text"}
+    assert pin_coder_mcp_request(args, {"task": plain}) is False
+    assert args["request"] == "just text"
+
+
+def test_after_the_build_the_repository_coder_tasks_get_the_server(monkeypatch):
+    """EXP-1 builds, EXP-2 (Coder, same repository) should call the built tool
+    from its scripts instead of importing the repository again (run 9)."""
+    from CoScientist.experiments.runtime import alembic_bridge
+
+    monkeypatch.setattr(alembic_bridge, "_served_tool_names", lambda url: ["calc_kme_arl"])
+    producer = _alembic_task()
+    consumer = _task("EXP-2", route="coder", depends_on=["EXP-1"])
+    consumer["repo_url"] = "https://github.com/whitead/synspace.git"
+    consumer["code_assessment"] = {"requirement": "reuse", "evidence": "same repository", "entrypoints": ["x"]}
+    consumer["mcp_servers"] = []
+    plan = _plan(producer, consumer)
+    state: dict = {}
+    initialize_runtime(state, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state)
+    settings = ExperimentsSettings(route_alembic=True, route_coder_mcp=True)
+    started = start_task(state, "EXP-1", settings=settings)
+    mark_route_returned(state, "McpBuilderAgent")
+    record_result(
+        state, "EXP-1", started["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_kme_arl"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings,
+    )
+    runtime = state["experiment_runtime"]
+    srv = runtime["tasks"]["EXP-2"]["task"]["mcp_servers"]
+    assert [s["url"] for s in srv] == ["http://127.0.0.1:9000/mcp"]
+    plan_task = next(t for t in runtime["plan"]["tasks"] if t["id"] == "EXP-2")
+    assert [s["url"] for s in plan_task["mcp_servers"]] == ["http://127.0.0.1:9000/mcp"]
+
+    # Without the coder-MCP switch the coder tasks are left alone.
+    state2: dict = {}
+    initialize_runtime(state2, plan, critique={"verdict": "approve", "issues": [], "summary": "forced"})
+    approve_plan(state2)
+    settings2 = ExperimentsSettings(route_alembic=True, route_coder_mcp=False)
+    started2 = start_task(state2, "EXP-1", settings=settings2)
+    mark_route_returned(state2, "McpBuilderAgent")
+    record_result(
+        state2, "EXP-1", started2["attempt_id"],
+        {"status": "success", "summary": "Built MCP",
+         "outputs": {"mcp_url": "http://127.0.0.1:9000/mcp", "tools": ["calc_kme_arl"]},
+         "criteria_checks": [{"criterion_id": "EXP-1-C1", "passed": True, "details": "built"}]},
+        settings=settings2,
+    )
+    assert state2["experiment_runtime"]["tasks"]["EXP-2"]["task"]["mcp_servers"] == []

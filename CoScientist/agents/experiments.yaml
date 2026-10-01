@@ -1,0 +1,293 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CoScientist experiments — an OVERLAY on system.yaml, not a copy of it.
+#
+# The architecture and every capability come from main; this file only says what
+# belongs to the Experiment Module (EM). Anything not named here — reasoning
+# budgets, HITL, Work Orders, internal agents/tools, the link registry, report
+# language, the S3 vault, graph wiring, the planner lane — is inherited, and
+# stays inherited as main moves on.
+#
+# The module replaces main's execution lane:
+#   OrchestratorAgent → ExperimentModuleAgent (in TaskExecutorAgent's place)
+#   ExperimentModuleAgent = ToolPreparer → Planner(+HITL) → Executor → Result(+HITL)
+#   ReAct-MCP / Coder / Alembic / Medical are its routes; FEDOT.MAS is
+#   an optional one, off unless EXPERIMENTS__ROUTE_FEDOT=true (see FedotAgent).
+# TaskExecutorAgent, ToolPipelineAgent and ExecutorSwitchAgent stand down: ADK
+# allows an agent exactly one `children` parent, and ToolPreparerAgent belongs
+# to the module here. `enabled: false` still builds them (A2A) but attaches
+# them to nobody.
+#
+# Merge semantics to keep in mind (assembly/schema.py::_merge_raw): agent fields
+# merge one level deep, so naming `callbacks:` replaces the WHOLE block — every
+# list below therefore carries main's hooks as well as the module's.
+#
+# Run:      COSCIENTIST_CONFIG=experiments python -m CoScientist
+# Validate: COSCIENTIST_CONFIG=experiments python -m CoScientist.assembly
+#           (validation does NOT build the tree — run the profile tests too)
+# ─────────────────────────────────────────────────────────────────────────────
+
+extends: system
+
+agents:
+  # ── Execution lane: the module takes TaskExecutor's place ──────────────────
+  TaskExecutorAgent:
+    enabled: false
+    # The A2A identity moves to the module, which IS the task_execution service
+    # on this profile. Two agents cannot claim one a2a key.
+    a2a: null
+  ToolPipelineAgent:
+    enabled: false      # frees ToolPreparerAgent to be the module's child
+  ExecutorSwitchAgent:
+    enabled: false      # ExperimentExecutorAgent does the routing instead
+
+  OrchestratorAgent:
+    subordinates:
+      - PlannerAgent
+      - HypothesesAgent
+      - ResearchAgent
+      - ExperimentModuleAgent
+      - MedicalAgent
+    callbacks:
+      # main's chain plus the module's: pipeline-scope HITL, and the structural
+      # fan-out merge that keeps one ask from becoming several module calls.
+      # mirror_plan_before_agent sits where main puts it, right after
+      # before_get_task: it reads the tracker the task fetch just refreshed, so
+      # the plan column advances with the run instead of freezing at "todo".
+      before_agent: [prepare_experiment_user_turn, ask_pipeline_scope, before_get_task, mirror_plan_before_agent, inject_graph_root, inject_research_context, user_links]
+      before_model: [save_uploaded_artifacts, seed_coder_workspace, redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [mark_pipeline_scope_lane, register_tool_result_links, mirror_plan_after_create]
+      # expand_link_refs first: it is the egress point for the agent's own text,
+      # and a later callback that returns a response short-circuits the chain.
+      after_model: [expand_link_refs, enforce_pipeline_scope_hops, coalesce_experiment_module_calls, suppress_experiment_module_after_completed, guard_unknown_tools]
+
+  # ── Shared agents: the module's methods laid over main's wiring ────────────
+  HypothesesAgent:
+    include_contents: none
+    callbacks:
+      # bootstrap must precede inject_research_context, so a fresh graph is
+      # seeded before {research_context?} is rendered. brief_hypotheses_regime
+      # comes after them: by then the module's own retrieval has filled the
+      # inventory it reports on.
+      before_agent: [bootstrap_research_question_if_empty, before_get_task, inject_research_context, brief_hypotheses_regime, user_links]
+      before_model: [seed_hypotheses_from_em_request, redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [capture_hypotheses_after_research_commit, register_tool_result_links]
+      after_model: [expand_link_refs, enforce_hypothesis_research_commit, normalize_em_hypothesis_commit, guard_unknown_tools]
+      after_agent: [commit_experiment_hypotheses]
+
+  ResearchAgent:
+    callbacks:
+      before_agent: [before_get_task, inject_research_context, reset_research_searches, user_links]
+      before_model: [inject_uploaded_papers, redact_link_urls]
+      before_tool: [WebSearchLimiter, resolve_link_refs]
+      after_tool: [log_research_tool_calls, count_research_searches, register_tool_result_links]
+      after_model: [expand_link_refs, guard_unknown_tools]
+
+  CoderAgent:
+    # A route of the module: it READS the science record; the run record is
+    # written by the module's deterministic bridge from record_result
+    # (experiments/runtime/graph_bridge.py), so no second Evidence per task.
+    tools: [coder, sandbox, verify, vault, research_graph_readonly]
+    callbacks:
+      before_agent: [inject_research_context, inject_dataset_context, user_links]
+      before_model: [seed_coder_workspace, redact_link_urls]
+      before_tool: [resolve_link_refs, hitl_before_tool]
+      after_tool: [register_tool_result_links]
+      after_model: [expand_link_refs, guard_unknown_tools]
+
+  McpBuilderAgent:
+    callbacks:
+      before_agent: [user_links]
+      before_model: [redact_link_urls]
+      before_tool: [pin_alembic_build_args, resolve_link_refs]
+      after_tool: [await_alembic_job_if_experiment, register_tool_result_links]
+      after_model: [expand_link_refs, guard_unknown_tools]
+
+  # ── Tool discovery: the module owns this pipeline ──────────────────────────
+  ToolPreparerAgent:
+    callbacks:
+      before_agent: [skip_when_experiment_stage_complete]
+      after_agent: [assess_experiment_inventory_feasibility]
+
+  ToolRetrieverAgent:
+    prompt: experiment_tool_retriever
+    callbacks:
+      before_agent: [persist_experiment_em_request, reset_experiment_retrieval_budget]
+      after_model: [enforce_experiment_retrieval_budget]
+      after_agent: [persist_experiment_retrieved_capabilities]
+
+  ToolReranker:
+    callbacks:
+      # stash BEFORE shortlist: shortlist_reranker_tools narrows accumulated_tools
+      # to the top-K, and the full pre-rerank set is exactly what the planner
+      # falls back on when the reranker abstains.
+      before_agent: [stash_experiment_retrieved_capabilities, shortlist_reranker_tools]
+      before_model: [skip_retriever_context]
+      after_model: [sanitize_json_output]
+      after_agent: [collect_reranked_tools, snapshot_experiment_discovered_capabilities]
+
+  # ── Routes: they read the graph, the bridge writes it ──────────────────────
+  ExperimentAgent:
+    prompt: experiment_react_route
+    tools: [dynamic_tools, sleep, task_tracker, graph, research_graph_readonly]
+    callbacks:
+      before_agent: [redirect_when_no_tools, before_get_task, inject_research_context, user_links]
+      before_model: [redact_link_urls]
+      before_tool: [force_schema_s3_upload, resolve_link_refs]
+      after_tool: [register_tool_result_links, capture_mcp_artifacts, capture_experiment_tool_results]
+      after_model: [expand_link_refs]
+
+  FedotAgent:
+    # FEDOT.MAS is an optional route here, with ONE switch:
+    # EXPERIMENTS__ROUTE_FEDOT (off by default; also in the web settings).
+    # This line attaches the agent on it, and every route decision (planner
+    # prompt and context, critique, start_task, fallback, Alembic post-build)
+    # asks state_machine.fedot_route_available, which also requires FedotAgent
+    # in ExperimentExecutorAgent.subordinates below - so deleting it from that
+    # list switches the route off too. Deleting only THIS block does not:
+    # `extends: system` brings FedotAgent back from system.yaml.
+    # Not EXECUTOR__FEDOT_FALLBACK: that is the main profile's reranker fallback.
+    enabled: "${experiments.route_fedot}"
+    prompt: experiment_fedot_route
+    tools: [fedot, task_tracker, graph, research_graph_readonly]
+    callbacks:
+      before_agent: [redirect_when_no_tools, before_get_task, inject_research_context, inject_fedot_candidates, user_links]
+      before_model: [redact_link_urls]
+      before_tool: [pin_fedot_alembic_task, resolve_link_refs]
+      after_tool: [register_tool_result_links]
+      after_model: [expand_link_refs]
+
+  ResultAggregatorAgent:
+    prompt: experiment_result_aggregator
+    callbacks:
+      # This profile REPLACES the system profile's callback list rather than
+      # extending it, so ask_nir_report has to be repeated here. Without it the
+      # NirReportAgent inherited from system.yaml would be attached and offered
+      # in the prompt roster while the operator was never asked for it.
+      # guard_report_without_execution FIRST, and on this profile it matters
+      # most: the experiment module is the stage that can stop quietly, and this
+      # is the only thing between "the plan was never approved" and a full
+      # scientific report about work that never happened.
+      before_agent: [guard_report_without_execution, inject_research_context, inject_report_language, ask_nir_report, user_links]
+      before_model: [redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+      after_model: [expand_link_refs]
+
+  # ── The module itself ──────────────────────────────────────────────────────
+  ExperimentModuleAgent:
+    class: sequential
+    required_for_pipeline: true
+    callbacks:
+      before_agent: [skip_literature_only_experiment]
+    # A composite accepts only before_agent/after_agent — any other callback
+    # kind is a build-time crash, not a silent no-op.
+    description: >-
+      Plans, reviews, executes and reports one computational experiment with
+      task/attempt state, finite fallback and artifact lineage. Owns tool
+      discovery (ToolPreparer), plan HITL, MCP/Coder/Alembic/Medical
+      routing, and result HITL. Primary choice for ANY computational ask
+      stage. Literature collection stays with the orchestrator's ResearchAgent;
+      the module consumes its evidence and data refs without repeating the search.
+    # No route names the module picks for itself (FEDOT.MAS used to be listed
+    # here): the orchestrator copies them into the brief, the brief becomes
+    # the planner's source_request, and a named route is a requested route.
+    routing: >-
+      for ANY computational / engineering stage: molecules, docking, properties,
+      simulations, custom code, named repos/URLs, or MCP gaps.
+      Call ONCE per stage with the FULL self-contained brief (goal, constraints,
+      data refs, required outcomes). Retrieve tools first to decide the lane and
+      to NAME the relevant tools in the brief; the FULL inventory, plan and route
+      fallbacks still live inside the module, so do not try to assemble them
+      yourself and do not fan out into multiple ExperimentModuleAgent calls.
+      Delegate literature search to ResearchAgent outside this module; pass its
+      sources, data refs and explicit gaps as inputs, not as experiment tasks.
+    planning: |-
+      Use this as your ONLY choice for computational or engineering work.
+      Prefer over Research whenever the ask can be computed or coded:
+        - chemistry / molecule / docking / property tasks
+        - custom code, sandbox, or named repository work
+        - tool discovery + execution + route fallback
+    children:
+      - ToolPreparerAgent
+      - ExperimentPlannerAgent
+      - ExperimentExecutorAgent
+      - ExperimentResultReviewAgent
+    # It stands where TaskExecutorAgent stood, which carries report_output in
+    # main: the module's deliverable belongs in the chat, not buried in the
+    # orchestrator's function_response. Of the four module agents only this one
+    # is attached as an AgentTool, so only here does the flag do anything.
+    report_output: true
+    a2a:
+      key: task_execution
+      port: 8004
+      env:
+        CODER_WORKSPACE_ID: a2a_shared
+        GIT_HTTP_LOW_SPEED_LIMIT: "1000"
+        GIT_HTTP_LOW_SPEED_TIME: "20"
+      skill:
+        id: execute_task
+        name: Execute experiment
+        description: Plan, approve and run a computational experiment
+        tags: [experiment, mcp, coder]
+
+  ExperimentPlannerAgent:
+    class: custom:experiment_review
+    model: main
+    reasoning: medium
+    include_contents: none
+    description: Build a strict ExperimentPlan and obtain explicit human approval.
+    prompt: experiment_planner
+    output_key: experiment_plan
+    hitl: true
+    hitl_tools: false
+    callbacks:
+      # inject_research_context BEFORE build_experiment_context: the builder
+      # reads state["research_context"], and without this callback the planner
+      # inherited whatever slice the previously-run agent happened to leave
+      # there — a stale, wrong-focus one, or nothing at all.
+      before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible, inject_research_context, build_experiment_context, check_experiment_plan_capacity]
+      before_model: [skip_retriever_context]
+      after_model: [sanitize_json_output]
+    options:
+      review_kind: plan
+
+  ExperimentExecutorAgent:
+    class: llm
+    reasoning: low
+    include_contents: none
+    description: >-
+      Thin control-plane executor; delegates one route per attempt while all
+      lifecycle state is enforced by deterministic experiment control tools.
+    prompt: experiment_executor
+    tools: [experiment_control]
+    subordinates:
+      - FedotAgent
+      - ExperimentAgent
+      - CoderAgent
+      - McpBuilderAgent
+      - MedicalAgent
+    output_key: experiment_execution_summary
+    callbacks:
+      before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible, skip_executor_without_runtime]
+      before_tool: [guard_experiment_route]
+      after_tool: [mark_experiment_route_returned]
+      # One deterministic selector owns close/route/control transitions.  The
+      # historical callback name is retained, but it no longer composes three
+      # independent rewriters that could drive each other into a loop.
+      after_model: [enforce_pending_record_result]
+
+  ExperimentResultReviewAgent:
+    class: custom:experiment_review
+    model: main
+    reasoning: medium
+    description: Summarize typed TaskResults and require explicit result acceptance.
+    prompt: experiment_result_summary
+    output_key: experiment_summary
+    hitl: true
+    hitl_tools: false
+    callbacks:
+      before_agent: [skip_when_experiment_stage_complete, skip_when_experiment_not_feasible]
+    options:
+      review_kind: result

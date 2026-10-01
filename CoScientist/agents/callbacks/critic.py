@@ -270,6 +270,13 @@ async def _invoke_critic_llm(system_prompt: str, user_prompt: str) -> Dict[str, 
     for attempt in range(1, cfg.max_attempts + 1):
         started = time.perf_counter()
         try:
+            # Waiting on a user pause is not provider latency and must not
+            # consume the critic's wall-clock deadline.
+            from CoScientist.execution_control import before_model_attempt
+            await before_model_attempt(
+                "critic",
+                metadata={"model": model, "retry": attempt - 1},
+            )
             # `timeout=` is only httpx's per-read budget; `asyncio.timeout` is
             # what actually caps a provider that stalls mid-response.
             async with asyncio.timeout(cfg.timeout):

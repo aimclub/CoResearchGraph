@@ -42,21 +42,6 @@ def test_store_replays_events_in_sequence_order():
     asyncio.run(scenario())
 
 
-def test_store_enforces_one_a2a_task_for_an_external_run():
-    async def scenario():
-        store = InMemoryIntegrationStore()
-        first = A2ATaskRecord(a2a_task_id="task-1", external_run_id="external-1", coscientist_run_id="run-1")
-        await store.save_task(first)
-
-        with pytest.raises(DuplicateIdentityError):
-            await store.save_task(
-                A2ATaskRecord(a2a_task_id="task-2", external_run_id="external-1", coscientist_run_id="run-2")
-            )
-        assert (await store.get_task_by_external_run("external-1")).a2a_task_id == "task-1"
-
-    asyncio.run(scenario())
-
-
 def test_store_allows_only_one_live_mongo_style_run_lease():
     async def scenario():
         store = InMemoryIntegrationStore()

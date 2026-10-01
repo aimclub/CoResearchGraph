@@ -1,0 +1,26 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"request_id\": \"contract-dump-run-1\",\n  \"artifact_location\": \"local_path\",\n  \"total\": 9,\n  \"offset\": 0,\n  \"keys\": [\n    \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/flow/outputs/20260917_161207_mesh.npz/run.log\",\n    \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/config.json\",\n    \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_boundary_all.vtp\",\n    \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_imported_mesh.npz\",\n    \"results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_volume.vtu\"\n  ],\n  \"next_offset\": 5\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "request_id": "contract-dump-run-1",
+    "artifact_location": "local_path",
+    "total": 9,
+    "offset": 0,
+    "keys": [
+      "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/flow/outputs/20260917_161207_mesh.npz/run.log",
+      "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/config.json",
+      "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_boundary_all.vtp",
+      "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_imported_mesh.npz",
+      "results/service_runs/20260917_161152_contract-dump-run-1_36696a2f/import/outputs/20260917_161153_input/input_volume.vtu"
+    ],
+    "next_offset": 5
+  },
+  "isError": false
+}

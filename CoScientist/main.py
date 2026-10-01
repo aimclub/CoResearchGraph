@@ -12,6 +12,7 @@ load_dotenv()
 
 import asyncio
 import os
+from contextlib import nullcontext
 from typing import Optional, Sequence
 import logging
 from uuid import uuid4
@@ -21,7 +22,8 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.agents.run_config import RunConfig
 from google.genai import types
 
-from CoScientist.config import get_settings, ReportConfig
+from CoScientist.config import get_settings, settings_scope, ReportConfig
+from CoScientist.config.settings import Settings
 from CoScientist.checkpoints.runner import CheckpointRunner as Runner
 from CoScientist.agents import orchestrator_agent, root_agent, run_root, build_for_mode
 from CoScientist.reporting import finalize_report, RunResult
@@ -99,14 +101,18 @@ def _s3_csv_preview(url: str, max_rows: int = 10, max_bytes: int = 200_000) -> s
     (header + first rows of Smiles + key property columns). Returns '' on any failure.
 
     Lets the final answer be formed from the ACTUAL S3 file contents rather than a bare
-    link or unverified prose (F010.A6).
+    link or unverified prose (F010.A6). Download convention matches
+    ``reporting.collect._download`` (html-unescape + requests) so MCP-escaped
+    MinIO/S3 SigV4 URLs still work.
     """
-    import urllib.request
     import csv
+    import html
     import io
+    import requests
     try:
-        with urllib.request.urlopen(url, timeout=20) as resp:
-            raw = resp.read(max_bytes).decode("utf-8", "replace")
+        resp = requests.get(html.unescape(url), timeout=20)
+        resp.raise_for_status()
+        raw = resp.content[:max_bytes].decode("utf-8", "replace")
         rows = list(csv.reader(io.StringIO(raw)))
         if not rows:
             return ""
@@ -138,6 +144,7 @@ class CoScientistManager:
         session_service: Optional[BaseSessionService] = None,
         initial_state: Optional[dict] = None,
         plugins: Optional[Sequence[object]] = None,
+        settings_override: Optional[Settings] = None,
     ):
         self.app_name = app_name
         self.user_id = user_id or f"user_{uuid4().hex}"
@@ -150,6 +157,9 @@ class CoScientistManager:
         # Integrations may add observer-only ADK plugins (for example the
         # Codesynapse trace exporter) without replacing the core runtime stack.
         self._additional_plugins = list(plugins or ())
+        # The web binds one immutable settings snapshot to each run. CLI users
+        # leave this unset and continue to read the process configuration.
+        self.settings_override = settings_override
 
         # Web mode injects one shared service so managers can reopen existing
         # sessions. CLI mode falls back to a private in-memory service.
@@ -163,7 +173,19 @@ class CoScientistManager:
         self._hitl_handler = hitl_handler
 
 
+    def settings_context(self):
+        """Bind this manager's settings for assembly and the complete run."""
+        return (
+            settings_scope(self.settings_override)
+            if self.settings_override is not None
+            else nullcontext(get_settings())
+        )
+
     async def initialize(self):
+        with self.settings_context():
+            await self._initialize()
+
+    async def _initialize(self):
         """Initialize session + runner."""
         if self._initialized:
             return
@@ -204,15 +226,22 @@ class CoScientistManager:
             from CoScientist.graph.plugin import GraphMemoryPlugin
             from CoScientist.graph.research.validator import BackgroundValidatorPlugin
             from CoScientist.agents.truncation_plugin import ToolResultTruncationPlugin
+            from CoScientist.tools.paper_capture_plugin import PaperCapturePlugin
             from CoScientist.tools.mcp_artifact_plugin import McpArtifactCapturePlugin
             from CoScientist.verify.gate_plugin import ArtifactGatePlugin
             from CoScientist.agents.loop_guard_plugin import RepeatCallGuardPlugin
             from CoScientist.tools.session_scope_plugin import SessionScopePlugin
+            from CoScientist.agents.checkpoint_plugin import CheckpointPlugin
+            from CoScientist.agents.run_control_plugin import RunControlPlugin
 
             # Build the agent system (reads start_mode + tunable params from settings).
             system = build_for_mode()
 
             plugins = [
+                # Stage boundary snapshots and deterministic fast-forward
+                # must run before observers and agent-local callbacks.
+                CheckpointPlugin(),
+                RunControlPlugin(),
                 # First: deterministically refuse training on a fabricated
                 # dataset (before_tool gate) — fabrication buys nothing.
                 ArtifactGatePlugin(),
@@ -244,13 +273,20 @@ class CoScientistManager:
                 # Capture artifact (figure/table) URLs from tool results BEFORE
                 # truncation can drop them, so the report collector downloads them.
                 McpArtifactCapturePlugin(),
-                # Keep truncation last so observers receive full results.
+                # After it: a PDF already mirrored is re-filed as a paper
+                # here instead of being fetched again.
+                PaperCapturePlugin(),
+                # Truncation answers None now, so it no longer decides
+                # whether anything after it runs; it cuts for the model at
+                # before_model and keeps only a safety net here.
                 ToolResultTruncationPlugin(),
             ]
+            # Synapse run-state snapshots (checkpoints/ package), opt-in and
+            # independent of the stage checkpoints above.
             if get_settings().checkpoints.enabled:
-                from CoScientist.checkpoints import CheckpointPlugin
+                from CoScientist.checkpoints import CheckpointPlugin as SnapshotPlugin
 
-                plugins.insert(0, CheckpointPlugin())
+                plugins.insert(0, SnapshotPlugin())
 
             app = App(
                 name=self.app_name,
@@ -268,7 +304,27 @@ class CoScientistManager:
                     else:
                         coder_toolset._hitl_handler = self._hitl_handler
 
+            from CoScientist.agents.common import verify_proxy_reachable
+            await verify_proxy_reachable()
+
             self._initialized = True
+
+    async def rebuild_agent_tree(self) -> None:
+        """Rebuild agents from current settings while preserving session data.
+
+        This deliberately does not call :meth:`close`: closing a manager also
+        removes uploaded-paper resources and usage state, which is appropriate
+        when a session ends but not when the operator changes a model or
+        capability between two requests in the same session.
+        """
+        async with self._initialize_lock:
+            if self.runner is not None:
+                try:
+                    await self.runner.close()
+                finally:
+                    self.runner = None
+                    self._initialized = False
+        await self.initialize()
 
     async def _set_state(self, key: str, value) -> None:
         """Best-effort write into the live session state (in-memory)."""
@@ -280,6 +336,38 @@ class CoScientistManager:
                 session.state[key] = value
         except Exception as exc:
             logger.warning("could not set session state %r: %s", key, exc)
+
+    async def seed_research_context(self, query: str) -> None:
+        """The question the user asked IS the root of the research graph.
+
+        Two holes, one call. The graph had no guaranteed root: the pre-stage
+        that seeds the framing is gated on RESEARCH_FRAME, and with it off the
+        only remaining path was an orchestrator that had to *remember* to call
+        research_init — so a whole run could record a dozen findings hanging off
+        no question at all, which cannot be read as research. And `user_query`
+        was read (to match a new request against past studies) but written by
+        nobody, so that lookup never fired once.
+
+        Deliberately skipped when the context-init pre-stage is enabled: that
+        stage seeds a far richer frame through init_research, which ARCHIVES
+        whatever is already there — seeding a bare root first would make every
+        run start by archiving a study one second old.
+        """
+        await self._set_state("user_query", query)
+        try:
+            from CoScientist.config import get_settings
+
+            if get_settings().context_init.enabled:
+                return
+        except Exception:  # noqa: BLE001 — a settings hiccup must not skip the root
+            pass
+        try:
+            from CoScientist.graph.research.store import get_research_graph
+
+            get_research_graph(user_id=self.user_id,
+                               session_id=self.session_id).ensure_root(query)
+        except Exception as exc:  # noqa: BLE001 — seeding must never end a run
+            logger.warning("could not seed the research root: %s", exc)
 
     @staticmethod
     def _final_text(event) -> Optional[str]:
@@ -306,6 +394,19 @@ class CoScientistManager:
         verbose: bool = True,
         report_config: Optional[ReportConfig] = None,
     ) -> RunResult:
+        with self.settings_context():
+            from CoScientist.execution_control import current_run
+            if current_run() is not None:
+                return await self._run(query, verbose=verbose, report_config=report_config)
+            from CoScientist.execution_cli import run_with_control
+            return await run_with_control(self, query, verbose=verbose, report_config=report_config)
+
+    async def _run(
+        self,
+        query: str,
+        verbose: bool = True,
+        report_config: Optional[ReportConfig] = None,
+    ) -> RunResult:
         """Run the full pipeline and package the report.
 
         The whole lifecycle (orchestrator → Result Aggregator) is ONE ADK
@@ -320,6 +421,7 @@ class CoScientistManager:
         # The aggregator's format_results reads report_config mid-invocation, so it
         # must be in state BEFORE the run starts.
         await self._set_state("report_config", report_config.to_state())
+        await self.seed_research_context(query)
         self._run_error = None
 
         content = types.Content(role="user", parts=[types.Part(text=query)])
@@ -350,10 +452,10 @@ class CoScientistManager:
                     user_id=self.user_id,
                     session_id=self.session_id,
                     new_message=msg,
-                    # Lift ADK's 500-LLM-call default so a long autonomous run driven
-                    # by a single prompt isn't cut off mid-work (finite cost backstop).
+                    # One durable provider-attempt quota covers nested runners;
+                    # ADK's independent per-invocation counter cannot do that.
                     run_config=RunConfig(
-                        max_llm_calls=get_settings().orchestrator.max_llm_calls
+                        max_llm_calls=0
                     ),
                 ):
                     if verbose:
@@ -451,6 +553,8 @@ class CoScientistManager:
             pass
 
         # Package the deliverable: report.md + LaTeX (per config) + MANIFEST.json.
+        from CoScientist.execution_control import before_tool_action
+        await before_tool_action("finalize_report")
         return await asyncio.to_thread(
             finalize_report, self.session_id, report_markdown, report_config, state,
         )

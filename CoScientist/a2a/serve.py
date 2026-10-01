@@ -24,6 +24,11 @@ def main(argv=None) -> None:
     from CoScientist.assembly.schema import get_config
 
     agent_cfg = get_config().a2a_agent_by_key(args.key)
+    if not agent_cfg.is_enabled():
+        raise SystemExit(
+            f"A2A agent {args.key!r} is disabled by configuration. "
+            "Enable its capability switch before serving it."
+        )
     for name, value in agent_cfg.a2a.env.items():
         os.environ.setdefault(name, value)
 
@@ -38,6 +43,7 @@ def main(argv=None) -> None:
     from CoScientist.a2a.config import AGENT_PORTS
     from CoScientist.a2a.server import make_a2a_app, make_agent_card
     from CoScientist.assembly import build_system
+    from CoScientist.utils.interrupt import InterruptibleServer
 
     if agent_cfg.root:
         # The orchestrator delegates to its sub-agents over A2A.
@@ -46,7 +52,13 @@ def main(argv=None) -> None:
         agent = build_system().agent(agent_cfg.name)
 
     app = make_a2a_app(agent, make_agent_card(agent_cfg), agent_cfg.a2a.key)
-    uvicorn.run(app, host=args.host, port=AGENT_PORTS[agent_cfg.a2a.key], log_level="info")
+    config = uvicorn.Config(
+        app, host=args.host, port=AGENT_PORTS[agent_cfg.a2a.key], log_level="info"
+    )
+    try:
+        InterruptibleServer(config).run()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

@@ -24,6 +24,9 @@ IMAGE="alembic-serve-$NAME"
 CONTAINER="alembic-serve-$NAME"
 PORT="${MCP_HOST_PORT:-8000}"
 
+# serve.Dockerfile copies the reports folder; an older output may have none.
+mkdir -p "$ROOT/.alembic/$NAME/reports"
+
 echo "[build_serve] building $IMAGE from $OUT (rebuilding venvs from setup.sh)…"
 docker build -f "$ROOT/docker/alembic/serve.Dockerfile" \
     --build-arg REPO_NAME="$NAME" \

@@ -115,6 +115,34 @@ class GraphStore:
             self._snapshot_load_failures.discard(run_id)
             self._snapshot(run_id)  # writes an empty graph for this run
 
+    def replace(self, run_id: str, payload: dict) -> None:
+        """Atomically replace one run with a validated serialized snapshot."""
+        if not isinstance(payload, dict):
+            raise ValueError("graph snapshot must be an object")
+        nodes = payload.get("nodes", [])
+        edges = payload.get("edges", [])
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            raise ValueError("graph snapshot nodes and edges must be arrays")
+        graph = nx.DiGraph()
+        for raw_node in nodes:
+            if not isinstance(raw_node, dict) or not raw_node.get("id"):
+                raise ValueError("every graph node must have an id")
+            node = dict(raw_node)
+            graph.add_node(str(node["id"]), **node)
+        for raw_edge in edges:
+            if not isinstance(raw_edge, dict) or not raw_edge.get("src") \
+                    or not raw_edge.get("dst"):
+                raise ValueError("every graph edge must have src and dst")
+            edge = dict(raw_edge)
+            src = str(edge.pop("src"))
+            dst = str(edge.pop("dst"))
+            graph.add_edge(src, dst, **edge)
+        with self._lock:
+            self._loaded_run_ids.add(run_id)
+            self._snapshot_load_failures.discard(run_id)
+            self._graphs[run_id] = graph
+            self._snapshot(run_id)
+
     # ── persistence ─────────────────────────────────────────────────────────
     def _load_snapshot_unlocked(self, run_id: str) -> None:
         """Restore one run on first access.

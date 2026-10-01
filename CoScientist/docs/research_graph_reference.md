@@ -79,9 +79,12 @@ partial, or a new-question spawn. Includes validity bounds.
 ### `VerificationMethod` — id `VM`
 A concrete procedure that yields evidence for a hypothesis.
 - **attrs:** `method_type` (computational / laboratory / analytical /
-  statistical / expert), `inputs`, `outputs`, `cost`, `limitations`.
-- **status:** `planned` → `running` → {`done` | `failed`}; `planned`→`failed`;
-  `failed`→`planned` (retry).
+  statistical / expert), `instruments` (WHAT it is run with: MCP tools as
+  `server:tool`, agents, libraries), `inputs`, `outputs`, `cost`,
+  `limitations`.
+- **status:** `proposed` → {`used` | `not_used`}; `not_used`→`used` (a method
+  the study first gave up on can still settle the claim). A method is the
+  MEANS, never work: it is never "planned" and never "done".
 - **created by:** HypothesesAgent (it proposes how to test its hypothesis) ·
   **transitioned by:** CoderAgent, ExperimentAgent (the executors that run it).
 - **edges out:** `uses`→Tool, `consumes`→Resource, `produces`→Evidence.

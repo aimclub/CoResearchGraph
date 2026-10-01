@@ -100,6 +100,7 @@ pyarrow==23.0.1
 pyasn1==0.6.2
 pyasn1_modules==0.4.2
 pycparser==3.0
+pillow==12.2.0
 pydantic==2.12.5
 pydantic-settings==2.13.1
 pydantic_core==2.41.5

@@ -39,6 +39,17 @@ def get_multi_agent_tracer():
         os.environ.pop("OPIK_URL_OVERRIDE", None)
     os.environ["OPIK_PROJECT_NAME"] = project_name
 
+    url_override = settings.opik.url_override
+    if url_override:
+        os.environ["OPIK_URL_OVERRIDE"] = url_override
+    else:
+        os.environ.pop("OPIK_URL_OVERRIDE", None)
+
+    if project_name:
+        os.environ["OPIK_PROJECT_NAME"] = project_name
+    else:
+        os.environ.pop("OPIK_PROJECT_NAME", None)
+
     import opik
 
     # Don't let an opik misconfiguration (no key, no network) take down the app
@@ -49,7 +60,8 @@ def get_multi_agent_tracer():
             url_override=url_override or None,
             project_name=project_name,
             use_local=False,
-            install_mcp=False,
+            force=True,
+            #install_mcp=False,
             #automatic_approvals=True,
         )
     except Exception as e:  # pragma: no cover - best-effort tracing setup

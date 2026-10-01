@@ -12,6 +12,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+/.pytest-tmp-*/
 build/
 lib/
 lib64/
@@ -23,9 +24,13 @@ e2e_*.log
 train_full.log
 pilot_v*.log
 v4_full.log
+CoScientist/alembic/testing_protocol/evidence/*.txt
+CoScientist/alembic/testing_protocol/evidence/*.json
+evaluation/microfluidics/runs/
 
 # Django stuff:
 *.log
+!эксперименты/**/console.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -159,8 +164,14 @@ ChemCoScientist/tests/integration/data/.last_activity
 
 session_snapshots/
 workspace/
-# Execution-graph run snapshots
+# Execution-graph run snapshots. The suffixed variants are the same thing
+# under another name — a second instance, a comparison run — and `graph_runs/`
+# does not match them. They hold per-user and per-session ids, presigned
+# storage URLs and internal host addresses, and this is a public repository.
 graph_runs/
+graph_runs_*/
+sessions_*/
+*.cossession.zip
 
 # Rasterised exports — regenerate from the committed .svg / .json
 research_graph_*.png
@@ -191,11 +202,15 @@ agent_events.log
 runs/
 logs/
 workspace/
+local_papers/
+local_papers_/
 tz_documents/
 tz_microfluidics/
+TZ_*.md
 conversations*/
 task_tracker_data.json
 *_report.md
+local_papers/
 
 # Reference PDFs and vendored templates pulled in for the write-up
 CoScientist/docs/*.pdf
@@ -206,6 +221,9 @@ research_graph*.html
 research_graph*.json
 run_evolution*.jsonl
 run_evolution*.html
+# scripts/preview_plan_card.py writes these next to the repo root.
+plan_card_preview*.html
+plan_card_preview*.json
 agent_events.jsonl
 e2e_case.jsonl
 benchmarks/**/repository_inventory.jsonl
@@ -220,7 +238,23 @@ benchmarks/alembic/pre_comparison
 
 # Exported run folders and stray configs — session data, never source
 *_cossession/
+# Analysis scratch and generated decks: regenerated per run, and the .pptx
+# under CoScientist/present is 85 MB — over the size at which a blob is
+# permanent in history for everyone who clones.
+output/
+CoScientist/present/
 CoScientist/some.yaml
+
+# Stubs and isolated stub outputs
+stubs/
+antioxidant_output_stub/
+
+# microfluidics: final reports saved by ReportAgent (research_record.record_conclusion)
+reports/
+
+session_snapshots/
+hub_artifacts/
+tests/integration/parse_results/
 
 # Working notes, handoff files and draft PR text. These are session scratch,
 # not source. Nine of them reached main once already.

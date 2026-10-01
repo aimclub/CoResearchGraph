@@ -48,6 +48,10 @@ TOOL_TIERS: dict[str, Tier] = {
     "search_papers": Tier.READ,
     "download_papers_from_search": Tier.COMPUTE,
     "explore_scientific_database": Tier.READ,
+    # The old name of the one above. PR 367 renamed it; the prompt still
+    # offers it as the fallback for a server that predates the rename, and an
+    # unlisted tool is priced COMPUTE — an approval prompt for a RAG read.
+    "explore_scientific_database": Tier.READ,
     "explore_my_papers": Tier.READ,
     # medical
     "search_pubmed": Tier.READ,
@@ -99,6 +103,9 @@ EXEMPT_TOOLS = frozenset({
     "submit_work_report",
     "request_approval",
     "request_selection",
+    # ADK's own tool for an agent with an output schema AND tools: it carries the
+    # final structured answer, not work.
+    "set_model_response",
 })
 
 
@@ -106,6 +113,12 @@ def exempt_tools(internal_tools: Iterable[str] = ()) -> frozenset:
     """Tools a Work Order neither blocks nor shows: the protocol plus the
     system's ``internal_tools``."""
     return EXEMPT_TOOLS | frozenset(internal_tools)
+
+
+def register_tool_tiers(tiers: dict[str, Tier]) -> None:
+    """Add the tiers of a profile's own tools (unlisted tools are COMPUTE)."""
+    TOOL_TIERS.update(tiers)
+
 
 def tool_tier(tool_name: str) -> Tier:
     return TOOL_TIERS.get(tool_name, Tier.COMPUTE)

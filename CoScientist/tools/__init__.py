@@ -2,6 +2,9 @@
 # Must run before any MCP toolset is used: fail-fast backport for truncated SSE
 # frames from remote MCP servers (see mcp_patches docstring).
 import CoScientist.tools.mcp_patches  # noqa: F401
+# Space starts of MCP tool calls process-wide. Calls already in flight are not
+# serialized, so independent research agents may still execute concurrently.
+import CoScientist.tools.mcp_tool_queue  # noqa: F401
 
 from CoScientist.tools.fedotmas_tools import FedotMASToolset, fedot_toolset_instance
 from CoScientist.tools.research_tools import (

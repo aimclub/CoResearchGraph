@@ -84,5 +84,5 @@ Rules for the `tools` list:
 - Propose only tools that return a checkable result (JSON-serializable value
   or a produced file, link). Do NOT propose GUI/notebook/REPL launchers.
 - Prefer wrapping the repo's own CLI/API 1:1; keep each tool to one operation.
-- Propose 2-5 tools, best first.
+- __TOOL_COUNT_RULE__
 '''

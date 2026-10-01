@@ -17,7 +17,10 @@ import sys
 import types
 from pathlib import Path
 
-from _codegen_loader import load_codegen
+try:
+    from tests.unit._codegen_loader import load_codegen
+except ImportError:
+    from _codegen_loader import load_codegen
 
 cg = load_codegen()
 
@@ -759,3 +762,65 @@ def test_call_does_not_publish_an_echoed_path_from_the_mounted_data(tmp_path, mo
     assert "data_path_s3" not in result
     assert "result_path_s3" in result
     assert len(uploaded) == 1
+
+
+def test_call_hands_back_a_big_result_shortened_with_a_link_to_all_of_it(tmp_path, monkeypatch):
+    """A client cuts a long tool result to fit a model's context, and a JSON
+    document cut in the middle loses whole fields (mordred's values)."""
+    _set_s3_env(monkeypatch)
+    server_path = _write_rendered_server(
+        tmp_path, helper_source=_REAL_S3_TRANSFER.read_text(encoding="utf-8"))
+    mod = _load_server_module(server_path, monkeypatch)
+    stored = {}
+
+    class _FakeClient:
+        def put_object(self, Bucket, Key, Body, ContentType):
+            stored[Key] = Body
+
+        def generate_presigned_url(self, method, Params, ExpiresIn):
+            return f"https://signed/{Params['Key']}"
+
+    monkeypatch.setattr(mod._s3, "_client_factory", lambda *a: _FakeClient())
+    big = {"descriptor_names": [f"D{i}" for i in range(1613)], "values": list(range(1613))}
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda cmd, **kw: _FakeCompleted(_sentinel_stdout(big)))
+
+    result = mod._call("predict", {})
+
+    [key] = stored
+    assert key.endswith("/result/result.json")
+    assert json.loads(stored[key]) == big
+    assert result["result_s3"]["presigned_url"] == f"https://signed/{key}"
+    assert 0 < len(result["values"]) < 1613
+
+
+def test_a_dataframe_comes_back_as_data_not_as_its_printed_form(tmp_path):
+    """json.dumps(default=str) turned a frame into its printed text, columns
+    elided with "...", so the caller got a wall of text instead of a table."""
+    import subprocess
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "gmt.py").write_text(
+        "import numpy as np, pandas as pd\n"
+        "def gmt():\n"
+        "    frame = pd.DataFrame([['IFI27', 'CA4', 1.5], ['CXCR1', None, np.nan]],\n"
+        "                         index=['endo-aerocyte', 'CD56dim-NK'],\n"
+        "                         columns=['g0', 'g1', 'score'])\n"
+        "    return {'gmt': frame, 'n': np.int64(2), 'genes': np.array(['A', 'B']), 'gap': np.float64('nan')}\n",
+        encoding="utf-8")
+
+    proc = subprocess.run([sys.executable, str(_REAL_RUN_FUNCTION), str(tmp_path), "gmt", "{}"],
+                          capture_output=True, text=True, check=False)
+
+    payload = proc.stdout.split("<<<ALEMBIC_RESULT>>>")[1].strip()
+    # NaN is not JSON: a strict reader (the browser) refuses the whole document.
+    result = json.loads(payload, parse_constant=_no_constants)["result"]
+    assert result["gmt"] == {"dtype": "DataFrame",
+                             "index": ["endo-aerocyte", "CD56dim-NK"],
+                             "columns": ["g0", "g1", "score"],
+                             "data": [["IFI27", "CA4", 1.5], ["CXCR1", None, None]]}
+    assert (result["n"], result["genes"], result["gap"]) == (2, ["A", "B"], None)
+
+
+def _no_constants(name):
+    raise AssertionError(f"{name} is not valid JSON")

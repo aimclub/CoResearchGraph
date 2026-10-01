@@ -1,0 +1,71 @@
+{
+  "meta": null,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"line_items\": [\n    {\n      \"query_smiles\": \"OCC(O)CO\",\n      \"matched_inchikey\": \"PEDCQBHIVMGVHV-UHFFFAOYSA-N\",\n      \"display_name_en\": null,\n      \"match_level\": \"точный\",\n      \"similarity\": 1.0,\n      \"qty\": \"100\",\n      \"unit\": \"g\",\n      \"chosen\": {\n        \"supplier\": \"Лэнреактив\",\n        \"name_raw\": \"Глицерин (имп)\",\n        \"pack_qty\": \"250\",\n        \"pack_unit\": \"kg\",\n        \"price\": \"64000.00\",\n        \"price_currency\": \"RUB\",\n        \"unit_price\": \"256.0000\"\n      },\n      \"packs_needed\": 1,\n      \"cost_packs\": \"64000.00\",\n      \"cost_per_unit\": \"25.60000\",\n      \"is_bulk\": false,\n      \"basis_suspect\": false,\n      \"comment\": \"\"\n    }\n  ],\n  \"total_by_currency\": {\n    \"RUB\": {\n      \"packs\": \"64000.00\",\n      \"per_unit\": \"25.60000\",\n      \"bulk_excluded_count\": 0\n    }\n  },\n  \"resolved_inputs\": [\n    {\n      \"input\": \"глицерин\",\n      \"kind\": \"name\",\n      \"canonical_smiles\": \"OCC(O)CO\",\n      \"inchikey\": \"PEDCQBHIVMGVHV-UHFFFAOYSA-N\",\n      \"formula\": \"C3H8O3\",\n      \"molar_mass\": \"92.094\",\n      \"method\": \"dictionary\",\n      \"confidence\": 0.99,\n      \"translated_from\": null,\n      \"error\": null,\n      \"hint\": null\n    }\n  ],\n  \"missing\": [],\n  \"candidates\": [],\n  \"comment\": \"\",\n  \"assumptions\": [\n    \"суммы раздельно по валютам, без пересчёта по курсу\",\n    \"по упаковкам — целые упаковки (реальный чек); за единицу — себестоимость (qty × цена/фасовку)\",\n    \"гидраты сведены к безводной базовой соли (v1); водосодержащие позиции уступают безводным при выборе и помечаются в комментарии\"\n  ],\n  \"error\": null\n}",
+      "annotations": null,
+      "meta": null
+    }
+  ],
+  "structuredContent": {
+    "line_items": [
+      {
+        "query_smiles": "OCC(O)CO",
+        "matched_inchikey": "PEDCQBHIVMGVHV-UHFFFAOYSA-N",
+        "display_name_en": null,
+        "match_level": "точный",
+        "similarity": 1.0,
+        "qty": "100",
+        "unit": "g",
+        "chosen": {
+          "supplier": "Лэнреактив",
+          "name_raw": "Глицерин (имп)",
+          "pack_qty": "250",
+          "pack_unit": "kg",
+          "price": "64000.00",
+          "price_currency": "RUB",
+          "unit_price": "256.0000"
+        },
+        "packs_needed": 1,
+        "cost_packs": "64000.00",
+        "cost_per_unit": "25.60000",
+        "is_bulk": false,
+        "basis_suspect": false,
+        "comment": ""
+      }
+    ],
+    "total_by_currency": {
+      "RUB": {
+        "packs": "64000.00",
+        "per_unit": "25.60000",
+        "bulk_excluded_count": 0
+      }
+    },
+    "resolved_inputs": [
+      {
+        "input": "глицерин",
+        "kind": "name",
+        "canonical_smiles": "OCC(O)CO",
+        "inchikey": "PEDCQBHIVMGVHV-UHFFFAOYSA-N",
+        "formula": "C3H8O3",
+        "molar_mass": "92.094",
+        "method": "dictionary",
+        "confidence": 0.99,
+        "translated_from": null,
+        "error": null,
+        "hint": null
+      }
+    ],
+    "missing": [],
+    "candidates": [],
+    "comment": "",
+    "assumptions": [
+      "суммы раздельно по валютам, без пересчёта по курсу",
+      "по упаковкам — целые упаковки (реальный чек); за единицу — себестоимость (qty × цена/фасовку)",
+      "гидраты сведены к безводной базовой соли (v1); водосодержащие позиции уступают безводным при выборе и помечаются в комментарии"
+    ],
+    "error": null
+  },
+  "isError": false
+}

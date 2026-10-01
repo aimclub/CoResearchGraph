@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from CoScientist.graph.research.store import _respeak_method_status
+
 logger = logging.getLogger("CoScientist.web.replay")
 
 #: Marker put on every replayed event, so a recording is never mistaken for a
@@ -487,12 +489,20 @@ class ReplaySession:
             node = graph.nodes.get(item["id"]) if item["id"] in graph.nodes else None
             if node is not None and item.get("status"):
                 node["status"] = item["status"]
+                # …in the words the graph speaks now. A recording is a file of
+                # the same age as a stored study, and this path does not go
+                # through the store's loader, so without it a replayed method
+                # kept the task vocabulary it was recorded in — and a card of a
+                # Метод проверки read «запланирован»/«выполнен».
+                _respeak_method_status(node)
             return
         if kind == "node":
             # The whole record goes in as node data, `id` included: the store
             # serialises a node from its attribute dict alone, so an id kept only
             # as the networkx key would vanish on the way to the renderer.
-            graph.add_node(item["id"], **dict(item))
+            drafted = dict(item)
+            _respeak_method_status(drafted)
+            graph.add_node(item["id"], **drafted)
         else:
             u, v = item.get("from"), item.get("to")
             if u in graph.nodes and v in graph.nodes:

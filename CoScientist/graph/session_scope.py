@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -23,9 +24,8 @@ def session_key(
     Direct CLI helpers and legacy unit tests may not provide an ADK context; in
     that case they share a deliberately named local default namespace.
     """
-    invocation = (
-        getattr(context, "_invocation_context", None)
-        or getattr(context, "invocation_context", None)
+    invocation = getattr(context, "_invocation_context", None) or getattr(
+        context, "invocation_context", None
     )
     session = getattr(context, "session", None)
     if session is None:
@@ -46,9 +46,7 @@ def session_key(
         scoped_user = scoped_session = None
 
     resolved_user = user_id or scoped_user or getattr(session, "user_id", None)
-    resolved_session = (
-        session_id or scoped_session or getattr(session, "id", None)
-    )
+    resolved_session = session_id or scoped_session or getattr(session, "id", None)
     if not resolved_user or not resolved_session:
         return DEFAULT_SESSION_KEY
 
@@ -63,9 +61,22 @@ def session_key(
 
 
 def safe_component(value: str) -> str:
-    """Make an identifier safe for a path component and graph run id."""
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._")
-    return cleaned[:96] or "unknown"
+    """Make a path component without merging distinct session identifiers."""
+    raw = str(value)
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._") or "unknown"
+    reserved = {"con", "prn", "aux", "nul"} | {
+        f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)
+    }
+    if (
+        raw == cleaned
+        and len(raw) <= 96
+        and raw == raw.lower()
+        and raw.split(".", 1)[0] not in reserved
+    ):
+        return raw
+    # The tilde is excluded from the direct form, so normalized values cannot
+    # collide with an unmodified identifier. Keep the digest within 96 chars.
+    return f"~{cleaned[:30]}~{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
 def namespace(key: SessionKey) -> str:

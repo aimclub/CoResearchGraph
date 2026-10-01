@@ -11,7 +11,7 @@
 #                 (and can be served over A2A) but is NOT attached to parents
 #                 and disappears from their prompts
 #   root:         exactly one agent is the system root (the orchestrator)
-#   model:        main | coder | <literal litellm model string>  (default: main)
+#   model:        main | coder | nir | <literal litellm model string>  (default: main)
 #   reasoning:    model "thinking" for this agent: false (or "off") switches it
 #                 off entirely — the fastest setting for agents that only route,
 #                 reformat or fill a schema; "minimal"|"low"|"medium"|"high"
@@ -69,7 +69,10 @@ defaults:
 # The manager driver (CoScientist.main) executes: pre… → root → post…
 # ─────────────────────────────────────────────────────────────────────────────
 pipeline:
-  pre: [ContextInitAgent]         # draft + confirm + seed the research frame
+  # ContextInit drafts, confirms and seeds the research frame; TZSpec writes it
+  # out as a техническое задание by GOST 19.201-78 and hands the operator the
+  # Word file. Order matters: the second reads what the first confirmed.
+  pre: [ContextInitAgent, TZSpecAgent]
   post: [ResultAggregatorAgent]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -104,7 +107,7 @@ agents:
     description: Main CoScientist Orchestrator — coordinates specialized agents to solve scientific tasks.
     # Picks who works next out of the whole roster and reads back what they
     # returned; a wrong delegation costs an entire sub-agent run.
-    #reasoning: low
+    reasoning: low
     prompt: orchestrator
     tools: [retrieval, graph, research_graph_orchestrator]
     subordinates:
@@ -116,13 +119,12 @@ agents:
       - McpBuilderAgent
     callbacks:
       before_model: [save_uploaded_artifacts, seed_coder_workspace, redact_link_urls]
-      before_agent: [before_get_task, inject_graph_root, inject_research_context, user_links]
-      # Catch hallucinated tool calls (e.g. the orchestrator inventing a
-      # sub-agent's `execute_bash`) and correct them, instead of ADK raising
-      # ValueError('Tool not found') and crashing the whole run.
-      after_model: [expand_link_refs, guard_unknown_tools]
+      before_agent: [before_get_task, mirror_plan_before_agent, inject_graph_root, inject_research_context, user_links]
+      # The missing-tool patch handles older ADK; ADK 2.9 handles unknown
+      # calls natively. The after_model guard would end the turn on prose.
+      after_model: [expand_link_refs]
       before_tool: [resolve_link_refs]
-      after_tool: [register_tool_result_links]
+      after_tool: [register_tool_result_links, mirror_plan_after_create]
       # after_model: [pre_action_critique]
       # The post-action critic is intentionally not wired; add
       # `after_tool: [post_action_critique]` to enable it — the orchestrator
@@ -162,7 +164,10 @@ agents:
   PlannerAgent:
     class: custom:session
     root: false
-    enabled: false #${orchestrator.use_planner}
+    # Available both as the first stage of `planner` mode and as an on-demand
+    # subordinate in `orchestrator` mode. `build_for_mode()` disables it only
+    # for `orchestrator_planner`, where the orchestrator owns create_plan_tool.
+    enabled: true
     description: >-
       produces a step-by-step roadmap for a complex, multi-step task;
       call it first, then execute the roadmap by delegating each step.
@@ -181,7 +186,7 @@ agents:
       before_model: [redact_link_urls]
       after_model: [expand_link_refs, guard_unknown_tools, finish_after_plan_registered]
       before_tool: [resolve_link_refs]
-      after_tool: [register_tool_result_links]
+      after_tool: [register_tool_result_links, mirror_plan_after_create]
     hitl: true
     critic: ${web.planner_critic_enabled}
     options:
@@ -228,6 +233,41 @@ agents:
       # `[[link1]]` inside a frame field would never be expanded.
       after_model: [expand_link_refs, sanitize_json_output]
 
+  TZSpecAgent:
+    # tz_spec_session = SessionAgent that issues the техническое задание from the
+    # frame ContextInitAgent confirmed. The sections are assembled from the frame
+    # deterministically (CoScientist/context_init/tz.py); this agent only writes
+    # the prose of the sections that already have content, and cannot fill an
+    # empty one — an invented customer or deadline would read as an obligation
+    # in a document that goes to people.
+    #
+    # No review of its own: the frame WAS the review, and a second approval
+    # window at the start of every run costs more than it gives. Revise the
+    # frame and the document is issued again.
+    class: custom:tz_spec_session
+    enabled: ${context_init.enabled}
+    description: >-
+      агент технического задания — излагает подтверждённую рамку исследования
+      как ТЗ по ГОСТ 19.201-78, сохраняет документ в Word и прикрепляет его к
+      карточке «Постановка» в графе исследования.
+    # Тот же модельный слот, что и у отчёта по ГОСТ 7.32 (LLM__NIR_MODEL): оба
+    # пишут официальный русский документ, и это ровно та работа, ради которой
+    # слот и заведён. Сортировать факты по разделам умеет любая модель; написать
+    # «требуется разработать» там, где заказчик сказал «автоматизируй», —
+    # заметно не любая, а документ уходит людям. Слот не задан — падаем на main.
+    model: nir
+    # Переформулирование, а не рассуждение: факты уже собраны и проверены
+    # оператором. Минимума хватает, чтобы выдержать регистр, и он не заставляет
+    # ждать в начале каждого прогона.
+    reasoning: low
+    prompt: tz_spec
+    output_key: tz_prose
+    output_schema: tz_prose
+    hitl: false
+    callbacks:
+      before_agent: [stage_tz_draft]
+      after_model: [sanitize_json_output]
+
   ResultAggregatorAgent:
     class: llm
     # Terminal stage of the pipeline (see top-level `pipeline.post`). Runs as the
@@ -243,34 +283,100 @@ agents:
     reasoning: low
     prompt: result_aggregator
     tools: [result_formatter, research_graph_readonly]
+    # The GOST 7.32-2017 report is a different job — dozens of pages of Russian
+    # scientific prose — so it goes to its own agent with its own model instead
+    # of raising this one's `reasoning` for every run. Attached as a subordinate
+    # rather than a pipeline stage: a stage running after this one would emit
+    # the last final response, and the driver writes report.md from that.
+    subordinates: [NirReportAgent]
+    # Deliberately NOT `hitl: true`. The NIR question is asked by the
+    # ask_nir_report callback, which holds the handler directly and is gated by
+    # HITL__ENABLED globally. Setting the flag would instead hand this agent the
+    # request_approval/request_selection TOOLS, which its prompt never mentions
+    # — a capability the model cannot use and an invariant test rightly refuses.
     # Graph-primary grounding: no conversation history — the report is built from
     # the typed graph (via research_graph_readonly + injected digest) plus the
     # figures/tables collected by format_results, not from the raw transcript.
     include_contents: none
     callbacks:
-      before_agent: [inject_research_context, inject_report_language, user_links]
+      # guard_report_without_execution comes FIRST: it is the one hook that can
+      # end this stage, and a callback that returns a response stops the chain,
+      # so running it ahead of the graph digest and the NIR question saves both
+      # when there is nothing to report on.
+      # ask_nir_report asks the operator whether to also produce a GOST report
+      # and writes the {nir_block?} the prompt reads; with the feature off it
+      # writes an empty block and the prompt is unchanged. It sits before
+      # user_links because user_links must stay last (see the profile test).
+      before_agent: [guard_report_without_execution, inject_research_context, inject_report_language, ask_nir_report, user_links]
       before_model: [redact_link_urls]
       after_model: [expand_link_refs]
       before_tool: [resolve_link_refs]
       after_tool: [register_tool_result_links]
     output_key: final_report
 
+  NirReportAgent:
+    class: llm
+    # Built whenever there is a normcontrol server to submit to — attachment is
+    # decided once, when the tree is assembled at import, so it cannot depend on
+    # NIR__ENABLED: that is an operator switch the web Settings modal flips per
+    # session, long after this is read.
+    #
+    # Being attached is not being used. The operator switch and the HITL answer
+    # both live in ask_nir_report, which reads settings on every call: with
+    # either one off it writes an empty {nir_block?}, the aggregator's prompt
+    # says nothing about НИР, and every nir_report_* tool refuses with
+    # «Отчёт о НИР не запрашивался оператором».
+    enabled: ${nir_buildable}
+    description: >-
+      Writes the GOST 7.32-2017 research report (ОТЧЁТ О НИР) from the finished
+      research graph and the run's figures, and builds the DOCX through the
+      "Автонормоконтроль" MCP. Returns a download link, not the report text.
+    routing: >-
+      when the operator asked for a normative NIR report in addition to the
+      short Markdown one — never on your own initiative.
+    # Dozens of pages of Russian scientific prose that must stay faithful to
+    # measured numbers: the one place in this pipeline worth a stronger model
+    # and full reasoning. LLM__NIR_MODEL selects it; unset falls back to main.
+    model: nir
+    reasoning: high
+    prompt: nir_report
+    tools: [nir_report]
+    # Its answer is a deliverable in its own right (a link to a document), so it
+    # reaches the chat as its own message instead of a preview inside the
+    # aggregator's function_response.
+    report_output: true
+    callbacks:
+      before_model: [redact_link_urls]
+      after_model: [expand_link_refs]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+
   HypothesesAgent:
     class: llm
     description: >-
-      generates candidate hypotheses and returns the selected hypothesis(es) to verify next 
-      the alternatives stay in the graph as postponed backlog).
+      generates the hypotheses this study will verify — as many as the run is
+      allowed to hold at once (HYPOTHESES__MAX_ACTIVE, default 1) and no more.
+      Everything it commits gets verified; it leaves no backlog behind.
     routing: >-
-      when the direction is unclear or approaches need to be proposed. It comes
-      back with selected hypothesis(es) — verify those; do not start the
-      alternatives in parallel unless they are among the selected set.
+      when the study has no hypothesis yet — BEFORE any verification method
+      runs, including when the route to an answer already looks obvious. An
+      obvious route is still a claim that it will produce the result, and that
+      claim is what the run is about to spend its budget on. It comes back with
+      the hypotheses to verify — verify all of them; it does not hand over work
+      that is not meant to be started.
     planning: |-
-      Use this to generate hypotheses when the solution is unclear or approaches need to be proposed.
-      It picks the single most relevant hypothesis to test first, so plan ONE verification branch after it.
+      Use this FIRST on any study that has no hypothesis yet, procedural tasks included:
+      formulate one hypothesis about the study object, mechanism, effect, or relationship
+      that the research must test. Treat the available pipeline as a means of measurement,
+      not as the subject of the claim and not as a source of an assumed outcome. State the
+      method of verification and numerical acceptance criteria only when those methods can
+      measure them. It returns only what is to be verified now — usually one hypothesis —
+      so plan a verification branch for each one it returns.
       Decision-making and compatibility assessment based on gathered facts.
     # Ideation plus choosing what to test first: the most reasoning-bound job
-    # in the system.
-    reasoning: high
+    # in the system — so `high`, unless a run turns it down with
+    # HYPOTHESES__REASONING=low.
+    reasoning: "${web.hypotheses_reasoning}"
     prompt: hypotheses
     output_key: hypotheses
     report_output: true
@@ -281,7 +387,11 @@ agents:
     # Declares a Work Order (what it will generate and commit) before acting.
     work_order: true
     callbacks:
-      before_agent: [before_get_task, inject_research_context, user_links]
+      # brief_hypotheses_regime reads the tool inventory the retriever/planner
+      # already collected and tells the generator which job it is doing: aim the
+      # claim at the tools in hand, or — with nothing in hand — spend the effort
+      # on judging the candidates. `{hypothesis_brief?}` in the prompt.
+      before_agent: [before_get_task, inject_research_context, brief_hypotheses_regime, user_links]
       before_model: [redact_link_urls]
       after_model: [expand_link_refs, guard_unknown_tools]
       before_tool: [resolve_link_refs]
@@ -312,9 +422,12 @@ agents:
       it returns no/empty/insufficient results, escalate by reformulating into
       "find and download papers about <expanded topic>". Do NOT use it to read a
       specific repository or URL the user named — that goes to TaskExecutorAgent.
+      Also route here questions about the internal paper database itself: how
+      many papers it holds and which domains or fields it covers.
     planning: |-
       Use it when your domain knowledge is not enough.
       Use it to gather extra information about the scientific field and literature.
+      Use it to find out what the internal paper database contains (paper count, domains, fields).
       Use it when information cannot be computed or retrieved via tools, and specifically 
       requires searching information from the web or literature.  
     # Decides how to search, then judges and synthesizes what comes back.
@@ -343,38 +456,43 @@ agents:
         tags: [research, literature, web-search, knowledge]
 
   TaskExecutorAgent:
+    required_for_pipeline: true
     # Asks before acting on a decision; inert until HITL__ENABLED.
     hitl: true
     class: llm
     description: >-
       executes tasks: routes each one to the path that can actually deliver it —
       RUNNING existing ready-made MCP tools/services (property estimation,
-      docking, simulations, inference), or ENGINEERING it in a sandbox (writing
-      and running code, shell/git, data work) when no ready tool covers it.
+      docking, simulations, inference), BUILDING a missing tool from the code of
+      a scientific repository (the Alembic pipeline), or ENGINEERING it in a
+      sandbox (writing and running code, shell/git, data work).
     routing: >-
       for ANY task that must actually be EXECUTED — computed with an existing
-      tool OR built/run as code. It chooses the execution path itself, so you do
-      not have to decide up front whether a ready tool exists. Hallmark:
-      "compute/run X", "write code / clone repo X / assemble a dataset".
+      tool, turned into a new tool from a repository, OR built/run as code. It
+      chooses the execution path itself, so you do not have to decide up front
+      whether a ready tool exists. Hallmark: "compute/run X", "write code /
+      clone repo X / assemble a dataset".
     planning: |-
       Use this as your primary choice for ANY task that must be EXECUTED:
         - computations served by ready-made MCP tools
+        - a capability that exists only as code in a scientific repository and
+          is needed repeatedly → it can build an MCP tool server from that repo
         - engineering work: writing, debugging and running code, ML training and
           evaluation, shell and git operations, collecting/processing data
-      It routes between those two paths internally, so assign it the OUTCOME and
+      It routes between those paths internally, so assign it the OUTCOME and
       let it choose how to reach it.
     # A two-way switch (run a ready tool vs. write code): reasoning stays off
     # (the default) — the thinking belongs to whichever branch it picks.
     prompt: task_router
-    subordinates: [ToolPipelineAgent, CoderAgent]
+    subordinates: [ToolPipelineAgent, CoderAgent, McpBuilderAgent]
     output_key: executor_results
     report_output: true
     callbacks:
-      after_model: [expand_link_refs, guard_unknown_tools]
-      before_agent: [user_links]
+      after_model: [attest_executor_science, expand_link_refs, guard_unknown_tools]
+      before_agent: [reset_executor_science_receipt, user_links]
       before_model: [redact_link_urls]
       before_tool: [resolve_link_refs]
-      after_tool: [register_tool_result_links]
+      after_tool: [register_tool_result_links, capture_scientific_pipeline_receipt]
     a2a:
       key: task_execution
       port: 8004
@@ -496,6 +614,12 @@ agents:
       after_tool: [register_tool_result_links]
 
   MedicalAgent:
+    # Narrow role — switch it off with MEDICAL__ENABLED=false or in the web
+    # settings. The experiment module's `medical` route follows this agent
+    # (state_machine.medical_route_available: planner prompt and context,
+    # critique, start_task), so nothing offers a route to an agent that is not
+    # in the tree.
+    enabled: "${web.medical_agent_enabled}"
     class: llm
     description: >-
       answers medical/clinical questions: PubMed literature search, PICO
@@ -534,6 +658,7 @@ agents:
         tags: [medical, pubmed, dicom, clinical]
 
   McpBuilderAgent:
+    enabled: "${experiments.route_alembic}"
     # Asks before acting on a decision; inert until HITL__ENABLED.
     hitl: true
     class: llm
@@ -656,20 +781,23 @@ agents:
     # dynamic_tools surfaces the task's selected MCP servers (filtered_tools /
     # deployed_mcps) as native tools, resolved per turn — the same servers
     # FEDOT.MAS used to receive, but the agent calls them itself.
-    tools: [dynamic_tools, sleep, task_tracker, graph, research_graph]
+    tools: [dynamic_tools, read_result, sleep, task_tracker, graph, research_graph]
     output_key: fedot_results
     callbacks:
       # Abstain → recommend CoderAgent when the tool-prep pipeline found no tool
       # that actually matches the task (instead of running a nearest-but-wrong one).
-      before_agent: [redirect_when_no_tools, before_get_task, inject_research_context, user_links]
-      before_model: [redact_link_urls]
+      before_agent: [redirect_when_no_tools, reset_scientific_execution, before_get_task, inject_research_context, user_links]
+      # The tool list attached to this turn decides NO_MATCHING_TOOL, whatever an
+      # earlier catalogue search reported. The science gate after it may answer
+      # the turn itself, so it goes last.
+      before_model: [redact_link_urls, announce_attached_tools, require_first_scientific_tool_call]
       before_tool: [resolve_link_refs]
-      after_model: [expand_link_refs]
+      after_model: [require_scientific_execution, expand_link_refs]
       # register_tool_result_links catches a URL an MCP tool returns for the
       # link registry; capture_mcp_artifacts separately stashes figure/table
       # artifact URLs (e.g. presigned MinIO PNGs) into state['mcp_artifacts']
       # so the report collector downloads them. Two different jobs, same hook.
-      after_tool: [register_tool_result_links, capture_mcp_artifacts]
+      after_tool: [register_tool_result_links, capture_mcp_artifacts, record_scientific_mcp_result]
 
   # Picks ONE of its children per task. ExperimentAgent normally; FedotAgent only
   # when the tool reranker never actually judged the retrieved candidates (an

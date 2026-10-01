@@ -15,12 +15,25 @@ class HITLAction(str, Enum):
     PROVIDE_INPUT = "provide_input"
 
 
+class HITLDecisionSource(str, Enum):
+    """Who (or what) produced a HITL decision."""
+
+    HUMAN = "human"
+    MODE_AUTO = "mode_auto"
+    TIMEOUT = "timeout"
+    SYSTEM = "system"
+
+
 class HITLRequest(BaseModel):
     """Request from an agent to a human."""
     agent_name: str = Field(..., description="Name of the agent making the request")
     action_type: HITLAction = Field(..., description="Type of action requested")
     message: str = Field(..., description="Message to the human")
     options: List[str] = Field(default_factory=list, description="Options for selection")
+    default_option: Optional[str] = Field(
+        default=None,
+        description="Preferred option for an automatic SELECT decision",
+    )
     context: Dict[str, Any] = Field(default_factory=dict, description="Additional context")
     form: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -35,12 +48,23 @@ class HITLRequest(BaseModel):
                     "HITL tool name (request_approval, request_selection). The web UI "
                     "builds a localized header from it.")
     timeout_seconds: Optional[float] = Field(default=None, description="Timeout for the request")
+    requires_human: bool = Field(
+        default=False,
+        description=(
+            "Reject automatic mode decisions for this request. Used only when "
+            "a deterministic control boundary explicitly requires an operator."
+        ),
+    )
 
 
 class HITLResponse(BaseModel):
     """Response from a human to an agent."""
     action: HITLAction = Field(..., description="Action taken by the human")
     selected_option: Optional[str] = Field(default=None, description="Selected option (for SELECT)")
+    selected_task_ids: List[str] = Field(
+        default_factory=list,
+        description="Tasks explicitly selected by the operator for a targeted redo; never inferred from a rejection.",
+    )
     instructions: Optional[str] = Field(default=None, description="Edited content (for EDIT)")
     free_input: Optional[str] = Field(default=None, description="Free-form input")
     form_values: Optional[Dict[str, Any]] = Field(
@@ -48,3 +72,19 @@ class HITLResponse(BaseModel):
         description="Per-field answers from a structured form: "
                     "{block_title: {field_name: value}}.")
     approved: bool = Field(default=False, description="Whether the action was approved")
+    decision_source: HITLDecisionSource = Field(
+        default=HITLDecisionSource.HUMAN,
+        description="Origin of the decision: human, automatic mode, timeout or system",
+    )
+    system_reason: Optional[str] = Field(
+        default=None,
+        description="Machine-readable/system explanation; never operator-authored feedback",
+    )
+    timed_out: bool = Field(
+        default=False,
+        description="Whether a fail-closed review paused because no human responded",
+    )
+    stop_review_loop: bool = Field(
+        default=False,
+        description="Internal signal that a terminal review decision was recorded",
+    )

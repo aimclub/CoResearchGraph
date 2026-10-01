@@ -1,10 +1,9 @@
 """On-disk persistence for the Web UI's users, sessions and chat history.
 
-The ADK session service owns agent state, and the research/knowledge graphs are
-already snapshotted per session — but the UI's own catalogue (who exists, which
-sessions they have) and the chat/agent transcript lived only in process memory.
-Restart the server and every past conversation disappeared from the UI, even
-though its graphs and artifacts were still on disk.
+The ADK session service and the research/knowledge graphs are snapshotted per
+session.  This module owns the UI catalogue (who exists, which sessions they
+have) and the chat/agent transcript, so a restart does not lose the browser's
+view of a durable session.
 
 Layout under ``WEB_STATE_DIR`` (default ``graph_runs/web_state``):
 

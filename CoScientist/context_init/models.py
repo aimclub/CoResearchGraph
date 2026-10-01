@@ -15,9 +15,9 @@ structure.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from CoScientist.hitl.field_status import FieldStatus, OPEN_STATUSES
 
@@ -75,14 +75,32 @@ FRAME_SPEC: Tuple[FrameSpecEntry, ...] = (
      "формальные условия достаточности свидетельств",
      ("threshold", "confirmations_needed", "reproducibility")),
     ("Модель стоимости", "cost_model", None,
-     "правило стоимости шага и правило остановки по стоимости",
-     ("cost_rule", "stop_rule")),
+     "правило стоимости шага, правило остановки и ожидаемый эффект",
+     ("cost_rule", "stop_rule", "expected_effect")),
+    # ГОСТ 19.201-78, разделы 2.2, 2.5а, 2.6, 2.7. Из дружеского запроса это не
+    # выводится: кто заказал работу и чем она принимается — вопрос к человеку, а
+    # не к модели. `question`, потому что это свойства самого исследования.
+    ("Основание и приёмка", "question", None,
+     "кто заказал работу, что она сдаёт и как принимается — разделы ТЗ по ГОСТ 19.201-78",
+     ("basis_document", "customer", "topic_name", "deliverables", "stages",
+      "acceptance")),
 )
 
 # Canonical block titles in document order.
 CANONICAL_FRAME_BLOCKS: Tuple[str, ...] = tuple(e[0] for e in FRAME_SPEC)
 
 _SPEC_BY_TITLE = {e[0]: e for e in FRAME_SPEC}
+
+
+class FrameOperation(BaseModel):
+    """One executable deliverable slot committed by ContextInit / HITL.
+
+    Inventory chooses the route for this slot; the planner must not invent,
+    merge, or drop it. Narrative-only report slots are omitted.
+    """
+
+    operation_id: str = Field(description="Stable id, e.g. OP-1")
+    statement: str = Field(description="Deliverable copied from the ask / operator")
 
 
 # ── UI labels and translations (not LLM-facing) ───────────────────────────────
@@ -156,6 +174,14 @@ BLOCK_I18N: Dict[str, Dict[str, Dict[str, str]]] = {
         "usage": {"en": "The formal conditions for sufficient evidence.",
                   "ru": "формальные условия достаточности свидетельств"},
     },
+    "Основание и приёмка": {
+        "title": {"en": "Basis and acceptance", "ru": "Основание и приёмка"},
+        "usage": {
+            "en": "Who commissioned the work, what it hands over and how it is "
+                  "accepted — the ТЗ sections of GOST 19.201-78.",
+            "ru": "кто заказал работу, что она сдаёт и как принимается — "
+                  "разделы ТЗ по ГОСТ 19.201-78"},
+    },
     "Модель стоимости": {
         "title": {"en": "Cost model", "ru": "Модель стоимости"},
         "usage": {"en": "The step cost rule and the cost stop rule.",
@@ -165,43 +191,43 @@ BLOCK_I18N: Dict[str, Dict[str, Dict[str, str]]] = {
 
 FIELD_I18N: Dict[str, Dict[str, Dict[str, str]]] = {
     "formulation": {
-        "label": {"en": "Formulation", "ru": "Формулировка"},
+        "label": {"en": "Research question", "ru": "Исследовательский вопрос"},
         "placeholder": {
             "en": "Enter the full text of the research question, or leave it empty so the agent fills in a working value.",
             "ru": "Введите полный текст исследовательского вопроса или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "domain": {
-        "label": {"en": "Domain", "ru": "Домен"},
+        "label": {"en": "Subject area", "ru": "Предметная область"},
         "placeholder": {
             "en": "Enter the subject area of the research, or leave it empty so the agent fills in a working value.",
             "ru": "Введите предметную область исследования или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "specificity": {
-        "label": {"en": "Specificity", "ru": "Специфичность"},
+        "label": {"en": "Research boundaries", "ru": "Границы исследования"},
         "placeholder": {
             "en": "Enter how narrow the question is, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите, насколько узок вопрос, или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "gap": {
-        "label": {"en": "Knowledge gap", "ru": "Пробел в знаниях"},
+        "label": {"en": "Problem being addressed", "ru": "Проблема, которую решаем"},
         "placeholder": {
             "en": "Enter the knowledge gap that the research addresses, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите пробел в знаниях, который закрывает исследование, или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "decomposition": {
-        "label": {"en": "Decomposition", "ru": "Декомпозиция"},
+        "label": {"en": "Research subtasks", "ru": "Подзадачи исследования"},
         "placeholder": {
             "en": "Enter the split of the question into sub-questions, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите разбиение вопроса на подвопросы или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "target_setting": {
-        "label": {"en": "Target setting", "ru": "Целевая установка"},
+        "label": {"en": "Expected result", "ru": "Ожидаемый результат"},
         "placeholder": {
             "en": "Enter the result that the research must produce, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите результат, который должно дать исследование, или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "research_form": {
-        "label": {"en": "Research form", "ru": "Форма исследования"},
+        "label": {"en": "Research format", "ru": "Формат исследования"},
         "placeholder": {
             "en": "Enter the study type, such as review or experiment, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите форму исследования (обзор, эксперимент, моделирование) или оставьте поле пустым — агент заполнит рабочее значение."},
@@ -214,37 +240,37 @@ FIELD_I18N: Dict[str, Dict[str, Dict[str, str]]] = {
             "ru": "Укажите уровень технологической готовности от 1 до 9 или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "ai_application_model": {
-        "label": {"en": "AI application model", "ru": "Модель применения ИИ"},
+        "label": {"en": "Role of AI", "ru": "Роль ИИ в работе"},
         "placeholder": {
             "en": "Enter how the AI takes part, for example assistant or autonomous agent, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите, как участвует ИИ (ассистент, соавтор, автономный агент), или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "completion_criteria": {
-        "label": {"en": "Completion criteria", "ru": "Критерии завершения"},
+        "label": {"en": "Research completion conditions", "ru": "Условия завершения исследования"},
         "placeholder": {
             "en": "Enter the conditions that stop the research, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите условия остановки исследования или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "modality": {
-        "label": {"en": "Modality", "ru": "Модальность"},
+        "label": {"en": "Research approach", "ru": "Подход к исследованию"},
         "placeholder": {
             "en": "Enter the modality (theoretical, experimental, computational), or leave it empty so the agent fills in a working value.",
             "ru": "Укажите модальность (теоретическая, экспериментальная, вычислительная) или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "form_trl": {
-        "label": {"en": "Form and TRL", "ru": "Форма и TRL"},
+        "label": {"en": "Research form and readiness", "ru": "Форма исследования и готовность"},
         "placeholder": {
             "en": "Enter the study form and readiness level, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите форму исследования и уровень готовности или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "norms": {
-        "label": {"en": "Norms", "ru": "Нормы"},
+        "label": {"en": "Research conduct rules", "ru": "Правила проведения исследования"},
         "placeholder": {
             "en": "Enter the accepted methods for this type of research, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите принятые методы для этого типа исследований или оставьте поле пустым — агент заполнит рабочее значение."},
     },
     "frameworks": {
-        "label": {"en": "Models and theories", "ru": "Модели и теории"},
+        "label": {"en": "Theoretical models and approaches", "ru": "Теоретические модели и подходы"},
         "placeholder": {
             "en": "Enter the formal models and theories of the domain, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите формальные модели и теории домена или оставьте поле пустым — агент заполнит рабочее значение."},
@@ -363,6 +389,48 @@ FIELD_I18N: Dict[str, Dict[str, Dict[str, str]]] = {
             "en": "Enter the reproducibility requirement, or leave it empty so the agent fills in a working value.",
             "ru": "Укажите требование к воспроизводимости или оставьте поле пустым — агент заполнит рабочее значение."},
     },
+    "basis_document": {
+        "label": {"en": "Basis for the work", "ru": "Основание для работы"},
+        "placeholder": {
+            "en": "Name the document the work rests on — a contract, an order, a research programme — or say that it is self-initiated. Leave it empty rather than guess.",
+            "ru": "Назовите документ, на основании которого ведётся работа: договор, приказ, программа исследований — или укажите, что работа инициативная. Пустое поле лучше догадки."},
+    },
+    "customer": {
+        "label": {"en": "Customer", "ru": "Заказчик"},
+        "placeholder": {
+            "en": "The organisation or person the result is for. Leave it empty rather than guess.",
+            "ru": "Организация или человек, для которого делается работа. Пустое поле лучше догадки."},
+    },
+    "topic_name": {
+        "label": {"en": "Name of the topic", "ru": "Наименование темы"},
+        "placeholder": {
+            "en": "The official name of the work, as it should appear on the title page of the ТЗ.",
+            "ru": "Официальное наименование работы — так, как оно должно стоять на титульном листе ТЗ."},
+    },
+    "deliverables": {
+        "label": {"en": "Documents to be delivered", "ru": "Состав отчётных документов"},
+        "placeholder": {
+            "en": "Which documents the work must hand over: a GOST 7.32 research report, a dataset, a program, an article.",
+            "ru": "Какие документы работа обязана сдать: отчёт о НИР по ГОСТ 7.32, набор данных, программа, статья."},
+    },
+    "stages": {
+        "label": {"en": "Stages and deadlines", "ru": "Этапы и сроки"},
+        "placeholder": {
+            "en": "The stages the work is divided into and when each is due. One line per stage.",
+            "ru": "На какие этапы делится работа и к какому сроку каждый. По строке на этап."},
+    },
+    "acceptance": {
+        "label": {"en": "Acceptance procedure", "ru": "Порядок приёмки"},
+        "placeholder": {
+            "en": "How the result is checked and by whom it is accepted: the kinds of testing and who signs it off.",
+            "ru": "Как проверяется результат и кто его принимает: виды испытаний и кем подписывается приёмка."},
+    },
+    "expected_effect": {
+        "label": {"en": "Expected effect", "ru": "Ожидаемый эффект"},
+        "placeholder": {
+            "en": "What the work is expected to gain, against doing it the current way. Numbers if there are any.",
+            "ru": "Что работа должна дать по сравнению с тем, как задача решается сейчас. Числа, если они есть."},
+    },
     "cost_rule": {
         "label": {"en": "Cost rule", "ru": "Правило стоимости"},
         "placeholder": {
@@ -416,7 +484,34 @@ class ResearchFrame(BaseModel):
 
     original_request: str = Field(
         default="", description="Исходный запрос пользователя дословно")
+    operations: List[FrameOperation] = Field(
+        default_factory=list,
+        description="Executable slots: one non-optional plan task each",
+    )
     blocks: List[FrameBlock] = Field(default_factory=list)
+
+    @field_validator("operations", mode="before")
+    @classmethod
+    def coerce_operations(cls, value: Any) -> Any:
+        if not value:
+            return []
+        if not isinstance(value, list):
+            return value
+        out: List[dict[str, str]] = []
+        for i, item in enumerate(value, 1):
+            if isinstance(item, FrameOperation):
+                stmt = str(item.statement or "").strip()
+                if stmt:
+                    out.append({"operation_id": f"OP-{len(out) + 1}", "statement": stmt})
+                continue
+            if isinstance(item, str) and item.strip():
+                out.append({"operation_id": f"OP-{len(out) + 1}", "statement": item.strip()})
+                continue
+            if isinstance(item, dict):
+                stmt = str(item.get("statement") or item.get("content") or "").strip()
+                if stmt:
+                    out.append({"operation_id": f"OP-{len(out) + 1}", "statement": stmt})
+        return out
 
     def block(self, title: str) -> Optional[FrameBlock]:
         for b in self.blocks:
@@ -465,7 +560,17 @@ class ResearchFrame(BaseModel):
                     fields.append(FrameField(name=n))
             blocks.append(FrameBlock(
                 title=title, kind=kind, subtype=subtype, usage=usage, fields=fields))
-        return ResearchFrame(original_request=self.original_request, blocks=blocks)
+        ops = [
+            FrameOperation(
+                operation_id=f"OP-{i}",
+                statement=str(op.statement or "").strip(),
+            )
+            for i, op in enumerate(self.operations or [], 1)
+            if str(getattr(op, "statement", "") or "").strip()
+        ]
+        return ResearchFrame(
+            original_request=self.original_request, operations=ops, blocks=blocks,
+        )
 
 
 __all__ = [
@@ -475,5 +580,6 @@ __all__ = [
     "FRAME_SPEC",
     "FrameBlock",
     "FrameField",
+    "FrameOperation",
     "ResearchFrame",
 ]

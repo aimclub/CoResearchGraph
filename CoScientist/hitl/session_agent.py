@@ -15,9 +15,42 @@ from CoScientist.hitl.models import HITLAction, HITLRequest, HITLResponse
 from CoScientist.graph.session_scope import session_key
 
 import json
+import yaml
 from CoScientist.tools.task_tracker import task_tracker_instance
 
 logger = logging.getLogger("CoScientist.hitl.session_agent")
+
+
+class _ReviewYamlDumper(yaml.SafeDumper):
+    """YAML for a human reader: list items indented under their key,
+    multi-line strings as ``|`` blocks."""
+
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+
+def _represent_str(dumper: yaml.SafeDumper, value: str):
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_ReviewYamlDumper.add_representer(str, _represent_str)
+
+
+def render_review_yaml(data) -> str:
+    """Render a structured output (dict/list) as readable YAML.
+
+    Key order is kept (the schema's order reads best), Cyrillic stays as is,
+    and long lines are not hard-wrapped — the UI wraps them itself.
+    """
+    return yaml.dump(
+        data,
+        Dumper=_ReviewYamlDumper,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+        width=float("inf"),
+    ).rstrip()
 
 
 def render_task_plan(tasks) -> str:
@@ -85,22 +118,32 @@ class SessionAgent(LlmAgent):
     # critic gets a single say, then the rewrite stands — a self-critique loop
     # that can run forever will. There is always a budget; only its size moves.
     critic_max_rounds: int = 1
+    # Times an agent that stopped half way (see `_unfinished_feedback`) is sent
+    # back to finish, per review pass. After that its output is reviewed as is.
+    unfinished_max_rounds: int = 3
     # Who the critic's review is reported as in the web UI (activity rail,
     # agent tree, ToolsViewer, status line). Not a YAML agent, so never internal.
     critic_agent_name: str = "PlanCriticAgent"
-    correction_prompt: str = "The human reviewed your output and provided this feedback/correction:\n\n{feedback}\n\nYou MUST rewrite your output incorporating this feedback. Write your answer in the report language of this session. The session state key `report_language` gives it: en = English, ru = Russian. If it is empty, use English."
-    critic_correction_prompt: str = "A plan critic reviewed your output and asked for one revision:\n\n{feedback}\n\nProduce the output again ONCE, in full, fixing exactly what the critic named — the previous version was discarded. Registering it normalises it (ids are renumbered, adjacent steps with the same executor assignee are merged); that is expected, so do not register again to undo it. This is the last round: there is no second review. Write your answer in the report language of this session. The session state key `report_language` gives it: en = English, ru = Russian. If it is empty, use English."
+    correction_prompt: str = "The human reviewed your output and provided this feedback/correction:\n\n{feedback}\n\nYou MUST rewrite your output incorporating this feedback."
+    critic_correction_prompt: str = "A plan critic reviewed your output and asked for one revision:\n\n{feedback}\n\nProduce the output again ONCE, in full, fixing exactly what the critic named — the previous version was discarded. Registering it normalises it (ids are renumbered, adjacent steps with the same executor assignee are merged); that is expected, so do not register again to undo it. This is the last round: there is no second review."
 
     def _review_output(self, output_text) -> str:
         """How the proposed output is presented to the human reviewer.
 
-        Structured outputs (dict/list from an output_schema) are shown as
-        readable JSON. Subclasses may override to show a rendered document
-        instead (e.g. the microfluidics ТЗ agent renders Markdown)."""
-        if isinstance(output_text, (dict, list)):
+        Structured outputs (dict/list from an output_schema, or the same as a
+        JSON string) are shown as YAML — far easier to read than JSON.
+        Subclasses may override to show a rendered document instead (e.g. the
+        microfluidics ТЗ agent renders Markdown)."""
+        data = output_text
+        if isinstance(data, str):
             try:
-                return json.dumps(output_text, ensure_ascii=False, indent=2)
-            except (TypeError, ValueError):
+                data = json.loads(data)
+            except ValueError:
+                return output_text
+        if isinstance(data, (dict, list)):
+            try:
+                return render_review_yaml(data)
+            except yaml.YAMLError:
                 pass
         return str(output_text)
 
@@ -117,8 +160,35 @@ class SessionAgent(LlmAgent):
                 return registered_plan
         return output_text
 
+    def _unfinished_feedback(self, ctx: InvocationContext) -> Optional[str]:
+        """Feedback that sends the agent back to FINISH its output — not to
+        redo it — when it ended its turn before the output was complete.
+
+        For agents that assemble their output over several tool calls (the
+        microfluidics ТЗ is filled section by section). Checked after every
+        pass, before any reviewer sees the output. Default: always complete."""
+        return None
+
+    def _produce(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        """One pass producing the output: the agent's own LLM turn by default.
+
+        Subclasses may produce it another way — e.g. the microfluidics ТЗ agent
+        fans the sections out to parallel workers. The last final response
+        yielded is the pass's output, reviewed like the LLM's."""
+        return super()._run_async_impl(ctx)
+
+    def _rewrite_state_delta(self, ctx: InvocationContext) -> dict:
+        """State to carry with a reviewer's (critic or human) feedback — e.g. a
+        reset so the next pass starts over instead of continuing. Default:
+        none."""
+        return {}
+
     async def _feed_back(
-        self, ctx: InvocationContext, feedback_prompt: str, author: str = "user"
+        self,
+        ctx: InvocationContext,
+        feedback_prompt: str,
+        state_delta: Optional[dict] = None,
+        author: str = "user",
     ) -> AsyncGenerator[Event, None]:
         """Hand review feedback to the agent as a user turn and let it re-run.
 
@@ -132,6 +202,8 @@ class SessionAgent(LlmAgent):
         for the next event, and the next run builds its contents from there.
         Appending it ourselves as well duplicated the message in the agent's
         context — the runner's session object is the very one we hold.
+        ``state_delta`` rides on the same event, so the reset and the feedback
+        land together.
 
         The fallback covers a consumer that does not write to the session (a
         bare ``run_async`` in a test): without the event the re-run would not
@@ -144,10 +216,12 @@ class SessionAgent(LlmAgent):
             content=types.Content(
                 role="user", parts=[types.Part(text=feedback_prompt)]
             ),
+            actions=EventActions(state_delta=dict(state_delta or {})),
         )
         yield event
         if not any(e is event for e in reversed(ctx.session.events)):
             ctx.session.events.append(event)
+            ctx.session.state.update(state_delta or {})
         # Clear the end-of-agent flag so the agent is allowed to run again.
         ctx.set_agent_state(self.name)
 
@@ -159,6 +233,19 @@ class SessionAgent(LlmAgent):
         agent publishes the rendered ТЗ document into the chat before the
         pipeline moves on. Default: nothing."""
         return iter(())
+
+        return iter(())
+
+    def _should_run_review(self) -> bool:
+        """Whether this turn enters ``_review_decision``.
+
+        Default: only when a handler is wired *and* the global HITL switch is
+        on. Experiment plan/result review overrides this so deterministic
+        validate + ``initialize_runtime`` still run in headless smokes
+        (``HITL__ENABLED`` off, ``COSCIENTIST_EXPERIMENT_HITL_AUTO_APPROVE=1``).
+        """
+        from CoScientist.config import get_settings
+        return bool(self.hitl_handler and get_settings().web.hitl_enabled)
 
     async def _emit_final(
         self, ctx: InvocationContext, final_event: Event, output_text
@@ -176,7 +263,13 @@ class SessionAgent(LlmAgent):
         """
         extras = list(self._post_final_events(ctx, output_text))
         if extras and final_event.content and final_event.content.parts:
-            final_event.content.parts[0].text = ""
+            # Каждую текстовую часть, а не первую: у рассуждающей модели первой
+            # идёт мысль (её и так не показывают), а ответ — второй. Погасив
+            # только нулевую, мы стёрли бы невидимое и оставили в ленте сырой
+            # JSON рядом с объявлением о документе.
+            for part in final_event.content.parts:
+                if getattr(part, "text", None):
+                    part.text = ""
         yield final_event
         for extra in extras:
             yield extra
@@ -275,10 +368,12 @@ class SessionAgent(LlmAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
 
         critic_rounds = 0
+        unfinished_rounds = 0
 
         while True:
             output_text = ""
             final_event = None
+            last_model_text = ""
 
             # Never review a stale plan from an earlier attempt/session turn if
             # the current planner run fails before create_plan succeeds.
@@ -296,18 +391,63 @@ class SessionAgent(LlmAgent):
                     ),
                 )
 
-            async with Aclosing(super()._run_async_impl(ctx)) as agen:
+            async with Aclosing(self._produce(ctx)) as agen:
                 async for event in agen:
+                    event_text = "".join(
+                        part.text or ""
+                        for part in (event.content.parts if event.content else [])
+                    )
+                    if event_text.strip():
+                        last_model_text = event_text
                     if event.is_final_response():
                         final_event = event
                         # Earlier text events contain reasoning and tool-call
-                        # narration. Only the final response may reach HITL.
-                        output_text = "".join(
-                            part.text or ""
-                            for part in (event.content.parts if event.content else [])
-                        )
+                        # narration. Prefer the final response for HITL when present.
+                        output_text = event_text
                     else:
                         yield event
+
+            if self.output_key:
+                # ADK State cannot delete keys; clearers set them to None. Treat
+                # None as "missing" so we keep the live final-event text.
+                # Structured-output planners may also land the payload only in
+                # state (no is_final_response event) — still review that value.
+                stored = ctx.session.state.get(self.output_key)
+                if stored is not None:
+                    if isinstance(stored, (dict, list)):
+                        output_text = json.dumps(stored, ensure_ascii=False)
+                    else:
+                        output_text = str(stored)
+
+            if not output_text.strip() and last_model_text.strip():
+                # Some providers emit the structured plan as a non-final text
+                # event; still feed it to deterministic review.
+                output_text = last_model_text
+
+            usable = (output_text or "").strip()
+
+            # ── Completeness check ───────────────────────────────────────
+            # An agent that builds its output over several tool calls may end
+            # its turn half way. Send it back to finish before anyone reviews
+            # a half-built result; like a critic rejection, the premature
+            # final answer never reaches the chat.
+            if final_event is not None:
+                unfinished = self._unfinished_feedback(ctx)
+                if unfinished and unfinished_rounds < self.unfinished_max_rounds:
+                    unfinished_rounds += 1
+                    logger.info(
+                        "%s: output unfinished (round %d/%d): %s",
+                        self.name, unfinished_rounds, self.unfinished_max_rounds,
+                        unfinished,
+                    )
+                    async for event in self._feed_back(ctx, unfinished):
+                        yield event
+                    continue
+                if unfinished:
+                    logger.warning(
+                        "%s: output still unfinished after %d round(s) — "
+                        "passing it on as is", self.name, unfinished_rounds,
+                    )
 
             # ── Critic review ────────────────────────────────────────────
             # Runs before the human sees anything and regardless of whether
@@ -335,9 +475,11 @@ class SessionAgent(LlmAgent):
                     )
                     # The rejected output never reaches the chat — only the
                     # rewrite does, exactly as with a human rejection.
+                    unfinished_rounds = 0
                     async for event in self._feed_back(
                         ctx,
                         self.critic_correction_prompt.format(feedback=feedback),
+                        self._rewrite_state_delta(ctx),
                         author=self.critic_agent_name,
                     ):
                         yield event
@@ -345,23 +487,37 @@ class SessionAgent(LlmAgent):
 
                 logger.info("%s: plan critic approved the output", self.name)
 
-            from CoScientist.config import get_settings
-            hitl_on = bool(self.hitl_handler and get_settings().web.hitl_enabled)
-
-            if not hitl_on or final_event is None:
-                # No HITL or not a final event (e.g. tool call): just pass and exit
-                if not hitl_on:
-                    logger.info(
-                        "%s: HITL disabled (hitl_enabled=False) — "
-                        "output passed through without human review", self.name,
-                    )
+            if not self._should_run_review():
+                # No HITL (or a subclass that opted out): pass the model output
+                # through. Do not treat a missing final-event flag as "skip
+                # review" — some providers emit the plan as a non-final text
+                # event; subclasses that must review still get the usable text
+                # below after synthesizing a final event.
+                logger.info(
+                    "%s: HITL disabled (hitl_enabled=False) — "
+                    "output passed through without human review", self.name,
+                )
                 if final_event is not None:
                     async for event in self._emit_final(ctx, final_event, output_text):
                         yield event
                 break
 
-            if self.output_key:
-                output_text = ctx.session.state.get(self.output_key, output_text)
+            if not usable:
+                # Empty final / failed structured output — do not invent a review turn.
+                if final_event is not None:
+                    yield final_event
+                break
+
+            if final_event is None:
+                final_event = Event(
+                    invocation_id=ctx.invocation_id,
+                    author=self.name,
+                    branch=ctx.branch,
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(text=usable)],
+                    ),
+                )
 
             # T0 checkpoint: the output/plan is formed but the review has not
             # been shown yet. The final event is BUFFERED (not committed), so no
@@ -377,11 +533,36 @@ class SessionAgent(LlmAgent):
                 logger.exception("pre-HITL checkpoint failed; run continues")
 
             # Perform HITL check (subclasses may run a multi-step dialogue).
-            response = await self._review_decision(ctx, output_text)
+            response = await self._review_decision(ctx, usable)
+
+            if response.timed_out or response.stop_review_loop:
+                # A specialised review agent has recorded a pause or terminal
+                # decision in its runtime. Stop instead of silently approving
+                # or regenerating forever.
+                if final_event is not None:
+                    yield final_event
+                break
 
             if response.approved:
-                if response.instructions and response.action != HITLAction.EDIT:
-                    edited_text = response.instructions
+                # REPLACING the output is what «provide input» means: the
+                # operator edits the text (or the roadmap JSON) and the edited
+                # version becomes the answer. A plain APPROVE that happens to
+                # carry a note must not do that — the note is a remark ABOUT the
+                # output, not the output. It used to be impossible to hit,
+                # because approve-plus-note was rewritten into `edit` in the
+                # browser; the moment a positive answer started meaning approval
+                # it became a live hazard, and a live one: the experiment
+                # planner's `output_key` is `experiment_plan`, so one sentence
+                # of feedback replaced the whole approved plan in session state
+                # while the original plan went on running.
+                if response.action == HITLAction.PROVIDE_INPUT:
+                    edited_text = (
+                        response.instructions
+                        if response.instructions is not None
+                        else response.free_input
+                        if response.free_input is not None
+                        else ""
+                    )
                     if final_event is not None and final_event.content and final_event.content.parts:
                         final_event.content.parts[0].text = edited_text
                     if self.output_key:
@@ -413,7 +594,9 @@ class SessionAgent(LlmAgent):
                     except Exception:
                         pass
 
-                if not response.free_input and response.action != HITLAction.EDIT:
+                if response.action == HITLAction.EDIT:
+                    pass
+                else:
                     # HITL approved — now emit the (possibly updated) final event and exit
                     if final_event is not None:
                         async for event in self._emit_final(ctx, final_event, output_text):
@@ -423,8 +606,11 @@ class SessionAgent(LlmAgent):
             # Rejected or "Edit" requested — feed feedback back into the agent
             feedback = response.instructions or response.free_input or "No feedback provided."
 
+            unfinished_rounds = 0
             async for event in self._feed_back(
-                ctx, self.correction_prompt.format(feedback=feedback)
+                ctx,
+                self.correction_prompt.format(feedback=feedback),
+                self._rewrite_state_delta(ctx),
             ):
                 yield event
 
