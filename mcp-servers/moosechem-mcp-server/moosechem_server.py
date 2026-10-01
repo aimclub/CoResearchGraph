@@ -124,8 +124,11 @@ def _fetch_abstracts(pmids: list[str]) -> list[list[str]]:
         title = "".join(title_el.itertext()).strip() if title_el is not None else ""
         abstract_parts = article.findall(".//AbstractText")
         abstract = " ".join("".join(el.itertext()).strip() for el in abstract_parts).strip()
+        pmid_el = article.find(".//PMID")
+        pmid = pmid_el.text.strip() if pmid_el is not None and pmid_el.text else ""
+        source_ref = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else None
         if title and abstract:
-            papers.append([title, abstract])
+            papers.append([title, abstract, source_ref])
     return papers
 
 
@@ -136,7 +139,7 @@ def _search_openalex(query: str, max_results: int) -> list[list[str]]:
         "search": query,
         "per_page": max_results,
         "filter": "has_abstract:true",
-        "select": "title,abstract_inverted_index",
+        "select": "title,abstract_inverted_index,doi,id",
     }
     try:
         r = requests.get(url, params=params, timeout=20,
@@ -155,8 +158,9 @@ def _search_openalex(query: str, max_results: int) -> list[list[str]]:
                 for pos in positions:
                     words[pos] = word
             abstract = " ".join(words).strip()
+            source_ref = item.get("doi") or item.get("id")
             if abstract:
-                papers.append([title, abstract])
+                papers.append([title, abstract, source_ref])
         return papers
     except Exception as e:
         logging.warning(f"OpenAlex search failed for '{query}': {e}")
@@ -681,18 +685,23 @@ def get_hypotheses(evaluation_path: Optional[str] = None, top_n: int = 5, min_sc
         try:
             with open(corpus_path) as f:
                 corpus = json.load(f)
-            corpus_index = {entry[0].lower(): entry[1] for entry in corpus if len(entry) >= 2}
+            corpus_index = {
+                entry[0].lower(): (entry[1], entry[2] if len(entry) >= 3 else None)
+                for entry in corpus if len(entry) >= 2
+            }
         except Exception:
             pass
 
-    # Добавляем абстракт и tools к каждой гипотезе
+    # Добавляем абстракт, source_ref и tools к каждой гипотезе
     default_tools = ["spectroscopy", "chromatography", "in_vitro_assay", "computational_modeling"]
     for h in top:
         insp_title = h.get("inspiration", "")
-        if insp_title and insp_title.lower() in corpus_index:
-            h["inspiration_abstract"] = corpus_index[insp_title.lower()]
+        entry = corpus_index.get(insp_title.lower()) if insp_title else None
+        if entry:
+            h["inspiration_abstract"], h["inspiration_source_ref"] = entry
         else:
             h["inspiration_abstract"] = None
+            h["inspiration_source_ref"] = None
 
         # Извлекаем tools через LLM из текста гипотезы
         try:

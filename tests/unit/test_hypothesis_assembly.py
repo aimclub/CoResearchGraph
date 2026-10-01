@@ -29,7 +29,7 @@ from CoScientist.assembly.schema import get_config  # noqa: E402
 class _CallbackContext:
     """Minimal stand-in for CallbackContext — the guard only reads agent_name."""
 
-    agent_name = "HypothesesAgent"
+    agent_name = "MooseChemHypothesesAgent"
 
 
 def _llm_response_with_tool(name: str) -> LlmResponse:
@@ -45,7 +45,7 @@ def test_hypotheses_agent_assembles_with_internal_tools_and_callbacks():
     """The assembler wires the hypothesis subsystem's internal tools and
     normalizes its before_agent callbacks into ADK's canonical list form."""
     system = build_system(get_config())
-    agent = system.agent("HypothesesAgent")
+    agent = system.agent("MooseChemHypothesesAgent")
 
     # 1. The internal strategy tools are attached under their real ADK names
     #    (FunctionTool derives its name from the wrapped function __name__).
@@ -68,7 +68,7 @@ def test_guard_unknown_tools_accepts_internal_tools():
     """The after_model guard's whitelist is populated from the declared tools,
     so legitimate internal tool calls pass and only unknown tools are caught."""
     system = build_system(get_config())
-    agent = system.agent("HypothesesAgent")
+    agent = system.agent("MooseChemHypothesesAgent")
 
     guard = agent.after_model_callback
     assert guard is not None

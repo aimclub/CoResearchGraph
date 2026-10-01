@@ -191,7 +191,7 @@ class HypothesisLoopCoordinator:
                 edges.append({"type": "uses", "from": f"#{vmref}", "to": f"#{tref}"})
 
         try:
-            result = graph.commit(source="HypothesesAgent", nodes=nodes, edges=edges)
+            result = graph.commit(source="MooseChemHypothesesAgent", nodes=nodes, edges=edges)
             if result.ok:
                 logger.info(
                     "[hypothesis] committed %d ACTIVE hypotheses to the research graph",

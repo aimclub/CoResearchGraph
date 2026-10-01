@@ -411,14 +411,24 @@ class MooseChemMCPTool(BaseHypothesisTool):
                 + "]"
             )
 
-        # Evidence basis: inspiration paper with full title and abstract
+        # Evidence basis: inspiration paper with full title, abstract and
+        # source identifier (PubMed URL, DOI, or OpenAlex work URL). Without
+        # this, doi/url stay None and the Evidence node's content/source_ref
+        # both collapse to the bare title (indistinguishable from each other).
         evidence_basis: List[Reference] = []
         inspiration_title = raw.get("inspiration", "")
         inspiration_abstract = raw.get("inspiration_abstract")
+        inspiration_source_ref = raw.get("inspiration_source_ref")
         if inspiration_title and inspiration_title not in ("None", ""):
+            is_doi = bool(inspiration_source_ref) and (
+                inspiration_source_ref.startswith("10.")
+                or "doi.org" in inspiration_source_ref
+            )
             evidence_basis.append(Reference(
                 title=inspiration_title,
                 description=inspiration_abstract if inspiration_abstract else None,  # no truncation
+                doi=inspiration_source_ref if is_doi else None,
+                url=inspiration_source_ref if (inspiration_source_ref and not is_doi) else None,
             ))
 
         # Variables extracted by LLM inside MCP server (validated format)

@@ -282,6 +282,7 @@ class WebSettings(BaseModel):
     coder_mode: str = _os.getenv("CODER__MODE", "local")        # "local" | "openhands"
     merge_tasks_enabled: bool = _os.getenv("PLANNER__MERGE_TASKS", "true").lower() in ("true", "1", "yes")
     max_active_hypotheses: int = int(_os.getenv("HYPOTHESES__MAX_ACTIVE", "1"))
+    moosechem_route_enabled: bool = _os.getenv("HYPOTHESES__MOOSECHEM_ENABLED", "false").lower() in ("true", "1", "yes")
     use_proxy: bool = _os.getenv("USE_PROXY", "True").lower() in ("true", "1", "yes")
     opik_enabled: bool = _os.getenv("OPIK__ENABLED", "false").lower() in ("true", "1", "yes")
     auto_naming_enabled: bool = _os.getenv("AUTO_NAMING__ENABLED", "true").lower() in ("true", "1", "yes")

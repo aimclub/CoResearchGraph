@@ -377,6 +377,19 @@ INIT_SEED_TYPES = frozenset({"ResearchQuestion", "Tool", "Resource",
 # researcher → ResearchAgent (+ MedicalAgent for the clinical domain);
 # coder → CoderAgent / DatasetCollectorAgent / ExperimentAgent; the human
 # acts through HITL approvals ("human" pseudo-agent, reserved for that bridge).
+_HYPOTHESIS_PERM = AgentPerm(
+    # May also declare the Tools its methods need (as needs_adaptation — a
+    # NEED, not a confirmed capability), so its requires/uses edges resolve;
+    # the orchestrator/coder later flips them to available/being_created. A
+    # needs_adaptation tool keeps the hypothesis correctly BLOCKED until then.
+    create=frozenset({"Hypothesis", "VerificationMethod", "ConfirmationCriteria",
+                      "Tool", "Evidence"}),
+    update_attrs=frozenset(),
+    transitions=_transitions(("Hypothesis", "formulated", "postponed")),
+    edges=_edges("motivates", "tested_by", "requires", "formulated_for",
+                 "uses", "consumes", "relates_to"),
+)
+
 AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
     "OrchestratorAgent": AgentPerm(
         # Coordinator + framing + SCHEDULING + approval — NOT the judge. It seeds
@@ -416,18 +429,12 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
         edges=_edges("based_on", "determines_sufficiency",
                      "supports", "refutes", "refines"),
     ),
-    "HypothesesAgent": AgentPerm(
-        # May also declare the Tools its methods need (as needs_adaptation — a
-        # NEED, not a confirmed capability), so its requires/uses edges resolve;
-        # the orchestrator/coder later flips them to available/being_created. A
-        # needs_adaptation tool keeps the hypothesis correctly BLOCKED until then.
-        create=frozenset({"Hypothesis", "VerificationMethod", "ConfirmationCriteria",
-                          "Tool", "Evidence"}),
-        update_attrs=frozenset(),
-        transitions=_transitions(("Hypothesis", "formulated", "postponed")),
-        edges=_edges("motivates", "tested_by", "requires", "formulated_for",
-                     "uses", "consumes", "relates_to"),
-    ),
+    # Shared by both hypothesis-generation routes (HypothesesAgent: plain LLM
+    # ideation; MooseChemHypothesesAgent: PubMed/OpenAlex-grounded, behind
+    # settings.web.moosechem_route_enabled) — same graph role either way, so
+    # one AgentPerm, not two copies that could drift.
+    "HypothesesAgent": _HYPOTHESIS_PERM,
+    "MooseChemHypothesesAgent": _HYPOTHESIS_PERM,
     "ResearchAgent": AgentPerm(
         create=frozenset({"Evidence", "EmpiricalBase"}),
         update_attrs=frozenset({"EmpiricalBase"}),

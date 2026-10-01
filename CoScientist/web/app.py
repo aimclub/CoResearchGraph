@@ -1654,7 +1654,7 @@ async def _handle_chat(runtime: WebRuntime, key: SessionKey, data: dict):
             msg = (
                 f"**Error connecting to proxy server**\n\n"
                 f"Failed to connect to the proxy server to execute the query to the language model. "
-                f"Please ensure the proxy container is running, the corporate VPN is enabled (other - disabled), and "
+                f"Please ensure the proxy container is running, the corporate VPN is enabled (other - disabled), "
                 f"and the proxy is accessible."
             )
             agent_msg = {

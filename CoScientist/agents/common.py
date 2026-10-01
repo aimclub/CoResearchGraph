@@ -52,8 +52,14 @@ _LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 
 def is_proxy_error(err: Exception) -> bool:
-    """Return True if *err* represents an unreachable proxy or network connection failure."""
-    if not settings.web.use_proxy:
+    """Return True if *err* represents an unreachable proxy or network connection failure.
+
+    Only meaningful when a forward-proxy is actually configured
+    (``settings.services.proxy_url``) — without one, litellm talks to the
+    provider directly, so a timeout/connection failure is a plain network
+    error, not a proxy problem, and must not be mislabeled as one.
+    """
+    if not settings.web.use_proxy or not settings.services.proxy_url:
         return False
     msg = str(err).lower()
     proxy_keywords = (
@@ -67,21 +73,58 @@ def is_proxy_error(err: Exception) -> bool:
         "timed out",
         "timeout",
         "connecttimeout",
+        "connectionerror",
+        "apiconnectionerror",
     )
-    if any(k in msg for k in proxy_keywords):
-        return True
-    if settings.services.proxy_url and ("connectionerror" in msg or "connecterror" in msg or "apiconnectionerror" in msg):
-        return True
-    return False
+    return any(k in msg for k in proxy_keywords)
 
 
 def _is_transient(err: Exception) -> bool:
-    if is_proxy_error(err):
-        return False
+    """Return True if *err* is worth retrying.
+
+    Deliberately does NOT consult ``is_proxy_error`` here: that check is
+    meant for the final, post-retry message shown to the user (see
+    ``app.py``), not for gating retries. A genuinely unreachable proxy is
+    already caught earlier by ``_verify_proxy_reachable`` (outside this
+    retry loop) and raises before any attempt is made. Once we're here,
+    the proxy was reachable moments ago, so a Timeout/connection error is
+    far more likely a stale cached httpx client (see
+    ``_flush_stale_http_clients``) than the proxy actually being down —
+    and that overlaps with ``is_proxy_error``'s "timeout"/"timed out"
+    keywords, which previously short-circuited this to False and skipped
+    the flush-and-retry entirely.
+    """
     if type(err).__name__ in _RETRYABLE_TYPES:
         return True
     msg = str(err).lower()
     return any(s in msg for s in _RETRYABLE_SUBSTRINGS)
+
+
+_STALE_CONNECTION_MARKERS = (
+    "timeout",
+    "timed out",
+    "connection",
+    "connect",
+    "econnreset",
+    "broken pipe",
+    "no route to host",
+    "network is unreachable",
+)
+
+
+def _flush_stale_http_clients(err: Exception) -> None:
+    msg = str(err).lower()
+    if type(err).__name__ not in ("Timeout", "APIConnectionError") and not any(
+        m in msg for m in _STALE_CONNECTION_MARKERS
+    ):
+        return
+    cache = getattr(litellm, "in_memory_llm_clients_cache", None)
+    if cache is not None:
+        cache.flush_cache()
+        _logger.warning(
+            "Flushed litellm's cached HTTP clients after a connection-level "
+            "error (likely a stale pooled connection): %s", err,
+        )
 
 
 class RetryingLiteLlm(LiteLlm):
@@ -138,6 +181,7 @@ class RetryingLiteLlm(LiteLlm):
                 max_r = settings.web.max_retries
                 if yielded or attempt > max_r or not _is_transient(err):
                     raise
+                _flush_stale_http_clients(err)
                 delay = min(1.5 ** attempt, 8.0)
                 _logger.warning(
                     "Transient LLM error (attempt %d/%d), retrying in %.1fs: %s",

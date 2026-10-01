@@ -115,6 +115,7 @@ _RESEARCH_EXAMPLES = {
         '{"id":"H2","status":"confirmed","reason":"E1,E2 meet CC1; no refutation"}])'
     ),
 }
+_RESEARCH_EXAMPLES["MooseChemHypothesesAgent"] = _RESEARCH_EXAMPLES["HypothesesAgent"]
 
 
 def render_research_protocol(ctx: PromptContext) -> str:
@@ -1460,6 +1461,9 @@ def orchestrator(ctx: PromptContext) -> str:
     exec_routes_to_coder = has_exec and _executor_routes_to_coder(ctx)
     has_retrieval = ctx.has_tool("retrieval")
     has_research_graph = ctx.has_tool("research_graph_orchestrator")
+    hyp_workers = "/".join(
+        n for n in ("HypothesesAgent", "MooseChemHypothesesAgent") if ctx.has_subordinate(n)
+    )
 
     # The numbered instruction steps are built as a list and numbered
     # programmatically — no brittle hardcoded "3."/"5." around conditional ones.
@@ -1737,7 +1741,7 @@ def orchestrator(ctx: PromptContext) -> str:
             "- BACKGROUND VALIDATOR (automatic, not an agent you call): the VERDICT "
             "(confirmed/refuted), criteria met/not, and the Conclusion draft. Never "
             "write these yourself and never wait for them.\n"
-            "- WORKERS: Hypotheses/Methods/Criteria (HypothesesAgent), Evidence "
+            f"- WORKERS: Hypotheses/Methods/Criteria ({hyp_workers}), Evidence "
             "(Research/Medical/Coder/Experiment), Tools & code/data (Coder). You "
             "CANNOT create Evidence, Hypotheses, Conclusions, Methods, Tools, "
             "Resources or EmpiricalBases mid-run — the graph will reject it. If a "

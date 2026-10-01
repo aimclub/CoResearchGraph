@@ -70,6 +70,7 @@ agents:
     subordinates:
       - PlannerAgent
       - HypothesesAgent
+      - MooseChemHypothesesAgent
       - ResearchAgent
       - TaskExecutorAgent
       - MedicalAgent
@@ -190,26 +191,39 @@ agents:
     output_key: final_report
 
   HypothesesAgent:
-    class: custom:hypothesis_subsystem
+    class: llm
     description: >-
-      generates structured, falsifiable scientific hypotheses using PubMed
-      literature mining, LLM generation, and iterative critic refinement;
-      always delegates hypothesis generation to its internal tool pipeline
-      (MooseChem → critic loop) — never fabricates hypotheses from its own
-      knowledge.
-    routing: >-
-      when the user asks to generate or propose a new hypothesis.
-      The agent produces testable hypotheses with concrete verification plans
-      and Popperian refutation criteria.
+      generates plausible, testable scientific hypotheses directly with the
+      LLM — no PubMed/OpenAlex corpus mining, no critic loop. Fast default
+      route for hypothesis generation.
+    routing: |-
+      DEFAULT choice when the user asks to generate or propose a new
+      hypothesis — fast, LLM-only ideation. Only step aside for a heavier,
+      literature-grounded hypothesis route when one is on your roster and the
+      task explicitly demands PubMed/OpenAlex-backed rigor over speed.
+      Examples — ordinary, narrow questions about a specific observation,
+      answerable without surveying the literature:
+      - "почему при хранении раствора белка при 4°C через неделю выпадает
+        осадок?" → HypothesesAgent
+      - "почему клетки перестают делиться после пересева на новую среду?" →
+        HypothesesAgent
+      - "что может объяснять падение выхода реакции при повышении pH выше 8?"
+        → HypothesesAgent
+      - "почему датчик давления в установке даёт дрейф показаний через
+        несколько часов работы?" → HypothesesAgent
+      - "какой химический состав и маршрут синтеза позволят получить
+        антиокислительную присадку к моторному маслу, близкую по эффективности
+        к промышленным фенольным антиоксидантам, из доступных реагентов?" →
+        HypothesesAgent
     planning: |-
-      Use this to generate and test hypotheses with built-in critic validation.
-      The agent always delegates generation to its internal tool pipeline.
+      Use this FIRST for hypothesis generation unless a literature-grounded,
+      MooseChem-backed route is on your roster and the task explicitly
+      demands that rigor.
+    prompt: hypotheses
     output_key: hypotheses
     report_output: true
-    # The subsystem's internal strategy tools are declared here so the assembler
-    # attaches them — keeping guard_unknown_tools' whitelist populated and making
-    # the generator + critic loop visible to the ADK runtime as regular tools.
-    tools: [generate_via_moosechem, run_critic_loop]
+    tools: [task_tracker, graph, research_graph]
+    hitl: true
     callbacks:
       before_agent: [before_get_task, inject_research_context]
       after_model: [guard_unknown_tools]
@@ -221,6 +235,68 @@ agents:
         name: Hypothesize
         description: Generate novel scientific hypotheses for a research question
         tags: [hypothesis, science, ideation]
+
+  MooseChemHypothesesAgent:
+    class: custom:hypothesis_subsystem
+    enabled: ${web.moosechem_route_enabled}
+    description: >-
+      generates structured, falsifiable scientific hypotheses using PubMed
+      literature mining, LLM generation, and iterative critic refinement;
+      always delegates hypothesis generation to its internal tool pipeline
+      (MooseChem → critic loop) — never fabricates hypotheses from its own
+      knowledge. Heavier and slower than HypothesesAgent; use it only when
+      the task needs complex, literature-grounded hypotheses.
+    routing: |-
+      when the task explicitly needs a complex, well-founded hypothesis backed
+      by literature (PubMed/OpenAlex corpus mining + evolutionary search), not
+      just quick ideation. Produces testable hypotheses with concrete
+      verification plans and Popperian refutation criteria. For anything else,
+      use HypothesesAgent instead.
+      Examples — broad mechanistic questions about an established research
+      problem, where a real answer draws on a large, contested body of prior
+      work:
+      - "почему меланома со временем приобретает резистентность к
+        BRAF-ингибиторам?" → MooseChemHypothesesAgent
+      - "чем объясняется противоречие в данных по роли белка p53 при
+        ферроптозе?" → MooseChemHypothesesAgent
+      - "какие механизмы лежат в основе устойчивости Pseudomonas aeruginosa к
+        карбапенемам?" → MooseChemHypothesesAgent
+      - "почему ингибиторы PARP эффективны при BRCA-мутированном раке, но не
+        всегда дают длительный ответ?" → MooseChemHypothesesAgent
+      - "можно ли получить структурно новые ингибиторы Q-сайта
+        сукцинатдегидрогеназы, не воспроизводящие строение зарегистрированных
+        карбоксамидных фунгицидов, к которым уже сформировалась полевая
+        устойчивость?" → MooseChemHypothesesAgent
+      - "какие метаболиты борщевика Сосновского наиболее токсичны и при этом
+        перспективны как источник новых биологически активных соединений?" →
+        MooseChemHypothesesAgent
+      A question can look identical in form to HypothesesAgent's examples
+      ("почему X происходит?") — the signal is whether answering it honestly
+      requires weighing existing, possibly conflicting research, not the
+      phrasing. A narrow question about one specific setup/observation stays
+      with HypothesesAgent even when the topic itself is biomedical.
+    planning: |-
+      Use this only when the hypothesis must be complex and literature-grounded
+      (PubMed/OpenAlex-backed), with built-in critic validation. Otherwise use
+      HypothesesAgent. The agent always delegates generation to its internal
+      tool pipeline.
+    output_key: hypotheses
+    report_output: true
+    # The subsystem's internal strategy tools are declared here so the assembler
+    # attaches them — keeping guard_unknown_tools' whitelist populated and making
+    # the generator + critic loop visible to the ADK runtime as regular tools.
+    tools: [generate_via_moosechem, run_critic_loop]
+    callbacks:
+      before_agent: [before_get_task, inject_research_context]
+      after_model: [guard_unknown_tools]
+    a2a:
+      key: moosechem_hypotheses
+      port: 8009
+      skill:
+        id: hypothesize_literature
+        name: Hypothesize (Literature-Grounded)
+        description: Generate complex, literature-grounded scientific hypotheses via MooseChem
+        tags: [hypothesis, science, ideation, literature]
 
   # NOTE: hypothesis validation (verdict + Conclusion, spec Module 4) is NOT an
   # agent here — it runs as a fully-async BACKGROUND plugin
