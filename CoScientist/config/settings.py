@@ -429,14 +429,22 @@ class AuthSettings(BaseModel):
     is one careless key mapping away from being both writable and readable by
     a caller. Nothing in the web layer mutates this group.
 
-    Override with AUTH__PASSWORD, AUTH__SECRET_KEY and so on.
+    Override with AUTH__PASSWORD_HASH, AUTH__SECRET_KEY and so on.
     """
 
     enabled: bool = True
 
-    # The one password for the whole deployment. Empty means the gate cannot
-    # open, and every request gets 503 — see CoScientist/web/auth.py. The app
-    # never falls back to serving without a password.
+    # Salted PBKDF2 digest of the one password for the whole deployment, in
+    # the form "pbkdf2_sha256:<rounds>:<salt>:<digest>". Generate it with
+    # `python -m CoScientist auth-hash`. Missing or malformed means the gate
+    # cannot open, and every request gets 503 — see CoScientist/web/auth.py.
+    # The app never falls back to serving without a credential.
+    password_hash: str = ""
+
+    # The password in clear text. A fallback for local runs, kept because the
+    # digest form needs a generation step. It loses to password_hash when both
+    # are set, and the server reports it at startup. Do not use it on a
+    # deployment: anyone who reads the .env file can sign in.
     password: Optional[str] = None
 
     # HMAC key for the session cookie. Unset mints a fresh random key at every

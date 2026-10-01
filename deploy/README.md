@@ -139,12 +139,26 @@ Keys use the nested form `SECTION__FIELD` (double underscore).
 One shared password gates the whole deployment. There are no user accounts.
 Everybody who logs in sees every session, every report and every setting.
 
-Set the password in `~/.config/coscientist/.env` **before** the first deploy of
-this feature. The gate fails closed: with `AUTH__ENABLED=true` and no password,
+The `.env` file holds a salted digest of the password, not the password. Build
+the line on any machine with the repository:
+
+```
+python3 ~/cosci/CoScientist/deploy/make_password_hash.py
+```
+
+The script needs nothing but a Python 3 interpreter. It asks for the password
+twice without echoing it, then prints one line.
+
+`uv run --frozen python -m CoScientist auth-hash` does the same thing from the
+deploy directory. Use the script while the `.env` file is still incomplete:
+importing the package builds the agent system, so the command needs the LLM
+keys to be in place already. Put
+that line in `~/.config/coscientist/.env` **before** the first deploy of this
+feature. The gate fails closed: with `AUTH__ENABLED=true` and no usable digest,
 every request gets `503`.
 
 ```
-AUTH__PASSWORD=<long random string>
+AUTH__PASSWORD_HASH=pbkdf2_sha256:200000:<salt>:<digest>
 AUTH__SECRET_KEY=<long random string>
 AUTH__ALLOWED_ORIGINS=https://<the host browsers use>
 ```
@@ -153,7 +167,8 @@ Keys:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `AUTH__PASSWORD` | unset | The one password. Unset means `503` on every path. |
+| `AUTH__PASSWORD_HASH` | unset | Salted digest of the one password. Missing or malformed means `503` on every path. |
+| `AUTH__PASSWORD` | unset | The password in clear text. Local runs only. See note 5. |
 | `AUTH__SECRET_KEY` | random per boot | Signs the session cookie. See note 3. |
 | `AUTH__ENABLED` | `true` | Set to `false` only for a localhost-only instance. |
 | `AUTH__COOKIE_SECURE` | auto | `Secure` on the session cookie. See note 1. |
@@ -161,7 +176,7 @@ Keys:
 | `AUTH__SESSION_MAX_AGE` | `604800` | Cookie lifetime in seconds. |
 | `AUTH__MAX_LOGIN_ATTEMPTS` | `10` | Failed logins per 15 minutes before the login page reports a throttle. Read note 4. |
 
-Four things to get right:
+Five things to get right:
 
 1. **TLS.** Leave `AUTH__COOKIE_SECURE` out of the file. Do not write it with
    an empty value: an empty string is not a boolean, and the server stops at
@@ -189,7 +204,17 @@ Four things to get right:
    never refuses a correct one. The other order would let ten wrong guesses
    from anywhere on the internet lock out the whole team for 15 minutes. The
    cost is that the throttle slows guessing but does not stop it. Use 20 or
-   more random characters, not a memorable phrase.
+   more random characters, not a memorable phrase. Failed logins go to
+   `logs/app.log` under the deploy directory, not to journalctl — that file is
+   the only record of somebody guessing.
+5. **Keep the clear-text key out of the deployment.** `AUTH__PASSWORD` still
+   works, for local runs that do not want a generation step. On a server it
+   puts the password in a file, which is what the digest exists to avoid. The
+   digest wins when both are set, and the server prints a warning at startup
+   while the clear-text key is in use. The digest uses PBKDF2-HMAC-SHA256 over
+   200000 rounds. That is below the usual recommendation on purpose: against
+   20 random characters the stretching adds almost nothing, and the digest is
+   there so a leaked file carries no password.
 
 What this does not do:
 
@@ -201,10 +226,14 @@ What this does not do:
   is using it.
 - It does not stop a determined password-guessing attack. Read note 4.
 
-To rotate the password, change `AUTH__PASSWORD` and restart. This also logs
-everybody out: the cookie signing key mixes in the password, so every
-outstanding cookie stops verifying. Changing `AUTH__SECRET_KEY` and restarting
-does the same without changing the password.
+To rotate the password, run `deploy/make_password_hash.py` again, replace
+`AUTH__PASSWORD_HASH` and restart. This also logs everybody out: the cookie
+signing key mixes in the stored digest, so every outstanding cookie stops
+verifying. Re-running the command over the same password has the same effect,
+because the salt is new each time. Moving from `AUTH__PASSWORD` to
+`AUTH__PASSWORD_HASH` logs everybody out once, for the same reason. Changing
+`AUTH__SECRET_KEY` and restarting also does it, without touching the
+password.
 
 ## Artifact links on a cluster
 

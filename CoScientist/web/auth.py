@@ -7,8 +7,10 @@ and the mounted ``/alembic`` sub-app that clones and builds arbitrary git repos
 
 The design is deliberately small:
 
-* One password for the whole deployment, from ``AUTH__PASSWORD``. No user
-  records, no per-user isolation. Everyone who logs in sees everything.
+* One password for the whole deployment. The ``.env`` file holds a salted
+  PBKDF2 digest of it in ``AUTH__PASSWORD_HASH``, never the password itself,
+  so a leaked file yields nothing a reader can type into the login form. No
+  user records, no per-user isolation. Everyone who logs in sees everything.
 * A session cookie carrying nothing but its own expiry, signed with HMAC-SHA256.
   There is no user data to leak and no payload to tamper with beyond the
   deadline, which the MAC covers.
@@ -26,6 +28,7 @@ and mirrors the one auth check the repo already has
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -52,8 +55,14 @@ WS_CLOSE_POLICY = 1008
 
 #: Close code for a socket refused because of its Origin. Kept apart from
 #: WS_CLOSE_POLICY on purpose: the caller here is already logged in, so sending
-#: it to /login produces a loop that no correct password can escape. The
-#: frontend reports this one and stops.
+#: it to /login produces a loop that no correct password can escape.
+#:
+#: Neither code reaches a browser on the shipped server. uvicorn turns a close
+#: sent before the accept into HTTP 403 on the upgrade, and the browser then
+#: reports 1006 — measured in Chrome, not inferred. The codes still matter to
+#: the test client, which reports them faithfully, and to any ASGI server that
+#: closes cleanly. What an operator relies on instead is warn_origin_refused
+#: below, which names the refused origin on stderr.
 WS_CLOSE_ORIGIN = 4403
 
 # A secret minted once per process, used when AUTH__SECRET_KEY is unset. Every
@@ -65,21 +74,76 @@ _EPHEMERAL_SECRET = secrets.token_bytes(32)
 # ---------------------------------------------------------------------------
 # Password and token
 # ---------------------------------------------------------------------------
+#: Stored-credential format: ``pbkdf2_sha256:<rounds>:<salt>:<digest>``, the
+#: last two base64url without padding. Separated by ":" and not the usual "$":
+#: a "$" makes the value expand to nothing the moment somebody pastes the line
+#: into a shell, and the result still looks like a hash.
+_HASH_SCHEME = "pbkdf2_sha256"
+
+#: Work factor. Deliberately below the figure recommended for human-chosen
+#: passwords: the README already requires 20 or more random characters, and
+#: against that much entropy stretching buys almost nothing. The digest is here
+#: so a leaked .env carries no password, not to survive an offline attack on a
+#: weak one.
+_HASH_ROUNDS = 200_000
+
+
+def hash_password(password: str, *, rounds: int = _HASH_ROUNDS,
+                  salt: Optional[bytes] = None) -> str:
+    """Build the value an operator puts in ``AUTH__PASSWORD_HASH``."""
+    salt = salt if salt is not None else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    return ":".join((_HASH_SCHEME, str(rounds), _b64(salt), _b64(digest)))
+
+
+def _parse_hash(stored: str) -> Optional[tuple[int, bytes, bytes]]:
+    """Split a stored digest, or return None when it is not one.
+
+    Parsing is lazy, never a pydantic validator. ``Settings()`` runs at module
+    import, so a typo checked there would stop the server before any code can
+    report why. A None here makes ``is_configured`` false, which routes the
+    problem through the 503 banner the operator can actually read.
+    """
+    parts = stored.strip().split(":")
+    if len(parts) != 4 or parts[0] != _HASH_SCHEME:
+        return None
+    try:
+        rounds = int(parts[1])
+        salt = _unb64(parts[2])
+        digest = _unb64(parts[3])
+    except (ValueError, binascii.Error):
+        return None
+    if rounds < 1 or not salt or not digest:
+        return None
+    return rounds, salt, digest
+
+
+def _stored_hash() -> str:
+    return (get_settings().auth.password_hash or "").strip()
+
+
 def _secret() -> bytes:
-    """The HMAC key for session cookies, bound to the current password.
+    """The HMAC key for session cookies, bound to the current credential.
 
     The token payload is only an expiry, so nothing in it changes when the
-    password changes. Mixing a digest of the password into the key is what
+    password changes. Mixing a digest of the credential into the key is what
     makes a rotation revoke outstanding cookies: after the change, every
     cookie signed with the old key fails its MAC check. Without this, an
     operator who rotates a leaked password keeps the thief logged in for up to
     ``session_max_age``.
+
+    What goes into the mix is the stored string, not the password. For a
+    digest that is the whole ``AUTH__PASSWORD_HASH`` value, which costs one
+    SHA-256 per request — the PBKDF2 rounds run at login only. It also means a
+    fresh salt over the same password still logs everybody out, because the
+    stored string changed.
     """
     auth = get_settings().auth
     configured = (auth.secret_key or "").strip()
     base = configured.encode("utf-8") if configured else _EPHEMERAL_SECRET
-    password_digest = hashlib.sha256((auth.password or "").strip().encode("utf-8")).digest()
-    return hmac.new(base, b"cs-session-v1:" + password_digest, hashlib.sha256).digest()
+    material = _stored_hash() or (auth.password or "").strip()
+    credential_digest = hashlib.sha256(material.encode("utf-8")).digest()
+    return hmac.new(base, b"cs-session-v1:" + credential_digest, hashlib.sha256).digest()
 
 
 def _b64(raw: bytes) -> str:
@@ -91,16 +155,38 @@ def _unb64(text: str) -> bytes:
 
 
 def is_configured() -> bool:
-    """True when the gate can actually open."""
-    return bool((get_settings().auth.password or "").strip())
+    """True when the gate can actually open.
+
+    A malformed ``AUTH__PASSWORD_HASH`` counts as unconfigured. Falling back
+    to ``AUTH__PASSWORD`` instead would turn a typo in the digest into a
+    quietly weaker gate, and refusing to start would hide the reason.
+    """
+    auth = get_settings().auth
+    stored = _stored_hash()
+    if stored:
+        return _parse_hash(stored) is not None
+    return bool((auth.password or "").strip())
 
 
 def check_password(given: str) -> bool:
-    """Constant-time comparison against ``AUTH__PASSWORD``.
+    """Constant-time check against the stored credential.
 
-    Digests rather than the raw strings, so the comparison runs over a fixed
-    length and cannot leak the password's length through timing.
+    ``AUTH__PASSWORD_HASH`` wins when both are set. Both branches compare
+    fixed-length digests rather than raw strings, so neither leaks the
+    password's length through timing.
+
+    This runs the PBKDF2 rounds, so it blocks for a measurable time. Callers
+    on the event loop must hand it to a thread — see ``login_submit``.
     """
+    stored = _stored_hash()
+    if stored:
+        parsed = _parse_hash(stored)
+        if parsed is None:
+            return False
+        rounds, salt, expected_digest = parsed
+        given_digest = hashlib.pbkdf2_hmac("sha256", given.encode("utf-8"), salt, rounds)
+        return hmac.compare_digest(given_digest, expected_digest)
+
     expected = (get_settings().auth.password or "").strip()
     if not expected:
         return False
@@ -293,10 +379,18 @@ def cookie_from_scope(scope: dict) -> Optional[str]:
 # Telling the operator what went wrong
 # ---------------------------------------------------------------------------
 _MISCONFIGURED_BANNER = (
-    "AUTH__PASSWORD is not set. The web UI answers 503 to every request, "
-    "including /healthz, so the deploy health check will fail. Set "
-    "AUTH__PASSWORD in the .env file, or set AUTH__ENABLED=false to serve "
-    "without a gate."
+    "AUTH__PASSWORD_HASH is missing or malformed. The web UI answers 503 to "
+    "every request, including /healthz, so the deploy health check will fail. "
+    "Run 'python3 deploy/make_password_hash.py' and put the line it prints in "
+    "the .env file, or set AUTH__ENABLED=false to serve without a gate."
+)
+
+_PLAINTEXT_BANNER = (
+    "AUTH__PASSWORD holds the password in clear text. Anyone who reads the "
+    ".env file can sign in. Run 'python3 deploy/make_password_hash.py', put the "
+    "result in AUTH__PASSWORD_HASH, and delete AUTH__PASSWORD. The switch "
+    "logs everybody out once, because the cookie signing key follows the "
+    "stored credential."
 )
 
 _warned_unconfigured = False
@@ -324,7 +418,11 @@ def check_configuration() -> None:
     auth = get_settings().auth
     if auth.enabled and not is_configured():
         warn_unconfigured()
-    elif auth.enabled and not auth.origin_list:
+        return
+    if auth.enabled and not _stored_hash():
+        _logger.warning(_PLAINTEXT_BANNER)
+        print(f"[CoScientist Web] {_PLAINTEXT_BANNER}", file=sys.stderr, flush=True)
+    if auth.enabled and not auth.origin_list:
         message = (
             "AUTH__ALLOWED_ORIGINS is empty. The WebSocket gate falls back to "
             "same-origin, which works when the proxy forwards the Host header "

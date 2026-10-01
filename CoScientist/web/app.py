@@ -1084,7 +1084,14 @@ def create_app() -> FastAPI:
         # the internet would shut the whole team out for the window. The
         # counter still throttles wrong guesses, which is all it can honestly
         # do here. See deploy/README.md on choosing a long random password.
-        if not web_auth.check_password(password):
+        #
+        # In a thread because the check runs PBKDF2 over 200000 rounds. On the
+        # event loop that stalls every open socket, every running job and the
+        # /healthz the deploy workflow polls — and any anonymous caller can
+        # trigger it, since the order above puts this before the throttle.
+        # to_thread uses the default executor, which caps its workers, so a
+        # flood of logins queues there instead of taking the whole machine.
+        if not await asyncio.to_thread(web_auth.check_password, password):
             web_auth.login_limiter.record_failure(ip)
             logging.getLogger("CoScientist.web.auth").warning(
                 "Failed login from %s", ip

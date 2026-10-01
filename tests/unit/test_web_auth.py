@@ -37,6 +37,10 @@ def _gate_open_for_tests(monkeypatch):
     auth = get_settings().auth
     monkeypatch.setattr(auth, "enabled", True)
     monkeypatch.setattr(auth, "password", PASSWORD)
+    # Explicitly empty: the plaintext fallback is what most tests below
+    # exercise, and a stray AUTH__PASSWORD_HASH in the environment would
+    # otherwise take precedence and fail them for the wrong reason.
+    monkeypatch.setattr(auth, "password_hash", "")
     monkeypatch.setattr(auth, "secret_key", "test-secret")
     monkeypatch.setattr(auth, "cookie_secure", False)
     monkeypatch.setattr(auth, "allowed_origins", ORIGIN)
@@ -582,3 +586,185 @@ def test_the_login_page_never_echoes_its_query_parameter(client, error):
     assert "<script>" not in body
     assert "onerror" not in body
     assert error not in body
+
+
+# ---------------------------------------------------------------------------
+# The stored credential is a salted digest, not the password
+# ---------------------------------------------------------------------------
+def test_the_digest_round_trips(monkeypatch):
+    """What auth-hash prints is what check_password accepts."""
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
+    monkeypatch.setattr(auth, "password", None)
+
+    assert web_auth.check_password(PASSWORD)
+    assert not web_auth.check_password(PASSWORD + "x")
+    assert not web_auth.check_password("")
+
+
+def test_the_stored_line_never_contains_the_password():
+    """The point of the whole change: a reader of .env learns nothing."""
+    stored = web_auth.hash_password(PASSWORD)
+    assert PASSWORD not in stored
+    scheme, rounds, salt, digest = stored.split(":")
+    assert scheme == "pbkdf2_sha256"
+    assert int(rounds) >= 1
+    assert salt and digest and salt != digest
+
+
+def test_a_fresh_salt_every_time():
+    """Two runs over one password must not produce the same line."""
+    assert web_auth.hash_password(PASSWORD) != web_auth.hash_password(PASSWORD)
+
+
+def test_the_digest_survives_a_dotenv_round_trip(tmp_path, monkeypatch):
+    """The separator must not be eaten on the way in.
+
+    python-dotenv expands ``${VAR}`` but not a bare ``$VAR``, so "$" would
+    survive here — it does not survive a paste into a shell. This test pins
+    the value that actually reaches the settings object.
+    """
+    from dotenv import dotenv_values
+
+    stored = web_auth.hash_password(PASSWORD)
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"AUTH__PASSWORD_HASH={stored}\n", encoding="utf-8")
+
+    assert dotenv_values(env_file)["AUTH__PASSWORD_HASH"] == stored
+
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", dotenv_values(env_file)["AUTH__PASSWORD_HASH"])
+    monkeypatch.setattr(auth, "password", None)
+    assert web_auth.check_password(PASSWORD)
+
+
+def test_the_digest_wins_over_the_plaintext(monkeypatch):
+    """Both set is a half-finished migration. The safer one decides."""
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password("the-real-one"))
+    monkeypatch.setattr(auth, "password", "the-stale-one")
+
+    assert web_auth.check_password("the-real-one")
+    assert not web_auth.check_password("the-stale-one")
+
+
+@pytest.mark.parametrize("broken", [
+    "not-a-hash",
+    "pbkdf2_sha256:200000:onlythree",
+    "pbkdf2_sha256:notanumber:c2FsdA:ZGlnZXN0",
+    "pbkdf2_sha256:0:c2FsdA:ZGlnZXN0",
+    "scrypt:200000:c2FsdA:ZGlnZXN0",
+    "pbkdf2_sha256:200000::ZGlnZXN0",
+])
+def test_a_malformed_digest_closes_the_gate(monkeypatch, client, broken):
+    """A typo must fail closed and say so, never fall back to the plaintext.
+
+    Falling back would turn one bad character into a quietly weaker gate.
+    Raising at import would stop the server before it could report why — the
+    503 path is the one an operator can read.
+    """
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", broken)
+    monkeypatch.setattr(auth, "password", PASSWORD)
+    monkeypatch.setattr(web_auth, "_warned_unconfigured", False)
+
+    assert web_auth._parse_hash(broken) is None
+    assert not web_auth.is_configured()
+    assert not web_auth.check_password(PASSWORD)
+    assert client.get("/healthz").status_code == 503
+
+
+def test_changing_the_digest_revokes_outstanding_cookies(monkeypatch):
+    """A rotation must log everybody out, same as the plaintext path."""
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
+    monkeypatch.setattr(auth, "password", None)
+    token = web_auth.issue_token()
+    assert web_auth.verify_token(token)
+
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password("a-new-password"))
+    assert not web_auth.verify_token(token)
+
+
+def test_re_salting_the_same_password_also_revokes(monkeypatch):
+    """The key follows the stored string, so a new salt is a new key."""
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
+    monkeypatch.setattr(auth, "password", None)
+    token = web_auth.issue_token()
+
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
+    assert not web_auth.verify_token(token)
+
+
+def test_moving_from_plaintext_to_digest_logs_everybody_out(monkeypatch):
+    """Documented in deploy/README.md, so pin it."""
+    auth = get_settings().auth
+    token = web_auth.issue_token()
+    assert web_auth.verify_token(token)
+
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
+    assert not web_auth.verify_token(token)
+
+
+def test_the_login_form_accepts_a_digest_password(client, monkeypatch):
+    """End to end: the form path, not just check_password."""
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
+    monkeypatch.setattr(auth, "password", None)
+
+    response = client.post("/auth/login", data={"password": PASSWORD},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    assert web_auth.COOKIE_NAME in response.cookies
+    assert client.get("/api/users").status_code == 200
+
+
+def test_the_digest_rounds_are_read_from_the_stored_line(monkeypatch):
+    """Raising the work factor must not invalidate existing lines."""
+    auth = get_settings().auth
+    cheap = web_auth.hash_password(PASSWORD, rounds=1000)
+    assert ":1000:" in cheap
+    monkeypatch.setattr(auth, "password_hash", cheap)
+    monkeypatch.setattr(auth, "password", None)
+    assert web_auth.check_password(PASSWORD)
+
+
+def test_the_standalone_generator_agrees_with_the_server(monkeypatch):
+    """deploy/make_password_hash.py duplicates the format, so pin it.
+
+    The duplication is deliberate: importing the package builds the agent
+    system, so the in-tree command needs a complete configuration, and an
+    operator writing the .env file does not have one yet. What the two must
+    never do is drift apart.
+    """
+    import importlib.util
+    from pathlib import Path as _Path
+
+    script = _Path(__file__).resolve().parents[2] / "deploy/make_password_hash.py"
+    spec = importlib.util.spec_from_file_location("make_password_hash", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.SCHEME == web_auth._HASH_SCHEME
+    assert module.ROUNDS == web_auth._HASH_ROUNDS
+
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", module.build(PASSWORD))
+    monkeypatch.setattr(auth, "password", None)
+    assert web_auth.check_password(PASSWORD)
+    assert not web_auth.check_password(PASSWORD + "x")
+
+
+def test_the_plaintext_key_is_reported_at_startup(monkeypatch, capsys):
+    """The only operator-facing signal that a .env still holds the password."""
+    auth = get_settings().auth
+    monkeypatch.setattr(auth, "password_hash", "")
+    monkeypatch.setattr(auth, "password", PASSWORD)
+
+    web_auth.check_configuration()
+    assert "AUTH__PASSWORD holds the password in clear text" in capsys.readouterr().err
+
+    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
+    web_auth.check_configuration()
+    assert "clear text" not in capsys.readouterr().err
