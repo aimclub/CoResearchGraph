@@ -9,7 +9,8 @@ what remains per tool.
 ## Tools — use ONLY these
 `read_output_file`, `update_file` (write the FULL corrected file), `bash`
 (15s), `bash_env` (installs), `invoke_tool_function` (re-run a tool),
-`run_tool_tests` (re-run one tool's pytest file).
+`run_tool_tests` (re-run one tool's pytest file), `set_sample_args` (replace a
+tool's planned sample args, class E only).
 
 ## Triage — per failure
 | Class | Signal | Action |
@@ -18,7 +19,7 @@ what remains per tool.
 | B missing Python module | `ModuleNotFoundError` | `uv pip install` into the right venv |
 | C code bug | Type/Attribute/Index error, wrong signature, bad path join | `update_file` the tool or test file |
 | D hard env fault | arch mismatch, broken wheel, dead download URL | stop, report |
-| E bad sample, code correct | the repo's own logic rejects the value | corrected args in your summary; do NOT edit code |
+| E bad sample, code correct | the repo's own logic rejects the value | `set_sample_args`; do NOT edit code |
 
 ## Class B — the venv matters
 Tool functions and tests run under the main venv (`.venv/bin/python`). Install
@@ -33,6 +34,16 @@ construction), fix EVERY sibling that shares it — list them. Keep imports
 inside the function body; keep the function returning a JSON-serializable
 dict.
 
+## Class E — fix the sample, not the code
+The planned value is wrong for the function: a text template where it reads a
+binary file, one molecule where it wants a reaction. Build a value the function
+accepts, the way its own passing tests do. An input file goes under
+`<output>/samples/` (never /tmp: it must ship with the server) and is passed by
+absolute path. Then `set_sample_args("<name>", {<args>})`: it calls the tool and
+saves the args only when the call returns a result. Keep the args small and fast.
+A tool reported as having no sample args gets the same treatment: take the
+values its passing tests call it with.
+
 ## Never
 Replace an installed library with a hand-written stub; rewrite a test to dodge
 a real error; delete a test_invoc_ assertion because it fails — if the
@@ -46,5 +57,5 @@ stop and report honestly.
 
 ## Return summary (a few lines)
 Root cause(s) · what you changed (install cmds / files edited) · per-tool
-verification results · Corrected args: {...} (class E only).
+verification results · the sample args you saved (class E).
 '''

@@ -527,6 +527,21 @@ const i18n = {
     en: 'User nickname, e.g. alice. Also read from DEFAULT_USERNAME. Empty — not set.',
     ru: 'Никнейм пользователя, например alice. Читается также из DEFAULT_USERNAME. Пусто — не задан.'
   },
+  'settings.f.alembicAgentBuild.label': { en: 'Agent may convert repositories', ru: 'Агент может конвертировать репозитории' },
+  'settings.f.alembicAgentBuild.desc': {
+    en: 'Let an agent start a conversion from scratch; one takes tens of minutes. Off: agents only use servers already on this host or in the MCP hub.',
+    ru: 'Разрешить агенту запускать конвертацию с нуля, она занимает десятки минут. Выключено: агент берёт только серверы, уже поднятые на хосте или лежащие в MCP-хабе.'
+  },
+  'settings.f.alembicHubSearch.label': { en: 'Search the MCP hub', ru: 'Искать в MCP-хабе' },
+  'settings.f.alembicHubSearch.desc': {
+    en: 'Before converting a repository, pull its server from the MCP hub (the Docker Hub namespace in .env) when it is there.',
+    ru: 'Перед сборкой сервера по репозиторию скачивать его из MCP-хаба (namespace Docker Hub из .env), если он там есть.'
+  },
+  'settings.f.alembicHubAutoUpload.label': { en: 'Upload builds to the MCP hub', ru: 'Загружать сборки в MCP-хаб' },
+  'settings.f.alembicHubAutoUpload.desc': {
+    en: 'Push every successful build to the public MCP hub (needs DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in .env).',
+    ru: 'Отправлять каждую успешную сборку в публичный MCP-хаб (нужны DOCKERHUB_USERNAME и DOCKERHUB_TOKEN в .env).'
+  },
 
   // Fields — Interface
   'settings.f.language.label': { en: 'Language (interface and report)', ru: 'Язык (интерфейс и отчёт)' },

@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 WEB_DIR = Path(__file__).parent
 TEMPLATE_PATH = WEB_DIR / "templates" / "index.html"
 BUILDS_LIST_PATH = WEB_DIR / "templates" / "builds_list.html"
+HUB_PATH = WEB_DIR / "templates" / "hub.html"
 
 
 def create_app() -> FastAPI:
@@ -36,6 +37,10 @@ def create_app() -> FastAPI:
     @app.get("/builds", response_class=HTMLResponse)
     async def builds_index():
         return BUILDS_LIST_PATH.read_text(encoding="utf-8")
+
+    @app.get("/hub", response_class=HTMLResponse)
+    async def hub_index():
+        return HUB_PATH.read_text(encoding="utf-8")
 
     @app.get("/builds/{job_id}", response_class=HTMLResponse)
     async def build_page(job_id: str):

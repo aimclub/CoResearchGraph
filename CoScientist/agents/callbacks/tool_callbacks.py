@@ -219,6 +219,33 @@ def inject_fedot_candidates(callback_context: CallbackContext) -> None:
     return None
 
 
+def announce_attached_tools(
+    callback_context: CallbackContext, llm_request: LlmRequest
+) -> None:
+    """Tell the executor which tools it holds, right before it decides.
+
+    The catalogue search earlier in the conversation does not see locally served
+    servers, and the executor echoed its "nothing matched" as ``NO_MATCHING_TOOL``.
+    """
+    names = sorted(n for n in (llm_request.tools_dict or {}))
+    if not names:
+        return
+    note = (
+        "TOOLS ATTACHED TO YOU RIGHT NOW: " + ", ".join(names) + ".\n"
+        "This list is the ground truth for the NO_MATCHING_TOOL decision. Any "
+        "earlier statement in this conversation that a tool 'does not exist' or "
+        "'is not registered' came from a catalogue search, which does not see "
+        "servers deployed locally for this task. If a tool the task names is in "
+        "the list above, CALL IT instead of answering NO_MATCHING_TOOL."
+    )
+    # As a trailing user turn: a system-instruction edit does not survive every
+    # model wrapper, and this decision must not be made on stale information.
+    llm_request.contents.append(
+        types.Content(role="user", parts=[types.Part(text=note)])
+    )
+    logger.debug("ATTACHED_TOOLS %s", names)
+
+
 def before_tool_reranker_model(
     callback_context: CallbackContext, llm_request: LlmRequest
 ) -> None:
@@ -820,15 +847,28 @@ def redirect_when_no_tools(
     (the "train a GAN for a transformer task" failure). Instead we short-circuit
     the agent and return a structured redirect: the message is the tool
     pipeline's final answer, so TaskExecutorAgent (the router that called it)
-    re-issues the step to CoderAgent without it ever reaching the orchestrator.
+    re-issues the step without it reaching the orchestrator: to McpBuilderAgent,
+    which builds an MCP tool server from a scientific repository, or to
+    CoderAgent for a one-off run.
     """
     state = callback_context.state
     verdict = state.get(TOOL_MATCH_STATE_KEY) or {}
     has_local = bool(state.get("filtered_tools"))
     has_web = bool(state.get("filtered_mcps"))
+    # Servers McpBuilderAgent built or reused for this session are tools too: from
+    # state, or from its build registry when the nested invocation's state is lost.
+    has_deployed = bool(state.get("deployed_mcps"))
+    if not has_deployed:
+        try:
+            from CoScientist.graph.session_scope import session_key
+            from CoScientist.tools.alembic_tools import live_build_servers
+
+            has_deployed = bool(live_build_servers(session_key(callback_context)))
+        except Exception:  # noqa: BLE001 - never block the run on this check
+            has_deployed = False
 
     # Only abstain on an explicit no-match verdict with nothing usable.
-    if verdict.get("matched") or has_local or has_web:
+    if verdict.get("matched") or has_local or has_web or has_deployed:
         return None
 
     if rerank_fallback_active(state):
@@ -846,10 +886,19 @@ def redirect_when_no_tools(
         "engineering — a specific architecture, a named repository/example code, "
         "or writing and running code — which no existing tool covers. Do NOT "
         "treat a tool that shares only the verb (e.g. 'train a GAN' for a 'train a "
-        "transformer' request) as a match. Re-issue this step to CoderAgent — do "
-        "not run this tool pipeline again for it."
+        "transformer' request) as a match. Re-issue this step to ONE of:\n"
+        "  - McpBuilderAgent: when the capability exists as CODE in a scientific "
+        "repository (the task or its paper names one, or one is easy to find) and "
+        "the tool would be reused: it builds and serves a validated MCP tool "
+        "server from that repository, closing this gap for every later task.\n"
+        "  - CoderAgent: when the work is a one-off computation or there is no "
+        "repository to build from.\n"
+        "Do not run this tool pipeline again for this step."
     )
-    logger.info("[ExperimentAgent] abstaining (no matching tool, best=%s) → CoderAgent", best)
+    logger.info(
+        "TOOL_GAP_DETECTED best=%s inventory=0 → McpBuilderAgent (build from repo) "
+        "| CoderAgent (one-off)", best,
+    )
     state["fedot_results"] = message
     return types.Content(role="model", parts=[types.Part(text=message)])
 

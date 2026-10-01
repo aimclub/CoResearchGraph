@@ -313,5 +313,8 @@ class LocalSessionRegistry:
             }
             self._sessions[key] = session
             self._users[user_id]["last_session_id"] = session_id
+            # Written through like create_session: an import that lived only in
+            # memory vanished from the list on the next server restart, while
+            # its files stayed on disk.
             self._save()
             return dict(session)

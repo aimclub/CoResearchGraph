@@ -94,3 +94,37 @@ def test_an_unknown_reference_is_left_where_a_reader_can_see_it():
 def test_tool_arguments_still_get_the_bare_url():
     """A tool needs an address, not prose. ``as_markdown`` defaults to off."""
     assert expand_refs(f"{REF}", REGISTRY) == URL
+
+
+def test_an_artifact_file_name_is_not_a_host():
+    """`fno_darcy_model.pt` in a task text is a torch checkpoint, not a site.
+
+    A loose read registered it as a `.pt` host and egress repair rewrote the
+    coder's `torch.save` path into `https://fno_darcy_model.pt`.
+    """
+    from CoScientist.agents.callbacks.link_registry import find_urls
+
+    text = ("Expected artifacts: train_fno.py (code); fno_darcy_model.pt "
+            "(model: weights); model.pt; sapo.pt/noticias; https://sapo.pt; "
+            "example.com; my_data.example.com")
+    found = [u for u, _, _ in find_urls(text, bare_hosts=True)]
+    assert "fno_darcy_model.pt" not in found
+    assert "model.pt" not in found
+    assert "my_data.example.com" not in found
+    assert "sapo.pt/noticias" in found
+    assert "https://sapo.pt" in found
+    assert "example.com" in found
+
+
+def test_a_registered_file_name_never_reaches_a_script():
+    from CoScientist.agents.callbacks.link_registry import (
+        USER_LINKS_STATE_KEY, _resolve_value, register_user_links,
+    )
+
+    state = {}
+    register_user_links(
+        state, "Save the weights to fno_darcy_model.pt", bare_hosts=True)
+    registry = state.get(USER_LINKS_STATE_KEY) or {}
+    assert not registry
+    script = 'torch.save(sd, "fno_darcy_model.pt")'
+    assert _resolve_value(script, registry) == script

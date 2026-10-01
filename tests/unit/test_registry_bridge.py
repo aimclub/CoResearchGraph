@@ -136,6 +136,9 @@ def _fake_build(monkeypatch, tmp_path, *, log=_DONE_LOG, returncode=0):
         "Popen",
         lambda *a, stdout=None, **kw: _FakeProc(stdout, log, returncode),
     )
+    # The built server is up, so a poll does not try to start it again.
+    monkeypatch.setattr(alembic_tools, "_container_state",
+                        lambda name: {"exists": True, "running": True, "image_id": None})
     rec = {
         "job_id": "gget-938c68",
         "repo_url": "https://github.com/pachterlab/gget",

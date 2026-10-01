@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import re
 from typing import Any, Mapping, MutableMapping
 from urllib.parse import urlparse
 
 from CoScientist.config.settings import ExperimentsSettings
+from CoScientist.config import get_settings
 from CoScientist.experiments.schemas import ExecutionRoute, ExperimentTask
 from CoScientist.experiments.runtime.shared import audit
 
@@ -30,6 +32,35 @@ def _server_id_from_url(repo_url: str | None, mcp_url: str) -> str:
     return f"alembic-{safe}"
 
 
+_TOOL_LABEL_RE = re.compile(r"^\s*[`'\"]?([A-Za-z_][A-Za-z0-9_.-]*)[`'\"]?\s*(.*)$", re.S)
+
+
+def _split_tool_label(label: str) -> tuple[str, str]:
+    """``"kme_arl (calc_KME)"`` -> ``("kme_arl", "calc_KME")``; a bare name keeps an empty note."""
+    match = _TOOL_LABEL_RE.match(str(label or ""))
+    if not match:
+        return "", ""
+    name = match.group(1)
+    note = match.group(2).strip().strip("()[]:-–— ").strip()
+    return name, note
+
+
+def _served_tool_names(mcp_url: str) -> list[str]:
+    """Names the served MCP actually lists; empty when it cannot be asked."""
+    try:
+        from CoScientist.tools.alembic_tools import list_served_mcp_tools
+
+        listed = list_served_mcp_tools(mcp_url.strip())
+    except Exception:  # noqa: BLE001 — the reopen must not depend on a live listing
+        return []
+    names = []
+    for item in listed or []:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
 def _tool_refs_from_outputs(
     outputs: dict[str, Any], *, placeholder: bool = True,
 ) -> list[dict[str, Any]]:
@@ -37,17 +68,29 @@ def _tool_refs_from_outputs(
     tools: list[dict[str, Any]] = []
     if isinstance(raw, list):
         for item in raw:
-            if isinstance(item, str) and (name := item.strip()):
+            if isinstance(item, str) and item.strip():
+                # The builder writes "kme_arl (calc_KME)" or "estimate_arl_add
+                # (унифицированный диспетчер ARL/ADD)"; the name is the
+                # identifier, the rest is its description. Taken whole, the
+                # string became the filter the tool-calling agent's toolset
+                # applied, and no served tool matched it (KM-ARL run 6,
+                # 2026-09-27: "Tool 'estimate_arl_add' not found").
+                name, note = _split_tool_label(item)
+                if not name:
+                    continue
                 tools.append({
                     "name": name,
-                    "description": f"Alembic-built tool {name}",
+                    "description": note or f"Alembic-built tool {name}",
                     "input_schema": None,
                     "required_for_task": True,
                 })
-            elif isinstance(item, dict) and (name := str(item.get("name") or "").strip()):
+            elif isinstance(item, dict) and str(item.get("name") or "").strip():
+                name, note = _split_tool_label(str(item.get("name")))
+                if not name:
+                    continue
                 tools.append({
                     "name": name,
-                    "description": str(item.get("description") or f"Alembic-built tool {name}"),
+                    "description": str(item.get("description") or note or f"Alembic-built tool {name}"),
                     "input_schema": item.get("input_schema"),
                     "required_for_task": bool(item.get("required_for_task", True)),
                 })
@@ -268,6 +311,292 @@ def stamp_alembic_science_description(
     task["description"] = (f"{desc} {suffix}".strip() if desc else suffix.strip())
 
 
+_SCRIPT_SUFFIXES = (".py", ".ipynb", ".sh", ".r", ".jl", ".m")
+
+
+def _is_script_name(name: str) -> bool:
+    return str(name or "").strip().lower().endswith(_SCRIPT_SUFFIXES)
+
+
+def retarget_task_for_tool_route(task: "ExperimentTask", tool_names: list[str]) -> "ExperimentTask":
+    """See :func:`retarget_task_for_tool_route_with_dropped`; returns the task only."""
+    return retarget_task_for_tool_route_with_dropped(task, tool_names)[0]
+
+
+def retarget_task_for_tool_route_with_dropped(
+    task: "ExperimentTask", tool_names: list[str],
+) -> tuple["ExperimentTask", list[str]]:
+    """Rewrite a task planned for Coder so the post-build attempt on the tool
+    route can succeed.
+
+    The fork converts a Coder task to alembic_build without touching what the
+    task promises, so the attempt on react_tools inherits scripts to write and
+    "file exists" criteria that a tool-calling agent can never satisfy
+    (KM-ARL run 4, 2026-09-27: EXP-1 failed twice after a successful build).
+    Scripts leave expected_artifacts and analysis_artifacts, the rest is
+    prepared via mcp, criteria that only ask for those files go, and one
+    execution criterion on the tool calls is kept when nothing else remains.
+    """
+    dump = task.model_dump(mode="json")
+    dropped_names: list[str] = []
+    kept_artifacts = []
+    for art in dump.get("expected_artifacts") or []:
+        if art.get("role") == "code" or _is_script_name(art.get("name")):
+            dropped_names.append(str(art.get("name") or ""))
+            continue
+        kept_artifacts.append(art)
+    if not kept_artifacts:
+        kept_artifacts = [{
+            "name": f"{task.id.lower()}-tool-results.json",
+            "role": "data", "media_type": "application/json", "required": True,
+            "description": "Results returned by the served MCP tools for this task.",
+        }]
+    dump["expected_artifacts"] = kept_artifacts
+
+    design = dict(dump.get("design") or {})
+    analysis = []
+    for art in design.get("analysis_artifacts") or []:
+        if art.get("role") == "code" or _is_script_name(art.get("name")):
+            continue
+        art = dict(art)
+        if art.get("prepare_via") == "coder":
+            art["prepare_via"] = "mcp"
+            if tool_names and not str(art.get("path_or_tool") or "").strip():
+                art["path_or_tool"] = tool_names[0]
+        analysis.append(art)
+    if not analysis:
+        analysis = [{
+            "name": kept_artifacts[0]["name"], "role": "metrics_table",
+            "prepare_via": "mcp", "path_or_tool": tool_names[0] if tool_names else None,
+        }]
+    design["analysis_artifacts"] = analysis
+    dump["design"] = design
+
+    lowered = [n.lower() for n in dropped_names if n]
+    criteria = []
+    for crit in dump.get("success_criteria") or []:
+        text = " ".join(str(crit.get(k) or "") for k in ("description", "verification")).lower()
+        mentions_dropped = any(n in text for n in lowered)
+        if crit.get("kind") == "artifact_exists" and mentions_dropped:
+            continue
+        if mentions_dropped and any(w in text for w in ("script", "file", "written", "saved", "on disk", "созда", "файл", "скрипт")):
+            continue
+        criteria.append(crit)
+    if not criteria:
+        criteria = [{
+            "criterion_id": f"{task.id}-C-tools",
+            "description": "Every MCP tool the task needs returned a result.",
+            "kind": "execution", "required": True,
+            "verification": "The recorded tool results carry the values the analysis needs.",
+        }]
+    dump["success_criteria"] = criteria
+
+    note = ("Converted from Coder to the tool route after the Alembic build: "
+            "no scripts are written here, the tool results are the artifacts.")
+    warnings = list(dump.get("warnings") or [])
+    if note not in warnings:
+        warnings.append(note)
+    dump["warnings"] = warnings
+    return ExperimentTask.model_validate(dump), [n for n in dropped_names if n]
+
+
+def scrub_inputs_of_dropped_scripts(
+    runtime: dict[str, Any], producer_id: str, dropped: list[str],
+) -> list[str]:
+    """Downstream tasks stop requiring the scripts the producer no longer writes.
+
+    EXP-2 listed ``EXP-1:km_toolkit_wrapper.py`` as a required input; once the
+    tool route dropped that script from EXP-1, readiness found it missing with
+    the producer terminal and blocked EXP-2 and everything after it (KM-ARL
+    run 8, 2026-09-27). A script is not data a downstream task consumes, so
+    the reference goes, on the runtime copy and on the plan copy alike.
+    Returns the ids of the tasks touched."""
+    if not dropped:
+        return []
+    wanted = set(dropped)
+    touched: list[str] = []
+
+    def _scrub(dump: dict[str, Any]) -> bool:
+        refs = dump.get("input_data") or []
+        kept = [
+            ref for ref in refs
+            if not (
+                isinstance(ref, dict)
+                and ref.get("kind") == "task_artifact"
+                and str(ref.get("source_task_id") or "") == producer_id
+                and str(ref.get("source_artifact_id") or "") in wanted
+            )
+        ]
+        if len(kept) == len(refs):
+            return False
+        dump["input_data"] = kept
+        return True
+
+    for tid, task_runtime in (runtime.get("tasks") or {}).items():
+        if tid == producer_id or not isinstance(task_runtime, dict):
+            continue
+        dump = task_runtime.get("task")
+        if isinstance(dump, dict) and _scrub(dump):
+            touched.append(tid)
+    plan = runtime.get("plan")
+    if isinstance(plan, dict):
+        for item in plan.get("tasks") or []:
+            if isinstance(item, dict) and item.get("id") != producer_id:
+                _scrub(item)
+    return touched
+
+
+_MCP_CLIENT_SNIPPET = """import asyncio, json
+from mcp import ClientSession
+try:  # the client function was renamed between mcp releases
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+except ImportError:
+    from mcp.client.streamable_http import streamablehttp_client
+
+
+async def call_mcp_tool(url, name, arguments):
+    async with streamablehttp_client(url) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(name, arguments)
+            text = "".join(getattr(c, "text", "") for c in result.content)
+            try:
+                return json.loads(text)
+            except ValueError:
+                return text
+
+
+# result = asyncio.run(call_mcp_tool(MCP_URL, "tool_name", {"arg": value}))
+# Many calls: open one session and loop inside it instead of one asyncio.run per call.
+"""
+
+
+def coder_mcp_servers(task: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The served MCP servers a Coder task may call from its scripts."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(task, Mapping):
+        return out
+    for server in task.get("mcp_servers") or []:
+        if not isinstance(server, dict):
+            continue
+        url = str(server.get("url") or "").strip()
+        if not url.startswith("http"):
+            continue
+        tools = []
+        for tool in server.get("tools") or []:
+            name = str(tool.get("name") if isinstance(tool, dict) else tool or "").strip()
+            if not name or name == _PLACEHOLDER_TOOL:
+                continue
+            entry: dict[str, Any] = {"name": name}
+            if isinstance(tool, dict):
+                if tool.get("description"):
+                    entry["description"] = str(tool["description"])[:300]
+                if tool.get("input_schema"):
+                    entry["input_schema"] = tool["input_schema"]
+            tools.append(entry)
+        out.append({
+            "url": url,
+            "server_id": str(server.get("server_id") or server.get("name") or ""),
+            "source": str(server.get("source") or ""),
+            "tools": tools,
+        })
+    return out
+
+
+def pin_coder_mcp_request(args: dict[str, Any], task_runtime: Mapping[str, Any]) -> bool:
+    """Give the Coder the served MCP servers of its task and a client to call them.
+
+    CoderAgent has no MCP toolset; with EXPERIMENTS__ROUTE_CODER_MCP the
+    module only put the server into state, and the coder re-imported the
+    repository instead (KM-ARL run 9, 2026-09-27: the sweep never touched the
+    server built two tasks earlier). The request now carries the URLs, the
+    tool names with their schemas and a streamable-HTTP client snippet.
+    """
+    task = task_runtime.get("task") if isinstance(task_runtime.get("task"), dict) else {}
+    if str(task.get("route") or "") != ExecutionRoute.CODER.value:
+        return False
+    servers = coder_mcp_servers(task)
+    if not servers:
+        return False
+    raw = args.get("request")
+    payload: dict[str, Any]
+    if isinstance(raw, dict):
+        payload = dict(raw)
+    else:
+        payload = {}
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            payload = parsed if isinstance(parsed, dict) else {"task": raw}
+    payload["mcp_servers"] = servers
+    payload["mcp_client"] = {
+        "install": "pip install mcp",
+        "python": _MCP_CLIENT_SNIPPET,
+        "arguments": "JSON values; a list is a JSON list, inf is the string \"Infinity\".",
+    }
+    names = [t["name"] for srv in servers for t in srv["tools"]]
+    extra = (
+        "The authors' computations are served as MCP tools at mcp_servers[].url"
+        + (f" ({', '.join(names)})" if names else "")
+        + ". Rule for this task: every number that one of these tools produces must come "
+        "from a call to the served server through mcp_client.python (open one session per "
+        "batch and loop inside it; a few hundred calls are fine). Generate data locally if "
+        "you must, but do not re-implement or re-import from the repository a function the "
+        "server serves. Import the repository only for functions the server does not expose, "
+        "and name them in your summary together with the number of tool calls made. Write the "
+        "scripts and the result files to disk as the task asks. Install the client with "
+        "mcp_client.install if the import fails."
+    )
+    prior = str(payload.get("instruction") or "").strip()
+    payload["instruction"] = f"{prior} {extra}".strip()
+    args["request"] = payload
+    return True
+
+
+def attach_server_to_repository_tasks(
+    runtime: dict[str, Any], producer_id: str, server_json: dict[str, Any], repo_url: str | None,
+) -> list[str]:
+    """Every other Coder task of the same repository gets the served server.
+
+    The build belongs to the first reuse task; the simulation, the sweep and
+    the fit that follow run through Coder and should call the tool that was
+    just built rather than import the repository again. Returns the task ids
+    touched (runtime and plan copy alike)."""
+    key = str(repo_url or "").strip().rstrip("/").removesuffix(".git").lower()
+    url = str(server_json.get("url") or "")
+    if not key or not url:
+        return []
+    touched: list[str] = []
+
+    def _attach(dump: dict[str, Any]) -> bool:
+        if str(dump.get("route") or "") != ExecutionRoute.CODER.value:
+            return False
+        task_key = str(dump.get("repo_url") or "").strip().rstrip("/").removesuffix(".git").lower()
+        if task_key != key:
+            return False
+        servers = list(dump.get("mcp_servers") or [])
+        if any(isinstance(s, dict) and str(s.get("url") or "") == url for s in servers):
+            return False
+        servers.append(copy.deepcopy(server_json))
+        dump["mcp_servers"] = servers
+        return True
+
+    for tid, task_runtime in (runtime.get("tasks") or {}).items():
+        if tid == producer_id or not isinstance(task_runtime, dict):
+            continue
+        dump = task_runtime.get("task")
+        if isinstance(dump, dict) and _attach(dump):
+            touched.append(tid)
+    plan = runtime.get("plan")
+    if isinstance(plan, dict):
+        for item in plan.get("tasks") or []:
+            if isinstance(item, dict) and item.get("id") != producer_id:
+                _attach(item)
+    return touched
+
+
 def apply_alembic_success(
     state: MutableMapping[str, Any],
     runtime: dict[str, Any],
@@ -294,11 +623,18 @@ def apply_alembic_success(
     from CoScientist.experiments.schemas.models import MCPServerRef
 
     tool_refs = _tool_refs_from_outputs(outputs, placeholder=False)
-    if not tool_refs:
-        from CoScientist.tools.alembic_tools import list_served_mcp_tools
-
-        listed = list_served_mcp_tools(mcp_url.strip())
-        tool_refs = _tool_refs_from_outputs({"tools": listed}, placeholder=True)
+    # The served list is authoritative: a name the builder reported that the
+    # server does not list would only narrow the agent's toolset to nothing.
+    served = _served_tool_names(mcp_url)
+    if served:
+        known = set(served)
+        matching = [ref for ref in tool_refs if ref["name"] in known]
+        if matching:
+            tool_refs = matching
+        else:
+            tool_refs = _tool_refs_from_outputs({"tools": served}, placeholder=True)
+    elif not tool_refs:
+        tool_refs = _tool_refs_from_outputs({"tools": served}, placeholder=True)
 
     server_id = _server_id_from_url(task.repo_url, mcp_url)
     server = MCPServerRef.model_validate({
@@ -323,6 +659,11 @@ def apply_alembic_success(
         "repo_url": task.repo_url,
     })
     updated = ExperimentTask.model_validate(updated.model_dump(mode="json"))
+    dropped_scripts: list[str] = []
+    if post_route != ExecutionRoute.CODER.value:
+        updated, dropped_scripts = retarget_task_for_tool_route_with_dropped(
+            updated, [str(t.get("name") or "") for t in tool_refs if isinstance(t, dict) and t.get("name")],
+        )
 
     task_runtime["task"] = updated.model_dump(mode="json")
     task_runtime["current_route"] = post_route
@@ -343,8 +684,20 @@ def apply_alembic_success(
                 tasks[idx] = copy.deepcopy(task_runtime["task"])
                 break
         plan["tasks"] = tasks
+    if touched := scrub_inputs_of_dropped_scripts(runtime, updated.id, dropped_scripts):
+        audit(logger, f"EXPERIMENT_ALEMBIC_INPUTS_SCRUBBED producer={updated.id} tasks={','.join(touched)} scripts={','.join(dropped_scripts)}")
 
     server_json = server.model_dump(mode="json")
+    try:
+        coder_mcp = bool(settings.route_coder_mcp) if settings is not None else bool(
+            get_settings().experiments.route_coder_mcp
+        )
+    except Exception:  # noqa: BLE001
+        coder_mcp = False
+    if coder_mcp:
+        attached = attach_server_to_repository_tasks(runtime, updated.id, server_json, task.repo_url)
+        if attached:
+            audit(logger, f"EXPERIMENT_ALEMBIC_SERVER_ATTACHED producer={updated.id} tasks={','.join(attached)} url={server_json.get('url')}")
     deployed = list(state.get("deployed_mcps") or [])
     deployed.append(copy.deepcopy(server_json))
     state["deployed_mcps"] = deployed
@@ -359,6 +712,12 @@ def apply_alembic_success(
 
 __all__ = [
     "alembic_post_build_context",
+    "retarget_task_for_tool_route",
+    "pin_coder_mcp_request",
+    "coder_mcp_servers",
+    "attach_server_to_repository_tasks",
+    "retarget_task_for_tool_route_with_dropped",
+    "scrub_inputs_of_dropped_scripts",
     "apply_alembic_success",
     "compose_alembic_fedot_task",
     "extract_mcp_url",

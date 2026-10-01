@@ -1,0 +1,29 @@
+# Blind-review profile: the experiments profile plus a guard on every agent
+# that can search. Used for validation runs whose answer is already known
+# (a refuted claim is handed to the system as if it were open): the guard keeps
+# the refutation out of what search tools return. Settings: BLIND__* (see
+# config/settings.py, BlindSettings); the log of interventions is in session
+# state under _spoiler_guard_log.
+#
+# Callback lists are restated in full: an overlay replaces an agent's
+# `callbacks` mapping as a whole. Keep them in step with experiments.yaml and
+# system.yaml. The guard goes first in the before_tool and after_tool chains.
+
+extends: experiments
+
+agents:
+  ResearchAgent:
+    callbacks:
+      before_agent: [before_get_task, inject_research_context, reset_research_searches, user_links]
+      before_model: [inject_uploaded_papers, redact_link_urls]
+      before_tool: [guard_spoiler_query, WebSearchLimiter, resolve_link_refs]
+      after_tool: [guard_spoiler_result, log_research_tool_calls, count_research_searches, register_tool_result_links]
+      after_model: [expand_link_refs, guard_unknown_tools]
+
+  DatasetCollectorAgent:
+    callbacks:
+      before_agent: [inject_research_context, inject_dataset_context, user_links]
+      before_model: [seed_coder_workspace, redact_link_urls]
+      before_tool: [guard_spoiler_query, resolve_link_refs]
+      after_tool: [guard_spoiler_result, register_tool_result_links]
+      after_model: [expand_link_refs, guard_unknown_tools]

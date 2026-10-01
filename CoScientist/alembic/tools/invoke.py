@@ -12,6 +12,7 @@ import builtins
 import json
 import os
 import re
+from loguru import logger
 import signal
 import subprocess
 from pathlib import Path
@@ -165,6 +166,25 @@ def _test_file_errors(name: str, out_dir: Path, python: str) -> list[str]:
         errs.append(f"pytest cannot collect tests/test_{name}.py: "
                     f"{(r.stdout + r.stderr).strip()[-800:]}")
     return errs
+
+
+def coder_rollback_paths(errors: dict, out_dir: Path) -> list[Path]:
+    """The files a coder reset removes, given the artefact gate's errors.
+
+    Rolling back every tool threw away the ones that passed. A slow library
+    (FEDOT: minutes per fit) then spent each attempt rewriting the same few
+    tools and ended three attempts with none on disk. A tool that passed is
+    kept, and so is a tool file that compiles and imports while its test is
+    still missing: the next attempt only has to write the test.
+    """
+    paths: list[Path] = []
+    for name, errs in (errors or {}).items():
+        for rel in (f"tools/{name}.py", f"tests/test_{name}.py"):
+            broken = any(str(e).startswith(rel) and not str(e).endswith("is missing")
+                         for e in errs or [])
+            if broken:
+                paths.append(out_dir / rel)
+    return paths
 
 
 def check_tool_artefacts(tool_names: list[str]) -> dict:
@@ -378,7 +398,7 @@ def _parse_result(stdout: str) -> dict | None:
         return None
 
 
-async def invoke_tool_function(tool_name: str, args: dict | None = None) -> dict:
+async def invoke_tool_function(tool_name: str, args: dict | str | None = None) -> dict:
     """Invoke a generated tool function (tools/<tool_name>.py) live, in the
     tools venv, and return its result.
 
@@ -393,7 +413,23 @@ async def invoke_tool_function(tool_name: str, args: dict | None = None) -> dict
     return await asyncio.to_thread(_invoke_tool_function_sync, tool_name, args)
 
 
-def _invoke_tool_function_sync(tool_name: str, args: dict | None = None) -> dict:
+def _json_args(args: dict | str | None) -> dict | str:
+    """Keyword args as a dict; an agent often passes them as a JSON string.
+    A string that is not a JSON object comes back as the error message."""
+    if args is None or args == "":
+        return {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError as exc:
+            return f"args are not JSON: {exc}"
+    return args if isinstance(args, dict) else "args must be a JSON object of keyword arguments"
+
+
+def _invoke_tool_function_sync(tool_name: str, args: dict | str | None = None) -> dict:
+    args = _json_args(args)
+    if isinstance(args, str):
+        return {"ok": False, "error": args}
     out_dir = output_dir().resolve()
     python  = tools_python(out_dir)
     if not (out_dir / "tools" / f"{tool_name}.py").exists():
@@ -427,6 +463,91 @@ def _invoke_tool_function_sync(tool_name: str, args: dict | None = None) -> dict
     if parsed.get("ok") and "result" in parsed:
         parsed["result"] = _truncate_large_result(parsed["result"])
     return parsed
+
+
+_EXPRESSION_HINT = re.compile(r"(?:np\.|numpy\.|\brange\(|\blist\(|math\.)")
+
+
+def materialise_expression_args(tool_name: str, args: dict) -> tuple[dict, bool]:
+    """Turn a sample arg that is a Python expression in a string into data.
+
+    The planner sometimes writes ``"list(np.concatenate([np.zeros(200), np.ones(100)*0.1]))"``
+    where a list belongs; the tool then json-loads the string and every
+    invocation fails, and the debugger cannot save replacement args when its
+    own call is malformed (KM-ARL build, 2026-09-26: cusum_detect was the one
+    tool of five that stayed failed). The expression is evaluated once in a
+    namespace of numpy and a few builtins, arrays become lists, and the caller
+    keeps the data in the plan so the served tool's Call form gets real input.
+    Returns the args and whether anything changed."""
+    import math
+    out = dict(args or {})
+    changed = False
+    try:
+        import numpy as _np
+    except Exception:  # noqa: BLE001 — no numpy here, plain expressions still work
+        _np = None
+    for key, value in list(out.items()):
+        if not isinstance(value, str) or not _EXPRESSION_HINT.search(value):
+            continue
+        try:
+            json.loads(value)
+            continue
+        except Exception:  # noqa: BLE001 — not JSON, so try it as an expression
+            pass
+        namespace: dict = {"list": list, "range": range, "float": float, "int": int,
+                           "inf": float("inf"), "nan": float("nan"), "math": math}
+        if _np is not None:
+            namespace.update({"np": _np, "numpy": _np})
+        try:
+            result = eval(value, {"__builtins__": {}}, namespace)  # noqa: S307 — plan-authored, runs in the build container
+        except Exception as exc:  # noqa: BLE001
+            logger.info(f"[validator] {tool_name}: sample arg {key!r} is not JSON and not an evaluable expression: {exc}")
+            continue
+        if _np is not None and isinstance(result, (_np.ndarray, _np.generic)):
+            result = result.tolist()
+        elif isinstance(result, (list, tuple)):
+            result = [x.tolist() if _np is not None and isinstance(x, (_np.ndarray, _np.generic)) else x for x in result]
+        try:
+            json.dumps(result)
+        except Exception:  # noqa: BLE001
+            continue
+        logger.info(f"[validator] {tool_name}: sample arg {key!r} evaluated from an expression into data")
+        out[key] = result
+        changed = True
+    return out, changed
+
+
+async def set_sample_args(tool_name: str, args: dict) -> dict:
+    """Replace a tool's sample args in the plan when the code is right and the
+    planned input is not (class E). The tool is called with ``args`` first, and
+    they are saved only when that call returns a result.
+
+    An input file the new args need goes under the output dir's ``samples/``,
+    which ships with the server; pass its absolute path.
+
+    Example:
+        set_sample_args("load_cubes", {"source": "/work/.alembic/iris/output/samples/mesh.nc"})
+    """
+    return await asyncio.to_thread(_set_sample_args_sync, tool_name, args)
+
+
+def _set_sample_args_sync(tool_name: str, args: dict | str) -> dict:
+    from alembic.contract import load_plan, save_plan
+
+    args = _json_args(args)
+    if isinstance(args, str):
+        return {"saved": False, "error": args}
+    plan = load_plan()
+    spec = next((t for t in (plan.tools if plan else []) if t.name == tool_name), None)
+    if spec is None:
+        return {"saved": False, "error": f"the plan has no tool {tool_name!r}"}
+    r = _invoke_tool_function_sync(tool_name, args)
+    if not (r.get("ok") and "result" in r):
+        why = r.get("error") or r.get("reason") or "no result"
+        return {"saved": False, "error": f"not saved, the call with these args gave no result: {why}"[:800]}
+    spec.sample_args = args
+    save_plan(plan)
+    return {"saved": True, "result": str(r["result"])[:300]}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

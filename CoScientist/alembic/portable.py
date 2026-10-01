@@ -2,7 +2,9 @@
 
 The venvs inside a built ``alembic-tool:<name>`` image are host-specific and
 cannot be relocated, so what travels between machines is the low-weight
-artefacts: the cloned source plus ``output/{tools,helpers,server.py,setup.sh}``.
+artefacts: the cloned source, ``output/{tools,helpers,server.py,setup.sh}`` and
+the build's ``reports`` (plan and validation), so a shipped tool still shows how
+it was converted and how its tools validated.
 The image is rebuilt from them on the target through
 ``docker/alembic/serve.Dockerfile``, which regenerates the venv by replaying
 ``setup.sh`` on a clean base.
@@ -41,6 +43,7 @@ SERVE_DOCKERFILE = PROJECT_ROOT / "docker" / "alembic" / "serve.Dockerfile"
 # The portable artefacts serve.Dockerfile copies (everything EXCEPT the venvs).
 ARTEFACT_PATHS = (
     "repos",
+    "reports",
     "output/tools",
     "output/helpers",
     "output/server.py",
@@ -143,8 +146,8 @@ def extract_artifacts(name: str, dest_root: Path, *, runner=subprocess.run) -> P
     """Copy the venv-free artefacts out of ``alembic-tool:<name>`` into a clean
     build context under ``dest_root``. Returns the context dir.
 
-    The context contains only ``.alembic/<name>/{repos,output/{tools,helpers,
-    server.py,setup.sh}}`` plus the ``docker/alembic`` serve files — **never a
+    The context contains only ``.alembic/<name>/{repos,reports,output/{tools,
+    helpers,server.py,setup.sh}}`` plus the ``docker/alembic`` serve files: **never a
     venv** — so the rebuild genuinely starts from low-weight artefacts.
     """
     ctx = dest_root / name
@@ -177,6 +180,9 @@ def extract_artifacts(name: str, dest_root: Path, *, runner=subprocess.run) -> P
             )
     finally:
         runner(["docker", "rm", cid], capture_output=True, text=True, check=False)
+    # serve.Dockerfile copies reports, which an older image may lack. Made after
+    # the copy, since docker cp into an existing folder nests the source in it.
+    (ctx / ".alembic" / name / "reports").mkdir(parents=True, exist_ok=True)
     return ctx
 
 

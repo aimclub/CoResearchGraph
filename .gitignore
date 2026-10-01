@@ -24,6 +24,9 @@ e2e_*.log
 train_full.log
 pilot_v*.log
 v4_full.log
+CoScientist/alembic/testing_protocol/evidence/*.txt
+CoScientist/alembic/testing_protocol/evidence/*.json
+evaluation/microfluidics/runs/
 
 # Django stuff:
 *.log
