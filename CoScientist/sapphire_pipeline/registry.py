@@ -22,13 +22,9 @@ FINAL_STATUSES = frozenset({
 def publication_key(publication):
     """Return a stable registry key for a Sapphire publication dictionary.
 
-    Prefer Sapphire's own ID, followed by canonical OpenAlex ID and DOI. A
-    deterministic hash of the complete record covers malformed legacy records
-    that contain none of those identifiers.
+    Prefer the canonical OpenAlex ID, followed by DOI. A deterministic hash of
+    the complete record covers malformed records without either identifier.
     """
-    sapphire_id = publication.get('id')
-    if sapphire_id not in (None, ''):
-        return f'sapphire:{sapphire_id}'
     identifier = openalex_id(publication.get('openalex_id'))
     if identifier:
         return f'openalex:{identifier}'
@@ -54,7 +50,6 @@ class PublicationRegistry:
             '''
             CREATE TABLE IF NOT EXISTS publications (
                 registry_key TEXT PRIMARY KEY,
-                sapphire_id TEXT,
                 openalex_id TEXT,
                 doi TEXT,
                 name TEXT,
@@ -95,7 +90,6 @@ class PublicationRegistry:
         now = datetime.now(timezone.utc).isoformat()
         values = (
             key,
-            str(publication.get('id')) if publication.get('id') not in (None, '') else None,
             openalex_id(publication.get('openalex_id')),
             normalize_doi(publication.get('doi')),
             publication.get('name') if isinstance(publication.get('name'), str) else None,
@@ -106,11 +100,10 @@ class PublicationRegistry:
         self.connection.execute(
             '''
             INSERT INTO publications (
-                registry_key, sapphire_id, openalex_id, doi, name,
+                registry_key, openalex_id, doi, name,
                 payload_json, first_seen_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(registry_key) DO UPDATE SET
-                sapphire_id=excluded.sapphire_id,
                 openalex_id=excluded.openalex_id,
                 doi=excluded.doi,
                 name=excluded.name,

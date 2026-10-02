@@ -7,6 +7,25 @@ from .openalex import UNKNOWN_PUBLICATION_YEAR
 OPENALEX_TAXONOMY_FOR_PROMPT = format_domain_subdomain_mapping_for_prompt()
 
 
+def metadata_extraction_prompt(requested_fields: dict[str, str]) -> str:
+    """Build a metadata prompt containing only the fields requested from the LLM."""
+    guidelines = "\n".join(
+        f"- {name}: {description}"
+        for name, description in requested_fields.items()
+    )
+    return (
+        "You are a professional research analyst specializing in scientific indexing and semantic search. "
+        "Extract only the requested missing metadata fields from the scientific article.\n\n"
+        "### REQUESTED FIELDS:\n"
+        f"{guidelines}\n\n"
+        "### CONSTRAINTS:\n"
+        "- Do not return fields that were not requested.\n"
+        "- Ensure all extracted data is strictly based on the provided text.\n"
+        "- Return only the fields required by the structured output schema.\n\n"
+        "Article in HTML markup:\n"
+    )
+
+
 summarisation_prompt = (
     "You are a professional research analyst specializing in scientific indexing and semantic search. "
     "Your task is to extract metadata and create a comprehensive summary from the provided scientific article (HTML). "
@@ -28,25 +47,6 @@ summarisation_prompt = (
     "- Maintain a neutral, academic tone.\n"
     "- Do not add any conversational filler or meta-comments about the task.\n"
     "- Ensure all extracted data is strictly based on the provided text.\n\n"
-    "Article in HTML markup:\n"
-)
-
-metadata_extraction_prompt = (
-    "You are a professional research analyst specializing in scientific indexing and semantic search. "
-    "Your task is to extract metadata from the provided scientific article (HTML). This data will be used for RAG "
-    "(Retrieval-Augmented Generation), so prioritize accuracy and consistency.\n\n"
-
-    "### FIELD GUIDELINES:\n"
-    "1. paper_title: Extract the full title. If missing, use 'NO TITLE'.\n"
-    f"2. publication_year: Extract as an integer. If missing, use {UNKNOWN_PUBLICATION_YEAR}.\n"
-    "3. authors: List as 'First Last, First Last'. If missing, use 'NO AUTHORS'.\n"
-    "4. source: Journal name, conference, or publisher. If missing, use 'UNDEFINED'.\n"
-
-    "### CONSTRAINTS:\n"
-    "- Maintain a neutral, academic tone.\n"
-    "- Do not add any conversational filler or meta-comments about the task.\n"
-    "- Ensure all extracted data is strictly based on the provided text.\n"
-    "- Return only the fields required by the structured output schema.\n\n"
     "Article in HTML markup:\n"
 )
 

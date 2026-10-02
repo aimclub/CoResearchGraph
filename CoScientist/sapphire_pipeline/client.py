@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from urllib.parse import urlsplit
 
@@ -138,18 +137,11 @@ class SapphireClient:
 
     @staticmethod
     def _publication_identity(publication):
-        """Return the best available identity for cross-domain deduplication."""
-        if publication.get('id') not in (None, ''):
-            return 'id', str(publication['id'])
+        """Return the canonical OpenAlex ID used for cross-domain deduplication."""
         identifier = openalex_id(publication.get('openalex_id'))
-        if identifier:
-            return 'openalex', identifier
-        doi = normalize_doi(publication.get('doi'))
-        if doi:
-            return 'doi', doi
-        return 'payload', json.dumps(
-            publication, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str,
-        )
+        if not identifier:
+            raise ValueError('/publications item must contain a valid openalex_id')
+        return identifier
 
     def work(self, identifier):
         """Fetch an OpenAlex work through Sapphire using its ID or OpenAlex URL.
@@ -168,7 +160,7 @@ class SapphireClient:
         return work
 
     def download_pdf(self, url):
-        """Request a PDF by DOI/DBLP URL from the PDF Crawler Service.
+        """Request a PDF by DOI URL from the PDF Crawler Service.
 
         HTTP 422 means the crawler could not download the article. Other HTTP
         errors and invalid responses propagate so the registry allows a retry.
@@ -176,8 +168,8 @@ class SapphireClient:
         """
         parsed = urlsplit(url)
         if (parsed.scheme not in ('http', 'https') or parsed.username or parsed.password
-                or parsed.hostname not in ('doi.org', 'dx.doi.org', 'dblp.org', 'www.dblp.org')):
-            raise ValueError('PDF crawler requires a DOI or DBLP URL')
+                or parsed.hostname not in ('doi.org', 'dx.doi.org')):
+            raise ValueError('PDF crawler requires a DOI URL')
         try:
             with self.session.get(
                 self.pdf_crawler_url, params={'url': url},

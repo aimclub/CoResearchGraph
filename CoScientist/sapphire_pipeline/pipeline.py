@@ -4,7 +4,6 @@ import hashlib
 import logging
 import math
 from collections import Counter
-from urllib.parse import urlsplit
 
 import requests
 
@@ -35,38 +34,134 @@ def allowed_domains(publication):
 
 
 def classification(work):
-    """Return domain and field display names from a work primary topic.
+    """Return available domain and field display names from a work primary topic.
 
-    Raise ValueError if either name is missing or the domain is unsafe for
-    use as a component of the initial S3 object key.
+    Missing values are returned as None so the ETL can classify the paper with
+    its LLM.
     """
     topic = work.get('primary_topic') or {}
     domain = (topic.get('domain') or {}).get('display_name')
     field = (topic.get('field') or {}).get('display_name')
-    if not all(isinstance(value, str) and value.strip() for value in (domain, field)):
-        raise ValueError('Work has no primary_topic.domain/field.display_name')
-    if any(char in domain for char in ('/', '\\', '\x00')) or domain in ('.', '..'):
-        raise ValueError('Domain is not a safe S3 path component')
+    domain = domain.strip() if isinstance(domain, str) and domain.strip() else None
+    field = field.strip() if isinstance(field, str) and field.strip() else None
     return domain, field
 
 
-def download_source(publication, doi):
-    """Use a DOI URL, or an explicit DBLP URL when no DOI is available."""
-    if doi:
-        return f'https://doi.org/{doi}'
-    url = publication.get('dblp_url')
-    if isinstance(url, str):
-        url = url.strip()
-        parsed = urlsplit(url)
-        if (parsed.scheme in ('http', 'https') and parsed.hostname in ('dblp.org', 'www.dblp.org')
-                and not parsed.username and not parsed.password):
-            return url
-    return None
+def _source_name(container, name_field):
+    """Return a venue name only when source type is journal or conference."""
+    if not isinstance(container, dict):
+        return None
+    source_type = container.get('type')
+    if not isinstance(source_type, str) or source_type.strip().lower() not in {'journal', 'conference'}:
+        return None
+    value = container.get(name_field)
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def pdf_urls(publication, work):
-    """Return deduplicated fallback URLs in the original download order."""
-    candidates = [publication.get('pdf_url')]
+def publication_bibliographic_metadata(publication):
+    """Normalize bibliographic fields already present in `/publications`."""
+    metadata = {}
+
+    name = publication.get('name')
+    if isinstance(name, str) and name.strip():
+        metadata['paper_title'] = name.strip()
+
+    publication_date = publication.get('publication_date')
+    if isinstance(publication_date, str):
+        year = publication_date.strip().split('-')[0]
+        if year.isdigit() and int(year) > 0:
+            metadata['publication_year'] = int(year)
+
+    author_names = []
+    authors = publication.get('authors')
+    if isinstance(authors, str) and authors.strip():
+        author_names.append(authors.strip())
+    elif isinstance(authors, list):
+        for author in authors:
+            if isinstance(author, str) and author.strip():
+                author_names.append(author.strip())
+                continue
+            if not isinstance(author, dict):
+                continue
+            name = author.get('name') or author.get('display_name')
+            if not isinstance(name, str) or not name.strip():
+                parts = [author.get(key) for key in ('first_name', 'middle_name', 'last_name')]
+                name = ' '.join(part.strip() for part in parts if isinstance(part, str) and part.strip())
+            if isinstance(name, str) and name.strip():
+                author_names.append(name.strip())
+    if author_names:
+        metadata['authors'] = ', '.join(author_names)
+
+    source = None
+    for field in ('journal', 'conference'):
+        venue = publication.get(field)
+        name = venue.get('name') if isinstance(venue, dict) else None
+        if isinstance(name, str) and name.strip():
+            source = name.strip()
+            break
+    source = source or _source_name(publication.get('source'), 'name')
+    if source:
+        metadata['source'] = source
+    return metadata
+
+
+def bibliographic_metadata(work):
+    """Return normalized bibliographic fields available in an OpenAlex work.
+
+    Keep only journal and conference sources. Repository locations are useful
+    for downloading a PDF, but they are not the publication venue stored in
+    chunk metadata.
+    """
+    metadata = {}
+
+    for title in (work.get('title'), work.get('display_name')):
+        if isinstance(title, str) and title.strip():
+            metadata['paper_title'] = title.strip()
+            break
+
+    publication_year = work.get('publication_year')
+    if type(publication_year) is int and publication_year > 0:
+        metadata['publication_year'] = publication_year
+
+    authors = []
+    authorships = work.get('authorships')
+    for authorship in authorships if isinstance(authorships, list) else []:
+        if not isinstance(authorship, dict):
+            continue
+        author = authorship.get('author')
+        name = author.get('display_name') if isinstance(author, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            name = authorship.get('raw_author_name')
+        if isinstance(name, str) and name.strip():
+            authors.append(name.strip())
+    if authors:
+        metadata['authors'] = ', '.join(authors)
+
+    locations = [work.get('primary_location'), work.get('best_oa_location')]
+    raw_locations = work.get('locations')
+    if isinstance(raw_locations, list):
+        locations.extend(raw_locations)
+    for location in locations:
+        if not isinstance(location, dict):
+            continue
+        source_name = _source_name(location.get('source'), 'display_name')
+        if source_name:
+            metadata['source'] = source_name
+            break
+
+    return metadata
+
+
+def _doi(metadata):
+    """Return a normalized DOI from a top-level value or an ids object."""
+    doi = normalize_doi(metadata.get('doi'))
+    ids = metadata.get('ids')
+    return doi or (normalize_doi(ids.get('doi')) if isinstance(ids, dict) else None)
+
+
+def pdf_urls(work):
+    """Return deduplicated direct PDF URLs from an OpenAlex card."""
+    candidates = []
     content = work.get('content_urls')
     if isinstance(content, dict):
         candidates.append(content.get('pdf'))
@@ -105,23 +200,48 @@ class SapphirePipeline:
         metadata = {
             'openalex_id': identifier or '',
             'doi': publication_doi or '',
-            'sapphire_publication_id': str(publication.get('id') or ''),
         }
         if self.backend.contains(metadata):
             return 'already_in_rag'
         if publication.get('is_open_access') is not True:
             return 'not_open_access'
-        if not identifier:
-            return 'missing_openalex_id'
-        work = self.client.work(identifier)
-        domain, field = classification(work)
-        metadata.update(domain=domain, field=field)
-        metadata['doi'] = metadata['doi'] or normalize_doi(work.get('doi')) or ''
-        if metadata['doi'] and metadata['doi'] != publication_doi and self.backend.contains(metadata):
-            return 'already_in_rag'
-        source_url = download_source(publication, metadata['doi'])
+        metadata.update(publication_bibliographic_metadata(publication))
+
+        work = None
+        domain = field = None
+
+        def load_work():
+            """Fetch and apply the OpenAlex card at most once, only when needed."""
+            nonlocal work, domain, field
+            if work is not None:
+                return work
+            if not identifier:
+                return None
+            work = self.client.work(identifier)
+            domain, field = classification(work)
+            for name, value in bibliographic_metadata(work).items():
+                metadata.setdefault(name, value)
+            if domain is not None:
+                metadata['domain'] = domain
+            if field is not None:
+                metadata['field'] = field
+            return work
+
         pdf = None
         retry_error = None
+        source_url = f'https://doi.org/{publication_doi}' if publication_doi else None
+
+        if source_url is None:
+            work = load_work()
+            if work is None:
+                return 'missing_openalex_id'
+            metadata['doi'] = _doi(work) or ''
+            if metadata['doi'] and self.backend.contains(metadata):
+                return 'already_in_rag'
+            source_url = (
+                f'https://doi.org/{metadata["doi"]}' if metadata['doi'] else None
+            )
+
         if source_url is not None:
             try:
                 logger.info('Requesting PDF from crawler for %s', identifier)
@@ -132,7 +252,12 @@ class SapphirePipeline:
                 logger.warning('PDF crawler failed for %s; trying direct PDF URLs (%s)',
                                identifier, type(error).__name__)
         if pdf is None:
-            for url in pdf_urls(publication, work):
+            work = load_work()
+            if work is None:
+                if retry_error is not None:
+                    raise retry_error
+                return 'missing_openalex_id'
+            for url in pdf_urls(work):
                 try:
                     pdf = self.client.download_pdf_direct(url)
                 except (requests.RequestException, TimeoutError, ValueError) as error:
@@ -144,21 +269,27 @@ class SapphirePipeline:
                         retry_error = error
                     logger.warning('Direct PDF unavailable for %s (%s)', identifier, type(error).__name__)
                     continue
+                logger.info('Downloaded PDF directly for %s from %s', identifier, url)
                 source_url = url
-                metadata['pdf_url'] = url
                 break
         if pdf is None:
             if retry_error is not None:
                 raise retry_error
             return 'no_usable_pdf'
+
+        # Even when DOI downloading succeeds, enrich `/publications` metadata
+        # from the card before ETL. load_work() keeps publication values and
+        # fetches the card at most once; ETL fills any remaining gaps with LLM.
+        load_work()
+
         # Same content ID as LocalSource: catches previously ingested local PDFs.
         article_id = hashlib.md5(pdf).hexdigest()
         if self.backend.contains({'article_id': article_id}):
             return 'already_in_rag'
-        key = f'articles/{domain}/{article_id}/paper.pdf'
+        key = f'articles/{domain or "Unclassified"}/{article_id}/paper.pdf'
         metadata.update(download_source_url=source_url, s3_key=key, ingestion_source='sapphire')
         self.backend.upload(key, pdf)
-        self.backend.ingest(article_id, publication.get('name') or work.get('display_name') or identifier, metadata)
+        self.backend.ingest(article_id, metadata)
         return 'ingested'
 
     def run(self, max_articles=None):

@@ -21,6 +21,16 @@ class PublishStep(ETLStep):
             raise RuntimeError(f"{self.name} step requires processing metadata")
         
         paper_metadata = manifest_data["paper_metadata"]
+        article_metadata = ctx.article.metadata or {}
+        source_key = article_metadata.get("s3_key")
+        published_pdf_key = ctx.public_store.article_pdf_key(
+            paper_metadata["domain"], article_id,
+        )
+        if isinstance(source_key, str) and source_key:
+            article_metadata["s3_key"] = published_pdf_key
+            manifest_article_metadata = manifest_data.get("article_metadata")
+            if isinstance(manifest_article_metadata, dict):
+                manifest_article_metadata["s3_key"] = published_pdf_key
         
         chunks_to_upload = []
         vectors_to_upload = []
@@ -79,6 +89,14 @@ class PublishStep(ETLStep):
                     destination = ctx.processed_papers_path / new_name
                     shutil.move(str(source_path), str(destination))
                     logger.info(f"[{self.name}] Moved processed source file to {destination}")
+
+            if isinstance(source_key, str) and source_key and source_key != published_pdf_key:
+                ctx.public_store.delete_key(source_key)
+                logger.info(
+                    "[%s] Deleted relocated source PDF %s",
+                    self.name,
+                    source_key,
+                )
         
         except Exception as e:
             logger.error(f"[{self.name}] Error publishing {article_id}. Rolling back vector and artifact stores...")

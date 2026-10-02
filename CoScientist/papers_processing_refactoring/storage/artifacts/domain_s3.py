@@ -29,6 +29,11 @@ class S3DomainArtifactStore:
     def _article_prefix(domain: str,article_id: str) -> str:
         return f"articles/{domain}/{article_id}/"
 
+    @classmethod
+    def article_pdf_key(cls, domain: str, article_id: str) -> str:
+        """Return the public S3 key used for an article PDF."""
+        return cls._article_prefix(domain, article_id) + "paper.pdf"
+
     def publish_article(
         self,
         domain: str,
@@ -60,7 +65,7 @@ class S3DomainArtifactStore:
         # Paper file
         self.client.put_object(
             Bucket=self.bucket,
-            Key=self._article_prefix(domain, article_id) + "paper.pdf",
+            Key=self.article_pdf_key(domain, article_id),
             Body=pdf_data,
             ContentType="application/pdf",
         )
@@ -128,3 +133,7 @@ class S3DomainArtifactStore:
                 Bucket=self.bucket,
                 Key=obj["Key"],
             )
+
+    def delete_key(self, key: str) -> None:
+        """Delete one object from the public bucket."""
+        self.client.delete_object(Bucket=self.bucket, Key=key)

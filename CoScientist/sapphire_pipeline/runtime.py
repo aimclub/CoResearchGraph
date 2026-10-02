@@ -96,12 +96,11 @@ class RAGBackend:
             Bucket=self.public.bucket, Key=key, Body=pdf, ContentType='application/pdf',
         )
 
-    def ingest(self, article_id, name, metadata):
+    def ingest(self, article_id, metadata):
         """Run the original papers ETL for a PDF already uploaded to S3.
 
         Args:
             article_id: MD5 of the PDF bytes, used for state and Chroma records.
-            name: Article name passed to the ETL context.
             metadata: Article metadata including domain and s3_key.
 
         Reuse intermediate states, or clear a previous completed publication state
@@ -109,7 +108,8 @@ class RAGBackend:
         and remember their identity. Service and processing errors propagate.
         """
         article = Article(
-            id=article_id, name=name, domain=metadata['domain'], metadata=metadata,
+            id=article_id, name=metadata.get('paper_title') or '',
+            domain=metadata.get('domain') or 'Unclassified', metadata=metadata,
             source_type='remote', source_ref=f"s3://{self.public.bucket}/{metadata['s3_key']}",
         )
         with build_state_store(self.settings) as state:
