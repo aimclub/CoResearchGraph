@@ -7,28 +7,30 @@ and the mounted ``/alembic`` sub-app that clones and builds arbitrary git repos
 
 The design is deliberately small:
 
-* One password for the whole deployment. The ``.env`` file holds a salted
-  PBKDF2 digest of it in ``AUTH__PASSWORD_HASH``, never the password itself,
-  so a leaked file yields nothing a reader can type into the login form. No
-  user records, no per-user isolation. Everyone who logs in sees everything.
+* One password for the whole deployment, and one way to store it. The ``.env``
+  file holds a salted PBKDF2 digest in ``AUTH__PASSWORD_HASH``, never the
+  password itself, so a leaked file yields nothing a reader can type into the
+  login form. There is no clear-text setting to fall back to. No user records,
+  no per-user isolation. Everyone who logs in sees everything.
 * A session cookie carrying nothing but its own expiry, signed with HMAC-SHA256.
   There is no user data to leak and no payload to tamper with beyond the
   deadline, which the MAC covers.
 * One deny-by-default ASGI middleware instead of per-route dependencies. The app
   registers 58+ routes across two apps, two of which are already shadowed dead
-  code, and mounts a sub-app; a guard that has to be remembered per route is a
+  code, and mounts a sub-app. A guard that has to be remembered per route is a
   guard that will be forgotten.
 
 No new dependency: the deploy runs ``uv sync --frozen``, so a library would mean
-regenerating the lock in the deploy path. ``hmac`` + ``hashlib`` is enough here
-and mirrors the one auth check the repo already has
-(``integrations/codesynapse/control_api.py``).
+regenerating the lock in the deploy path. ``hmac`` + ``hashlib`` is enough here.
+It follows ``integrations/codesynapse/control_api.py``, which compares digests
+the same way. Note that the repo holds a second, unrelated gate:
+``CoScientist/checkpoints/auth.py`` guards ``/api/checkpoints`` with its own
+admin credential, which a browser does not present. Both apply to that router.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
+import asyncio
 import hashlib
 import hmac
 import json
@@ -36,9 +38,19 @@ import logging
 import secrets
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, Optional
 
 from CoScientist.config import get_settings
+# hash_password and parse_hash are re-exported for the tests, which drive the
+# format through this module rather than reaching past it.
+from CoScientist.web.password_hash import (
+    b64 as _b64,
+    hash_password,
+    parse_hash as _parse_hash,
+    unb64 as _unb64,
+    verify_password,
+)
 
 _logger = logging.getLogger("CoScientist.web.auth")
 
@@ -49,7 +61,7 @@ COOKIE_NAME = "cs_session"
 EXEMPT_PATHS = frozenset({"/healthz", "/login", "/auth/login"})
 
 #: Close code for a socket refused for want of a session. 1008 is "policy
-#: violation"; the frontend maps it to a redirect instead of its usual
+#: violation". The frontend maps it to a redirect instead of its usual
 #: reconnect loop.
 WS_CLOSE_POLICY = 1008
 
@@ -74,50 +86,6 @@ _EPHEMERAL_SECRET = secrets.token_bytes(32)
 # ---------------------------------------------------------------------------
 # Password and token
 # ---------------------------------------------------------------------------
-#: Stored-credential format: ``pbkdf2_sha256:<rounds>:<salt>:<digest>``, the
-#: last two base64url without padding. Separated by ":" and not the usual "$":
-#: a "$" makes the value expand to nothing the moment somebody pastes the line
-#: into a shell, and the result still looks like a hash.
-_HASH_SCHEME = "pbkdf2_sha256"
-
-#: Work factor. Deliberately below the figure recommended for human-chosen
-#: passwords: the README already requires 20 or more random characters, and
-#: against that much entropy stretching buys almost nothing. The digest is here
-#: so a leaked .env carries no password, not to survive an offline attack on a
-#: weak one.
-_HASH_ROUNDS = 200_000
-
-
-def hash_password(password: str, *, rounds: int = _HASH_ROUNDS,
-                  salt: Optional[bytes] = None) -> str:
-    """Build the value an operator puts in ``AUTH__PASSWORD_HASH``."""
-    salt = salt if salt is not None else secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
-    return ":".join((_HASH_SCHEME, str(rounds), _b64(salt), _b64(digest)))
-
-
-def _parse_hash(stored: str) -> Optional[tuple[int, bytes, bytes]]:
-    """Split a stored digest, or return None when it is not one.
-
-    Parsing is lazy, never a pydantic validator. ``Settings()`` runs at module
-    import, so a typo checked there would stop the server before any code can
-    report why. A None here makes ``is_configured`` false, which routes the
-    problem through the 503 banner the operator can actually read.
-    """
-    parts = stored.strip().split(":")
-    if len(parts) != 4 or parts[0] != _HASH_SCHEME:
-        return None
-    try:
-        rounds = int(parts[1])
-        salt = _unb64(parts[2])
-        digest = _unb64(parts[3])
-    except (ValueError, binascii.Error):
-        return None
-    if rounds < 1 or not salt or not digest:
-        return None
-    return rounds, salt, digest
-
-
 def _stored_hash() -> str:
     return (get_settings().auth.password_hash or "").strip()
 
@@ -132,68 +100,61 @@ def _secret() -> bytes:
     operator who rotates a leaked password keeps the thief logged in for up to
     ``session_max_age``.
 
-    What goes into the mix is the stored string, not the password. For a
-    digest that is the whole ``AUTH__PASSWORD_HASH`` value, which costs one
-    SHA-256 per request — the PBKDF2 rounds run at login only. It also means a
-    fresh salt over the same password still logs everybody out, because the
-    stored string changed.
+    What goes into the mix is the stored string, not the password: the whole
+    ``AUTH__PASSWORD_HASH`` value, which costs one SHA-256 per request. The
+    PBKDF2 rounds run at login only. It also means a fresh salt over the same
+    password still logs everybody out, because the stored string changed.
     """
     auth = get_settings().auth
     configured = (auth.secret_key or "").strip()
     base = configured.encode("utf-8") if configured else _EPHEMERAL_SECRET
-    material = _stored_hash() or (auth.password or "").strip()
-    credential_digest = hashlib.sha256(material.encode("utf-8")).digest()
+    credential_digest = hashlib.sha256(_stored_hash().encode("utf-8")).digest()
     return hmac.new(base, b"cs-session-v1:" + credential_digest, hashlib.sha256).digest()
-
-
-def _b64(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _unb64(text: str) -> bytes:
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
 def is_configured() -> bool:
     """True when the gate can actually open.
 
-    A malformed ``AUTH__PASSWORD_HASH`` counts as unconfigured. Falling back
-    to ``AUTH__PASSWORD`` instead would turn a typo in the digest into a
-    quietly weaker gate, and refusing to start would hide the reason.
+    A missing or malformed ``AUTH__PASSWORD_HASH`` counts as unconfigured.
+    There is nothing to fall back to, which is the point: one credential, in
+    one format, and a typo in it closes the gate rather than weakening it.
     """
-    auth = get_settings().auth
     stored = _stored_hash()
-    if stored:
-        return _parse_hash(stored) is not None
-    return bool((auth.password or "").strip())
+    return bool(stored) and _parse_hash(stored) is not None
 
 
 def check_password(given: str) -> bool:
-    """Constant-time check against the stored credential.
+    """Constant-time check against the stored digest.
 
-    ``AUTH__PASSWORD_HASH`` wins when both are set. Both branches compare
-    fixed-length digests rather than raw strings, so neither leaks the
-    password's length through timing.
+    The comparison is over fixed-length digests, not raw strings, so it leaks
+    neither the password nor its length through timing.
 
-    This runs the PBKDF2 rounds, so it blocks for a measurable time. Callers
-    on the event loop must hand it to a thread — see ``login_submit``.
+    This runs the PBKDF2 rounds, so it blocks for a measurable time. Callers on
+    the event loop must use ``check_password_async`` instead.
     """
     stored = _stored_hash()
-    if stored:
-        parsed = _parse_hash(stored)
-        if parsed is None:
-            return False
-        rounds, salt, expected_digest = parsed
-        given_digest = hashlib.pbkdf2_hmac("sha256", given.encode("utf-8"), salt, rounds)
-        return hmac.compare_digest(given_digest, expected_digest)
+    return bool(stored) and verify_password(given, stored)
 
-    expected = (get_settings().auth.password or "").strip()
-    if not expected:
-        return False
-    return hmac.compare_digest(
-        hashlib.sha256(given.encode("utf-8")).digest(),
-        hashlib.sha256(expected.encode("utf-8")).digest(),
-    )
+
+#: A pool of its own for password checks. PBKDF2 at ROUNDS costs about 16 ms of
+#: CPU, and the login route answers anonymous callers. asyncio.to_thread would
+#: put that work on the default executor, which the sandbox and artifact calls in
+#: web/app.py also use, so a flood of logins would queue ahead of unrelated work
+#: and stall it. Two threads keep a real team responsive and leave that pool
+#: alone. The threads start on first use, so an instance that never sees a login
+#: pays nothing.
+_password_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cs-auth")
+
+
+async def check_password_async(given: str) -> bool:
+    """``check_password`` off the event loop, bounded by ``_password_pool``.
+
+    The rounds block for a measurable time, which on the event loop would stall
+    every open socket, every running job and the /healthz the deploy workflow
+    polls.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_password_pool, check_password, given)
 
 
 def issue_token(now: Optional[float] = None) -> str:
@@ -239,8 +200,14 @@ class LoginRateLimiter:
     uvicorn worker — it is a brake on guessing, not an audit log.
     """
 
+    #: Prune after this many writes, rather than on every read. The scan is
+    #: O(n) over a dict an anonymous caller fills, so doing it per request
+    #: hands that caller the cost. One pass every 64 writes keeps it amortized.
+    _PRUNE_EVERY = 64
+
     def __init__(self) -> None:
         self._windows: dict[str, tuple[float, int]] = {}
+        self._writes = 0
 
     def _prune(self, now: float, window: int) -> None:
         stale = [ip for ip, (start, _) in self._windows.items() if now - start >= window]
@@ -250,7 +217,6 @@ class LoginRateLimiter:
     def is_limited(self, ip: str, now: Optional[float] = None) -> bool:
         auth = get_settings().auth
         now = now if now is not None else time.time()
-        self._prune(now, auth.login_window_seconds)
         start, count = self._windows.get(ip, (now, 0))
         if now - start >= auth.login_window_seconds:
             return False
@@ -263,12 +229,19 @@ class LoginRateLimiter:
         if now - start >= auth.login_window_seconds:
             start, count = now, 0
         self._windows[ip] = (start, count + 1)
+        # Pruning belongs to the write, which is the only thing that grows the
+        # dict. It used to happen on the read instead, so the dict stayed
+        # bounded only because web/app.py calls is_limited straight after this
+        # one — a rule nothing stated and nothing enforced.
+        self._writes += 1
+        if self._writes % self._PRUNE_EVERY == 0:
+            self._prune(now, auth.login_window_seconds)
 
     def reset(self, ip: str) -> None:
         self._windows.pop(ip, None)
 
 
-#: Process-wide limiter. The middleware does not use it; the login route does.
+#: Process-wide limiter. The middleware does not use it. The login route does.
 login_limiter = LoginRateLimiter()
 
 
@@ -340,15 +313,11 @@ _REPORTED_ORIGINS_CAP = 20
 def warn_origin_refused(scope: dict) -> None:
     """Name the refused Origin where the operator will find it.
 
-    Without this the failure is silent and undiagnosable: uvicorn answers a
-    refused handshake with HTTP 403, which reaches the browser as an ordinary
-    abnormal close, so the UI reports "Disconnected" and retries for ever with
-    no reason given.
+    Without this the failure is silent and undiagnosable. A refused handshake
+    reaches the browser as an ordinary abnormal close, so the UI reports
+    "Disconnected" and retries for ever with no reason given.
 
-    The message goes to stderr as well as the log, and once per origin. The
-    ``CoScientist`` logger sets ``propagate = False`` and writes to app.log
-    only, so a plain warning never reaches journalctl — which is where somebody
-    debugging a service looks first.
+    The message goes to the log every time, and to stderr once per origin.
     """
     origin = _header(scope, b"origin")
     allowed = get_settings().auth.allowed_origins
@@ -361,7 +330,7 @@ def warn_origin_refused(scope: dict) -> None:
     key = origin or ""
     if key not in _reported_origins and len(_reported_origins) < _REPORTED_ORIGINS_CAP:
         _reported_origins.add(key)
-        print(f"[CoScientist Web] {message}", file=sys.stderr, flush=True)
+        _to_stderr(message)
 
 
 def cookie_from_scope(scope: dict) -> Optional[str]:
@@ -385,13 +354,17 @@ _MISCONFIGURED_BANNER = (
     "the .env file, or set AUTH__ENABLED=false to serve without a gate."
 )
 
-_PLAINTEXT_BANNER = (
-    "AUTH__PASSWORD holds the password in clear text. Anyone who reads the "
-    ".env file can sign in. Run 'python3 deploy/make_password_hash.py', put the "
-    "result in AUTH__PASSWORD_HASH, and delete AUTH__PASSWORD. The switch "
-    "logs everybody out once, because the cookie signing key follows the "
-    "stored credential."
-)
+def _to_stderr(message: str) -> None:
+    """Mirror *message* to the service journal.
+
+    The ``CoScientist`` logger sets ``propagate = False`` and owns a file
+    handler, so a plain log call reaches logs/app.log only. stderr reaches
+    journalctl, which is where somebody debugging a failed deploy looks first.
+    Logging stays at the call site, because the callers differ in how often
+    they repeat themselves.
+    """
+    print(f"[CoScientist Web] {message}", file=sys.stderr, flush=True)
+
 
 _warned_unconfigured = False
 
@@ -410,19 +383,18 @@ def warn_unconfigured() -> None:
     if not _warned_unconfigured:
         _warned_unconfigured = True
         _logger.error(_MISCONFIGURED_BANNER)
-        print(f"[CoScientist Web] {_MISCONFIGURED_BANNER}", file=sys.stderr, flush=True)
+        _to_stderr(_MISCONFIGURED_BANNER)
 
 
 def check_configuration() -> None:
     """Startup check, so a misconfigured server says so before the first request."""
     auth = get_settings().auth
-    if auth.enabled and not is_configured():
+    if not auth.enabled:
+        return
+    if not is_configured():
         warn_unconfigured()
         return
-    if auth.enabled and not _stored_hash():
-        _logger.warning(_PLAINTEXT_BANNER)
-        print(f"[CoScientist Web] {_PLAINTEXT_BANNER}", file=sys.stderr, flush=True)
-    if auth.enabled and not auth.origin_list:
+    if not auth.origin_list:
         message = (
             "AUTH__ALLOWED_ORIGINS is empty. The WebSocket gate falls back to "
             "same-origin, which works when the proxy forwards the Host header "
@@ -430,7 +402,7 @@ def check_configuration() -> None:
             "https://cosci.example.org, to stop depending on that."
         )
         _logger.warning(message)
-        print(f"[CoScientist Web] {message}", file=sys.stderr, flush=True)
+        _to_stderr(message)
 
 
 # ---------------------------------------------------------------------------
@@ -461,11 +433,16 @@ class RequireAuth:
         # Strip root_path, so the exemptions still match if the app is ever
         # served under a sub-path behind a proxy. Without this, /login arrives
         # as /cosci/login, misses the exemption, and the login page redirects
-        # to itself forever.
+        # to itself forever. The same prefix goes back on the /login redirect
+        # in _deny, which is the only root_path-aware URL in the feature: the
+        # form actions in login.html and index.html stay root-absolute, so a
+        # sub-path deployment needs those changed too. Serving at the root,
+        # which is what deploy/ does, is the supported shape.
         path = scope.get("path", "")
         root = scope.get("root_path") or ""
         if root and path.startswith(root):
             path = path[len(root):] or "/"
+        prefix = root.rstrip("/")
 
         # Fail closed. An unset password must never mean an open server, so
         # this check comes before the exemptions: without a password even the
@@ -475,7 +452,8 @@ class RequireAuth:
             await self._deny(
                 scope, receive, send,
                 status=503,
-                detail="Authentication is enabled but AUTH__PASSWORD is not set.",
+                detail=_MISCONFIGURED_BANNER,
+                prefix=prefix,
             )
             return
 
@@ -485,27 +463,34 @@ class RequireAuth:
 
         if scope["type"] == "websocket" and not origin_allowed(scope):
             warn_origin_refused(scope)
-            await self._deny(scope, receive, send, status=403, detail="Origin not allowed")
+            await self._deny(
+                scope, receive, send,
+                status=403,
+                detail="Origin not allowed",
+                prefix=prefix,
+            )
             return
 
         if not verify_token(cookie_from_scope(scope)):
-            await self._deny(scope, receive, send, status=401, detail="Not authenticated")
+            await self._deny(
+                scope, receive, send,
+                status=401,
+                detail="Not authenticated",
+                prefix=prefix,
+            )
             return
 
         await self.app(scope, receive, send)
 
-    async def _deny(self, scope, receive, send, *, status: int, detail: str) -> None:
+    async def _deny(self, scope, receive, send, *, status: int, detail: str,
+                    prefix: str = "") -> None:
         if scope["type"] == "websocket":
             # Consume the handshake before refusing it, as ASGI expects, then
             # close without ever accepting. The endpoint is never reached.
-            #
-            # What the client sees depends on the server. uvicorn turns a
-            # pre-accept close into an outright HTTP 403 on the upgrade, so a
-            # browser gets an abnormal close (1006), not this code. Starlette's
-            # TestClient reports the code faithfully, which is what the tests
-            # assert. The frontend handles both — see ws.js. Do not "fix" this
-            # to accept-then-close: refusing the handshake is the stronger
-            # denial, and the code was never the contract.
+            # Which code the client actually sees depends on the server — see
+            # WS_CLOSE_ORIGIN at the top of this file. Do not "fix" this to
+            # accept-then-close: refusing the handshake is the stronger denial,
+            # and the code was never the contract.
             try:
                 await receive()
             except Exception:  # noqa: BLE001 — the client may already be gone
@@ -514,17 +499,10 @@ class RequireAuth:
             await send({"type": "websocket.close", "code": code})
             return
 
-        # A browser navigation should land on the login form; an API call
+        # A browser navigation should land on the login form. An API call
         # should get a status its caller can act on.
         if status == 401 and _wants_html(scope):
-            # Prefix root_path, so the redirect still points at the app when a
-            # proxy mounts it under a sub-path. Note that this is the only
-            # root_path-aware URL in the feature: the form actions in
-            # login.html and index.html stay root-absolute, so a sub-path
-            # deployment needs those changed too. Serving at the root, which
-            # is what deploy/ does, is the supported shape.
-            root = (scope.get("root_path") or "").rstrip("/")
-            location = f"{root}/login".encode("latin-1")
+            location = f"{prefix}/login".encode("latin-1")
             await _send_response(
                 send, 302, b"", extra_headers=[(b"location", location)]
             )

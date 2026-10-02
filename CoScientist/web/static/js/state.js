@@ -17,6 +17,26 @@
   };
 })();
 
+// One authenticated probe, in one place. An expired session is invisible to a
+// WebSocket close and to an EventSource error, because neither goes through the
+// wrapper above. One ordinary call does, so the wrapper redirects to /login on
+// 401. Two rules matter here. The target must be a pure read: /api/users can
+// create a user and a session as a side effect, which a retry loop must never
+// do. And the probe is throttled, because the callers retry every 3 seconds for
+// as long as the server is down, and a probe per retry doubles the request rate
+// of every disconnected tab for nothing.
+(function sessionProbe() {
+  const PROBE_PATH = '/api/hitl-status';
+  const MIN_GAP_MS = 60000;
+  let last = 0;
+  window.probeSession = function () {
+    const now = Date.now();
+    if (now - last < MIN_GAP_MS) return;
+    last = now;
+    fetch(PROBE_PATH).catch(() => { });
+  };
+})();
+
 let ws = null;
 let eventCount = 0;
 let reconnectTimer = null;

@@ -158,11 +158,10 @@
           }
         });
         datasetLogEventSource.onerror = () => {
-          // EventSource retries by itself, and it does not go through the
-          // fetch wrapper in state.js — so an expired session would leave this
-          // stream retrying for ever against a 401 with nothing on screen.
-          // One cheap authenticated call lets the wrapper redirect to /login.
-          fetch('/api/users').catch(() => { });
+          // EventSource retries by itself and does not go through the fetch
+          // wrapper in state.js, so an expired session would leave this stream
+          // retrying for ever against a 401 with nothing on screen.
+          if (window.probeSession) window.probeSession();
         };
       } catch (err) {
         console.warn('Dataset logs SSE connection error:', err);

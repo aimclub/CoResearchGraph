@@ -75,31 +75,6 @@ def run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> 
         pass
 
 
-def run_auth_hash(password: Optional[str] = None) -> None:
-    """Print the AUTH__PASSWORD_HASH line for a password.
-
-    Reads the password from the terminal without echoing it, so it does not
-    reach the shell history. Prints one line to copy into the .env file.
-    """
-    import getpass
-
-    from CoScientist.web.auth import hash_password
-
-    if password is None:
-        password = getpass.getpass("Password: ")
-        if password != getpass.getpass("Repeat: "):
-            print("The two entries differ. Nothing written.", file=sys.stderr)
-            raise SystemExit(1)
-    if len(password) < 20:
-        print(
-            "Warning: shorter than 20 characters. One password guards the whole "
-            "deployment and the login throttle does not stop guessing. "
-            "See deploy/README.md.",
-            file=sys.stderr,
-        )
-    print(f"AUTH__PASSWORD_HASH={hash_password(password)}")
-
-
 def run_repl() -> None:
     """Interactive terminal REPL against the in-process agent system."""
     _configure_utf8_stdio()
@@ -224,17 +199,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("cli", help="Interactive terminal REPL.")
 
-    auth_hash = sub.add_parser(
-        "auth-hash",
-        help="Print the AUTH__PASSWORD_HASH line for a password.",
-    )
-    auth_hash.add_argument(
-        "--password",
-        default=None,
-        help="Read the password from this flag instead of the terminal. "
-             "It then enters the shell history — prefer the prompt.",
-    )
-
     # The a2a sub-command takes a mode plus arbitrary trailing flags that are
     # forwarded to the underlying module (collected via parse_known_args below,
     # so flags like --agent/--text/--host survive regardless of position —
@@ -268,15 +232,13 @@ def main(argv=None) -> int:
     parser = build_parser()
     args, rest = parser.parse_known_args(argv)
 
-    if args.cmd in ("web", "cli", "auth-hash") and rest:
+    if args.cmd in ("web", "cli") and rest:
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
 
     if args.cmd == "web":
         run_web(args.host, args.port, args.reload)
     elif args.cmd == "cli":
         run_repl()
-    elif args.cmd == "auth-hash":
-        run_auth_hash(args.password)
     elif args.cmd == "a2a":
         _run_a2a(args.a2a_cmd, rest)
     elif args.cmd == "graph":

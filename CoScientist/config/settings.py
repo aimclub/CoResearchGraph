@@ -729,18 +729,12 @@ class AuthSettings(BaseModel):
 
     enabled: bool = True
 
-    # Salted PBKDF2 digest of the one password for the whole deployment, in
-    # the form "pbkdf2_sha256:<rounds>:<salt>:<digest>". Generate it with
-    # deploy/make_password_hash.py. Missing or malformed means the gate
-    # cannot open, and every request gets 503 — see CoScientist/web/auth.py.
-    # The app never falls back to serving without a credential.
+    # The only credential. A salted PBKDF2 digest of the one password for the
+    # whole deployment, in the form "pbkdf2_sha256:<rounds>:<salt>:<digest>".
+    # Generate it with deploy/make_password_hash.py. There is no clear-text
+    # setting and no fallback: missing or malformed means the gate cannot open,
+    # and every request gets 503 — see CoScientist/web/auth.py.
     password_hash: str = ""
-
-    # The password in clear text. A fallback for local runs, kept because the
-    # digest form needs a generation step. It loses to password_hash when both
-    # are set, and the server reports it at startup. Do not use it on a
-    # deployment: anyone who reads the .env file can sign in.
-    password: Optional[str] = None
 
     # HMAC key for the session cookie. Unset mints a fresh random key at every
     # boot, so a restart logs everyone out. That matches the rest of the app:

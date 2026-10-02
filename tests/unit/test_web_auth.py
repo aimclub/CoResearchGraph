@@ -22,6 +22,9 @@ from CoScientist.web import auth as web_auth
 from CoScientist.web.app import create_app
 
 PASSWORD = "correct-horse-battery-staple"
+#: Rounds for test digests. The shipped value is 200000, which is the point of
+#: it — far too slow to run in a fixture that every test here uses.
+TEST_ROUNDS = 1000
 ORIGIN = "https://cosci.example.org"
 
 
@@ -36,11 +39,14 @@ def _gate_open_for_tests(monkeypatch):
     """A configured gate, and a clean rate limiter, for every test."""
     auth = get_settings().auth
     monkeypatch.setattr(auth, "enabled", True)
-    monkeypatch.setattr(auth, "password", PASSWORD)
-    # Explicitly empty: the plaintext fallback is what most tests below
-    # exercise, and a stray AUTH__PASSWORD_HASH in the environment would
-    # otherwise take precedence and fail them for the wrong reason.
-    monkeypatch.setattr(auth, "password_hash", "")
+    # The digest is the path a deployment runs, so it is the path these tests
+    # exercise. Low rounds on purpose: the throttle tests below make about 45
+    # login calls, and 200000 rounds each would dominate the run.
+    # test_the_digest_rounds_are_read_from_the_stored_line pins that the count
+    # comes from the stored line, which is what makes this safe.
+    monkeypatch.setattr(
+        auth, "password_hash", web_auth.hash_password(PASSWORD, rounds=TEST_ROUNDS)
+    )
     monkeypatch.setattr(auth, "secret_key", "test-secret")
     monkeypatch.setattr(auth, "cookie_secure", False)
     monkeypatch.setattr(auth, "allowed_origins", ORIGIN)
@@ -51,6 +57,20 @@ def _gate_open_for_tests(monkeypatch):
 @pytest.fixture
 def client(app):
     return TestClient(app)
+
+
+def refused_code(client, url="/ws?user_id=x&session_id=y", **headers) -> int:
+    """Open *url*, expect the gate to refuse it, and return the close code.
+
+    Every socket test needs the same two nested context managers to get at one
+    integer, which buried the assertion. Note the code only reaches a caller
+    that speaks ASGI directly, as TestClient does — see WS_CLOSE_ORIGIN in
+    web/auth.py for what a browser sees instead.
+    """
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with client.websocket_connect(url, headers=dict(headers)):
+            pass
+    return excinfo.value.code
 
 
 @pytest.fixture
@@ -81,6 +101,26 @@ def test_the_example_env_file_parses(monkeypatch):
         monkeypatch.setenv(key, value)
 
     assert Settings().auth is not None
+
+
+def test_every_auth_setting_is_documented():
+    """Three descriptions of one model drift, and two of them already had.
+
+    AUTH__LOGIN_WINDOW_SECONDS was in neither document, so an operator could
+    not discover it. The README said "15 minutes" in prose instead of naming the
+    key. A field nobody can find is a field nobody can set.
+    """
+    from pathlib import Path as _Path
+
+    from CoScientist.config.settings import AuthSettings
+
+    root = _Path(__file__).resolve().parents[2]
+    readme = (root / "deploy/README.md").read_text(encoding="utf-8")
+    example = (root / "CoScientist/examples/example_config.env").read_text(encoding="utf-8")
+    for field in AuthSettings.model_fields:
+        key = f"AUTH__{field.upper()}"
+        assert key in readme, f"{key} is missing from deploy/README.md"
+        assert key in example, f"{key} is missing from example_config.env"
 
 
 # ---------------------------------------------------------------------------
@@ -193,32 +233,25 @@ def test_the_login_page_is_reachable_without_a_session(client):
 # ---------------------------------------------------------------------------
 def test_the_socket_is_refused_without_a_session(client):
     """An allowed origin, so the missing cookie is what refuses this one."""
-    with pytest.raises(WebSocketDisconnect) as excinfo:
-        with client.websocket_connect(
-            "/ws?user_id=x&session_id=y", headers={"origin": ORIGIN}
-        ):
-            pass
-    assert excinfo.value.code == web_auth.WS_CLOSE_POLICY
+    assert refused_code(client, origin=ORIGIN) == web_auth.WS_CLOSE_POLICY
 
 
 def test_the_socket_is_refused_from_a_foreign_origin(client, session_cookie):
-    """A valid cookie is not enough: SameSite=Lax does not cover a handshake."""
+    """A valid cookie is not enough: SameSite=Lax does not cover a handshake.
+
+    The code differs from the no-session refusal on purpose. A logged-in caller
+    refused for their Origin must not be sent to /login: the cookie is still
+    valid, so /login bounces them back and the loop never ends.
+    """
     client.cookies.update(session_cookie)
-    with pytest.raises(WebSocketDisconnect) as excinfo:
-        with client.websocket_connect(
-            "/ws?user_id=x&session_id=y",
-            headers={"origin": "https://evil.example"},
-        ):
-            pass
-    assert excinfo.value.code == web_auth.WS_CLOSE_ORIGIN
+    code = refused_code(client, origin="https://evil.example")
+    assert code == web_auth.WS_CLOSE_ORIGIN
+    assert code != web_auth.WS_CLOSE_POLICY
 
 
 def test_the_socket_is_refused_when_the_origin_header_is_absent(client, session_cookie):
     client.cookies.update(session_cookie)
-    with pytest.raises(WebSocketDisconnect) as excinfo:
-        with client.websocket_connect("/ws?user_id=x&session_id=y"):
-            pass
-    assert excinfo.value.code == web_auth.WS_CLOSE_ORIGIN
+    assert refused_code(client) == web_auth.WS_CLOSE_ORIGIN
 
 
 def test_an_origin_refusal_is_reported_once_per_origin(client, session_cookie, capsys):
@@ -259,15 +292,6 @@ def test_the_origin_report_cannot_be_used_to_flood(client, session_cookie, capsy
         if "WebSocket refused" in line
     ]
     assert len(reported) == web_auth._REPORTED_ORIGINS_CAP
-
-
-def test_the_two_socket_refusals_use_different_codes():
-    """The frontend sends one to /login and reports the other.
-
-    A logged-in user refused for their Origin must not be sent to /login: the
-    cookie is still valid, so /login bounces them back and the loop never ends.
-    """
-    assert web_auth.WS_CLOSE_ORIGIN != web_auth.WS_CLOSE_POLICY
 
 
 def test_the_socket_opens_with_a_cookie_and_an_allowed_origin(client, session_cookie):
@@ -311,63 +335,50 @@ def test_the_cookie_carries_the_protective_flags(client):
     assert "path=/" in header
 
 
-def test_cookie_secure_is_applied_when_asked_for(client, monkeypatch):
-    """Pinned true demands HTTPS. Pinned false in these tests because httpx,
-    like a browser, refuses to store a Secure cookie arriving over plain http —
-    which is the whole reason the default decides per request."""
-    monkeypatch.setattr(get_settings().auth, "cookie_secure", True)
-    response = client.post("/auth/login", data={"password": PASSWORD}, follow_redirects=False)
-    assert "secure" in response.headers["set-cookie"].lower()
-
-
-def test_changing_the_password_revokes_outstanding_cookies(client, monkeypatch):
+def test_changing_the_credential_revokes_outstanding_cookies(client, monkeypatch):
     """Rotation after a leak must actually lock the thief out.
 
     The token carries only an expiry, so nothing in it changes with the
-    password. The signing key mixes the password in for exactly this reason.
+    password. The signing key mixes the stored credential in for exactly this
+    reason.
     """
     stolen = web_auth.issue_token()
     assert web_auth.verify_token(stolen)
 
-    monkeypatch.setattr(get_settings().auth, "password", PASSWORD + "-rotated")
+    monkeypatch.setattr(
+        get_settings().auth, "password_hash",
+        web_auth.hash_password(PASSWORD + "-rotated", rounds=TEST_ROUNDS),
+    )
     assert not web_auth.verify_token(stolen)
 
     client.cookies.update({web_auth.COOKIE_NAME: stolen})
     assert client.get("/api/users", follow_redirects=False).status_code == 401
 
 
-def test_the_secure_flag_follows_the_forwarded_scheme(client, monkeypatch):
-    """Unset means decide per request, which is right for both deployments.
-
-    uvicorn rewrites the scope scheme only with --proxy-headers, which the
-    shipped unit does not pass, so the forwarded header is the only signal.
-    """
-    monkeypatch.setattr(get_settings().auth, "cookie_secure", None)
+@pytest.mark.parametrize("configured,forwarded,expected", [
+    # Pinned true demands HTTPS whatever the request looks like.
+    (True, None, True),
+    # Unset means decide per request. uvicorn rewrites the scope scheme only
+    # with --proxy-headers, which the shipped unit does not pass, so the
+    # forwarded header is the only signal available.
+    (None, "https", True),
+    # A Secure cookie over plain HTTP is dropped by httpx and by a browser
+    # alike, which reads as a login loop. That is why unset does not mean true.
+    (None, None, False),
+    # Pinned false wins over the forwarded header.
+    (False, "https", False),
+])
+def test_the_secure_flag_follows_the_setting_then_the_scheme(
+    client, monkeypatch, configured, forwarded, expected
+):
+    monkeypatch.setattr(get_settings().auth, "cookie_secure", configured)
     response = client.post(
         "/auth/login",
         data={"password": PASSWORD},
-        headers={"x-forwarded-proto": "https"},
+        headers={"x-forwarded-proto": forwarded} if forwarded else {},
         follow_redirects=False,
     )
-    assert "secure" in response.headers["set-cookie"].lower()
-
-
-def test_the_secure_flag_stays_off_on_plain_http(client, monkeypatch):
-    """A Secure cookie over plain HTTP is dropped, which reads as a login loop."""
-    monkeypatch.setattr(get_settings().auth, "cookie_secure", None)
-    response = client.post("/auth/login", data={"password": PASSWORD}, follow_redirects=False)
-    assert "secure" not in response.headers["set-cookie"].lower()
-
-
-def test_cookie_secure_can_be_pinned_off(client, monkeypatch):
-    monkeypatch.setattr(get_settings().auth, "cookie_secure", False)
-    response = client.post(
-        "/auth/login",
-        data={"password": PASSWORD},
-        headers={"x-forwarded-proto": "https"},
-        follow_redirects=False,
-    )
-    assert "secure" not in response.headers["set-cookie"].lower()
+    assert ("secure" in response.headers["set-cookie"].lower()) is expected
 
 
 def test_logout_clears_the_session(client):
@@ -472,8 +483,8 @@ def test_a_token_signed_with_another_key_is_rejected(monkeypatch):
 
 
 def test_password_check_rejects_the_empty_password(monkeypatch):
-    """An unset password must never make an empty submission succeed."""
-    monkeypatch.setattr(get_settings().auth, "password", None)
+    """An unset credential must never make an empty submission succeed."""
+    monkeypatch.setattr(get_settings().auth, "password_hash", "")
     assert not web_auth.check_password("")
     assert not web_auth.check_password(PASSWORD)
 
@@ -481,17 +492,19 @@ def test_password_check_rejects_the_empty_password(monkeypatch):
 # ---------------------------------------------------------------------------
 # Fail closed
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("password", [None, "", "   "])
-def test_an_unset_password_closes_everything(client, monkeypatch, password):
+# password_hash is a str, so these are the blank values it can actually hold.
+# Whitespace counts as unset: _stored_hash strips before it decides.
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_an_unset_credential_closes_everything(client, monkeypatch, blank):
     """Misconfiguration must never degrade into an open server."""
-    monkeypatch.setattr(get_settings().auth, "password", password)
+    monkeypatch.setattr(get_settings().auth, "password_hash", blank)
     for path in ("/", "/api/users", "/login", "/healthz", "/alembic/api/builds"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 503, path
 
 
-def test_an_unset_password_also_closes_the_socket(client, monkeypatch, session_cookie):
-    monkeypatch.setattr(get_settings().auth, "password", None)
+def test_an_unset_credential_also_closes_the_socket(client, monkeypatch, session_cookie):
+    monkeypatch.setattr(get_settings().auth, "password_hash", "")
     client.cookies.update(session_cookie)
     with pytest.raises(WebSocketDisconnect) as excinfo:
         with client.websocket_connect("/ws", headers={"origin": ORIGIN}):
@@ -592,10 +605,9 @@ def test_the_login_page_never_echoes_its_query_parameter(client, error):
 # The stored credential is a salted digest, not the password
 # ---------------------------------------------------------------------------
 def test_the_digest_round_trips(monkeypatch):
-    """What auth-hash prints is what check_password accepts."""
+    """What the generator prints is what check_password accepts."""
     auth = get_settings().auth
     monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
-    monkeypatch.setattr(auth, "password", None)
 
     assert web_auth.check_password(PASSWORD)
     assert not web_auth.check_password(PASSWORD + "x")
@@ -634,18 +646,7 @@ def test_the_digest_survives_a_dotenv_round_trip(tmp_path, monkeypatch):
 
     auth = get_settings().auth
     monkeypatch.setattr(auth, "password_hash", dotenv_values(env_file)["AUTH__PASSWORD_HASH"])
-    monkeypatch.setattr(auth, "password", None)
     assert web_auth.check_password(PASSWORD)
-
-
-def test_the_digest_wins_over_the_plaintext(monkeypatch):
-    """Both set is a half-finished migration. The safer one decides."""
-    auth = get_settings().auth
-    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password("the-real-one"))
-    monkeypatch.setattr(auth, "password", "the-stale-one")
-
-    assert web_auth.check_password("the-real-one")
-    assert not web_auth.check_password("the-stale-one")
 
 
 @pytest.mark.parametrize("broken", [
@@ -665,7 +666,6 @@ def test_a_malformed_digest_closes_the_gate(monkeypatch, client, broken):
     """
     auth = get_settings().auth
     monkeypatch.setattr(auth, "password_hash", broken)
-    monkeypatch.setattr(auth, "password", PASSWORD)
     monkeypatch.setattr(web_auth, "_warned_unconfigured", False)
 
     assert web_auth._parse_hash(broken) is None
@@ -674,34 +674,11 @@ def test_a_malformed_digest_closes_the_gate(monkeypatch, client, broken):
     assert client.get("/healthz").status_code == 503
 
 
-def test_changing_the_digest_revokes_outstanding_cookies(monkeypatch):
-    """A rotation must log everybody out, same as the plaintext path."""
-    auth = get_settings().auth
-    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
-    monkeypatch.setattr(auth, "password", None)
-    token = web_auth.issue_token()
-    assert web_auth.verify_token(token)
-
-    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password("a-new-password"))
-    assert not web_auth.verify_token(token)
-
-
 def test_re_salting_the_same_password_also_revokes(monkeypatch):
     """The key follows the stored string, so a new salt is a new key."""
     auth = get_settings().auth
     monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
-    monkeypatch.setattr(auth, "password", None)
     token = web_auth.issue_token()
-
-    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
-    assert not web_auth.verify_token(token)
-
-
-def test_moving_from_plaintext_to_digest_logs_everybody_out(monkeypatch):
-    """Documented in deploy/README.md, so pin it."""
-    auth = get_settings().auth
-    token = web_auth.issue_token()
-    assert web_auth.verify_token(token)
 
     monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
     assert not web_auth.verify_token(token)
@@ -711,7 +688,6 @@ def test_the_login_form_accepts_a_digest_password(client, monkeypatch):
     """End to end: the form path, not just check_password."""
     auth = get_settings().auth
     monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
-    monkeypatch.setattr(auth, "password", None)
 
     response = client.post("/auth/login", data={"password": PASSWORD},
                            follow_redirects=False)
@@ -726,17 +702,17 @@ def test_the_digest_rounds_are_read_from_the_stored_line(monkeypatch):
     cheap = web_auth.hash_password(PASSWORD, rounds=1000)
     assert ":1000:" in cheap
     monkeypatch.setattr(auth, "password_hash", cheap)
-    monkeypatch.setattr(auth, "password", None)
     assert web_auth.check_password(PASSWORD)
 
 
-def test_the_standalone_generator_agrees_with_the_server(monkeypatch):
-    """deploy/make_password_hash.py duplicates the format, so pin it.
+def test_the_generator_script_loads_the_format_without_the_package(monkeypatch):
+    """The script must reach the format without importing CoScientist.
 
-    The duplication is deliberate: importing the package builds the agent
-    system, so the in-tree command needs a complete configuration, and an
-    operator writing the .env file does not have one yet. What the two must
-    never do is drift apart.
+    That import builds the whole agent system, so it needs a complete LLM
+    configuration — which an operator writing the .env file does not have. The
+    script therefore path-loads one leaf module, and this test pins both halves
+    of that: the load works with no package import, and what it produces is what
+    the server accepts.
     """
     import importlib.util
     from pathlib import Path as _Path
@@ -746,25 +722,17 @@ def test_the_standalone_generator_agrees_with_the_server(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.SCHEME == web_auth._HASH_SCHEME
-    assert module.ROUNDS == web_auth._HASH_ROUNDS
+    fmt = module._load_format()
+    # The same source file the server imports, reached a second way. This is
+    # what rules out drift: there is one copy of the format, not two.
+    from CoScientist.web import password_hash as served
+    assert fmt.__file__ == served.__file__
+    assert fmt.SCHEME == served.SCHEME and fmt.ROUNDS == served.ROUNDS
+    assert fmt.ENV_KEY == "AUTH__PASSWORD_HASH"
 
     auth = get_settings().auth
-    monkeypatch.setattr(auth, "password_hash", module.build(PASSWORD))
-    monkeypatch.setattr(auth, "password", None)
+    monkeypatch.setattr(auth, "password_hash", fmt.hash_password(PASSWORD, rounds=1000))
     assert web_auth.check_password(PASSWORD)
     assert not web_auth.check_password(PASSWORD + "x")
 
 
-def test_the_plaintext_key_is_reported_at_startup(monkeypatch, capsys):
-    """The only operator-facing signal that a .env still holds the password."""
-    auth = get_settings().auth
-    monkeypatch.setattr(auth, "password_hash", "")
-    monkeypatch.setattr(auth, "password", PASSWORD)
-
-    web_auth.check_configuration()
-    assert "AUTH__PASSWORD holds the password in clear text" in capsys.readouterr().err
-
-    monkeypatch.setattr(auth, "password_hash", web_auth.hash_password(PASSWORD))
-    web_auth.check_configuration()
-    assert "clear text" not in capsys.readouterr().err

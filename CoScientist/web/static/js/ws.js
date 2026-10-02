@@ -33,23 +33,20 @@
         document.getElementById('conn-dot').className = 'w-1.5 h-1.5 rounded-full bg-error shrink-0';
         if (intentionalDisconnect || !activeUser || !activeSession
           || activeUser.id !== userId || activeSession.id !== sessionId) return;
-        // The auth gate refused the handshake. Measured in Chrome against the
-        // shipped uvicorn: a refusal before the accept comes back as HTTP 403
-        // on the upgrade, and the browser reports close code 1006 — never
-        // 1008, never 4403. So neither branch below runs in the deployment.
-        // They are kept for an ASGI server that closes cleanly, and for the
-        // test client, which does report the code. The live path is the 1006
-        // fall-through at the end, which probes with a fetch.
+        // Measured in Chrome against the shipped uvicorn: a refusal before the
+        // accept arrives as HTTP 403 on the upgrade, and the browser reports
+        // 1006 — never 1008, never 4403. So neither branch below runs in this
+        // deployment. Both are kept for an ASGI server that closes cleanly, and
+        // for the test client, which does report the code. The live path is the
+        // 1006 fall-through at the end.
         if (event.code === 1008) {
           window.location.href = '/login';
           return;
         }
-        // Refused for its Origin, not for want of a session. The user is
-        // logged in, so /login would send them straight back here — a loop no
-        // correct password can escape. Unreachable under uvicorn, as above:
-        // in that deployment an origin refusal arrives as 1006 and falls
-        // through to the retry. The server names the refused origin on stderr,
-        // so journalctl carries the diagnosis — see deploy/README.md note 2.
+        // Refused for its Origin, not for want of a session. The user is logged
+        // in, so /login would send them straight back here — a loop no correct
+        // password can escape. Unreachable under uvicorn, as above. The server
+        // names the refused origin in its log — see deploy/README.md note 2.
         if (event.code === 4403) {
           addTelemetry('REFUSED :: origin not allowed — set AUTH__ALLOWED_ORIGINS');
           return;
@@ -61,14 +58,14 @@
           return;
         }
         addTelemetry('DISCONNECTED — retrying in 3s');
-        // The live refusal path: every close the deployment produces lands
-        // here as 1006. One cheap authenticated call separates "session
-        // expired" from "server restarting": the fetch wrapper in state.js
-        // redirects to /login on 401. If the server is simply down the call
-        // fails and the retry below carries on as before. A call that
-        // succeeds while the socket keeps failing means neither — the usual
-        // cause is the origin check, which the server log names.
-        fetch('/api/users').catch(() => { });
+        // The live refusal path: every close the deployment produces lands here
+        // as 1006, so this is where an expired session has to be caught. The
+        // probe separates "session expired" from "server restarting" — it is
+        // throttled in state.js, because this retry runs every 3 seconds for as
+        // long as the server is down. A probe that succeeds while the socket
+        // keeps failing means neither: the usual cause is the origin check,
+        // which the server names in its log.
+        if (window.probeSession) window.probeSession();
         reconnectTimer = setTimeout(connect, 3000);
       };
 

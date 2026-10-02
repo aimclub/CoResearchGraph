@@ -149,12 +149,8 @@ python3 ~/cosci/CoScientist/deploy/make_password_hash.py
 The script needs nothing but a Python 3 interpreter. It asks for the password
 twice without echoing it, then prints one line.
 
-`uv run --frozen python -m CoScientist auth-hash` does the same thing from the
-deploy directory. Use the script while the `.env` file is still incomplete:
-importing the package builds the agent system, so the command needs the LLM
-keys to be in place already. Put
-that line in `~/.config/coscientist/.env` **before** the first deploy of this
-feature. The gate fails closed: with `AUTH__ENABLED=true` and no usable digest,
+Put that line in `~/.config/coscientist/.env` **before** the first deploy of
+this feature. The gate fails closed: with `AUTH__ENABLED=true` and no usable digest,
 every request gets `503`.
 
 ```
@@ -163,16 +159,22 @@ AUTH__SECRET_KEY=<long random string>
 AUTH__ALLOWED_ORIGINS=https://<the host browsers use>
 ```
 
+Generate the secret key with:
+
+```
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
 Keys:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `AUTH__PASSWORD_HASH` | unset | Salted digest of the one password. Missing or malformed means `503` on every path. |
-| `AUTH__PASSWORD` | unset | The password in clear text. Local runs only. See note 5. |
 | `AUTH__SECRET_KEY` | random per boot | Signs the session cookie. See note 3. |
 | `AUTH__ENABLED` | `true` | Set to `false` only for a localhost-only instance. |
 | `AUTH__COOKIE_SECURE` | auto | `Secure` on the session cookie. See note 1. |
 | `AUTH__ALLOWED_ORIGINS` | empty | Comma-separated origins that may open the WebSocket. Empty falls back to same-origin. |
+| `AUTH__LOGIN_WINDOW_SECONDS` | `900` | Length of the failed-login window, in seconds. See note 4. |
 | `AUTH__SESSION_MAX_AGE` | `604800` | Cookie lifetime in seconds. |
 | `AUTH__MAX_LOGIN_ATTEMPTS` | `10` | Failed logins per 15 minutes before the login page reports a throttle. Read note 4. |
 
@@ -207,14 +209,13 @@ Five things to get right:
    more random characters, not a memorable phrase. Failed logins go to
    `logs/app.log` under the deploy directory, not to journalctl — that file is
    the only record of somebody guessing.
-5. **Keep the clear-text key out of the deployment.** `AUTH__PASSWORD` still
-   works, for local runs that do not want a generation step. On a server it
-   puts the password in a file, which is what the digest exists to avoid. The
-   digest wins when both are set, and the server prints a warning at startup
-   while the clear-text key is in use. The digest uses PBKDF2-HMAC-SHA256 over
-   200000 rounds. That is below the usual recommendation on purpose: against
-   20 random characters the stretching adds almost nothing, and the digest is
-   there so a leaked file carries no password.
+5. **The digest is the only credential.** There is no clear-text setting, so
+   every run needs a generated line, including a local one. The digest uses
+   PBKDF2-HMAC-SHA256, with the round count set in
+   `CoScientist/web/password_hash.py`. It is below the usual recommendation on
+   purpose: against 20 random characters the stretching adds almost nothing, and
+   the digest is there so a leaked file carries no password. To run without a
+   gate at all on a localhost-only instance, set `AUTH__ENABLED=false`.
 
 What this does not do:
 
@@ -230,10 +231,8 @@ To rotate the password, run `deploy/make_password_hash.py` again, replace
 `AUTH__PASSWORD_HASH` and restart. This also logs everybody out: the cookie
 signing key mixes in the stored digest, so every outstanding cookie stops
 verifying. Re-running the command over the same password has the same effect,
-because the salt is new each time. Moving from `AUTH__PASSWORD` to
-`AUTH__PASSWORD_HASH` logs everybody out once, for the same reason. Changing
-`AUTH__SECRET_KEY` and restarting also does it, without touching the
-password.
+because the salt is new each time. Changing `AUTH__SECRET_KEY` and restarting
+also does it, without touching the password.
 
 ## Artifact links on a cluster
 
