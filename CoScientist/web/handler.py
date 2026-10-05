@@ -331,9 +331,14 @@ class WebHITLHandler(AbstractHITLHandler):
             system_reason=response_data.get("system_reason"),
         )
 
-    async def handle_request(self, request: HITLRequest) -> HITLResponse:
+    async def handle_request(
+        self, request: HITLRequest, request_id: str | None = None
+    ) -> HITLResponse:
         session_key = self._request_session_key(request)
-        request_id = self._request_id(request, session_key)
+        # An explicitly supplied id (e.g. a caller that must embed it in a URL
+        # shown to a human BEFORE this returns) wins; otherwise fall back to the
+        # existing stable-vs-random derivation.
+        request_id = request_id or self._request_id(request, session_key)
         from CoScientist.execution_control import current_run
         run_handle = current_run()
         if run_handle is not None:

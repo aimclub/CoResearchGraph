@@ -12,6 +12,7 @@ from CoScientist.tools.research_tools import (
     paper_analysis_toolset_instance,
     papers_search_toolset_instance,
     vault_toolset_instance,
+    hemocytometer_toolset_instance,
 )
 from CoScientist.tools.retrieval_tools import RetrievalToolSet, retrieval_toolset_instance
 from CoScientist.tools.servers_web_search import search_mcp_servers
@@ -35,6 +36,7 @@ __all__ = [
     "paper_analysis_toolset_instance",
     "papers_search_toolset_instance",
     "vault_toolset_instance",
+    "hemocytometer_toolset_instance",
     "RetrievalToolSet",
     "retrieval_toolset_instance",
     "search_mcp_servers",

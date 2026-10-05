@@ -109,7 +109,7 @@ agents:
     # returned; a wrong delegation costs an entire sub-agent run.
     reasoning: low
     prompt: orchestrator
-    tools: [retrieval, graph, research_graph_orchestrator]
+    tools: [retrieval, graph, research_graph_orchestrator, hemocytometer, hemocytometer_review]
     subordinates:
       - PlannerAgent
       - HypothesesAgent

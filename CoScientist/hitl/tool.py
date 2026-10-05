@@ -9,7 +9,7 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.adk.agents.readonly_context import ReadonlyContext
 
 from CoScientist.config import get_settings
-from CoScientist.hitl.models import HITLRequest, HITLAction
+from CoScientist.hitl.models import HITLRequest, HITLAction, HITLResponse
 from CoScientist.hitl.handler import AbstractHITLHandler, ConsoleHITLHandler
 from CoScientist.graph.session_scope import session_key
 
@@ -167,3 +167,13 @@ class HITLToolset(BaseToolset):
         }
 
 hitl_toolset = HITLToolset(handler=ConsoleHITLHandler())
+
+
+async def wait_for_external_response(request: HITLRequest, request_id: str) -> HITLResponse:
+    """Route a HITLRequest through the same handler request_approval/request_selection
+    use (already wired to the live WebHITLHandler by _wire_hitl in a web deployment),
+    for tools that live outside HITLToolset but still need a human-in-the-loop wait —
+    e.g. request_hemocytometer_review, which must pre-generate request_id to embed it
+    in a URL before the human ever sees the request.
+    """
+    return await hitl_toolset._handler.handle_request(request, request_id=request_id)

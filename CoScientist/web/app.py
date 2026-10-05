@@ -2713,6 +2713,41 @@ def create_app() -> FastAPI:
             "auto_approve_timeout_seconds": runtime.hitl_handler.HITL_TIMEOUT_SECONDS,
         })
 
+    # --- Hemocytometer manual review (external UI, not a browser tab) ---
+    @app.post("/api/hemocytometer-review/resolve")
+    async def resolve_hemocytometer_review(data: dict):
+        """Called by the standalone Streamlit UI's submit button — NOT a
+        browser tab on this websocket — to resolve the matching
+        request_hemocytometer_review wait. See tools/hemocytometer_review.py.
+
+        ``results`` is a LIST — the human may compute several images in one
+        open review session before submitting; each is a dict with
+        cell_count/concentration_cells_per_ml/camera_type/dilution.
+        """
+        request_id = data.get("request_id")
+        if not request_id:
+            raise HTTPException(status_code=400, detail="request_id is required")
+        results = data.get("results")
+        if not isinstance(results, list) or not results:
+            raise HTTPException(status_code=400, detail="results must be a non-empty list")
+
+        resolved = runtime.hitl_handler.resolve_request(
+            request_id,
+            {
+                "approved": True,
+                # HITLResponse.form_values is typed as a Dict, so the list is
+                # wrapped under a key rather than passed as the bare value.
+                "form_values": {"results": results},
+            },
+        )
+        if not resolved:
+            raise HTTPException(
+                status_code=404,
+                detail="Unknown or already-resolved request_id (expired, or the "
+                       "agent run was cancelled before this review completed).",
+            )
+        return JSONResponse({"status": "ok"})
+
     # --- Knowledge graph (live view) ---
     @app.get("/graph", response_class=HTMLResponse)
     async def graph_page():

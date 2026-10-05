@@ -2,6 +2,7 @@
 import os
 from typing import Any, Callable, Optional
 
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
@@ -29,6 +30,7 @@ def _http_mcp_toolset(
     tool_filter: Optional[list] = None,
     httpx_client_factory: Optional[Callable] = None,
     retry_calls: bool = False,
+    header_provider: Optional[Callable[[ReadonlyContext], dict]] = None,
 ) -> Optional[McpToolset]:
     """Build an HTTP MCP toolset, or None when the URL is not configured.
 
@@ -38,6 +40,10 @@ def _http_mcp_toolset(
 
     ``tool_filter`` names the tools to keep. A server may expose more than an
     agent should see (see the vault below).
+
+    ``header_provider`` adds per-call dynamic headers (e.g. forwarding the real
+    ADK user_id) — unlike ``headers``, it is re-evaluated on every call, since
+    it receives the current ``ReadonlyContext``.
 
     Every toolset lists its tools resiliently (see tools/mcp_resilience.py).
     ``retry_calls`` also repeats a call whose connection was lost — set it only
@@ -57,6 +63,7 @@ def _http_mcp_toolset(
         connection_params=StreamableHTTPConnectionParams(**conn_kwargs),
         tool_filter=tool_filter,
         retry_calls=retry_calls,
+        header_provider=header_provider,
     )
 
 
@@ -117,3 +124,14 @@ papers_search_toolset_instance = _http_mcp_toolset(
 VAULT_WORKER_TOOLS = ["get_upload_link", "get_download_link"]
 
 vault_toolset_instance = _http_mcp_toolset(VAULT_URL, tool_filter=VAULT_WORKER_TOOLS)
+
+# Hemocytometer image-analysis MCP server (grid detection + cell count +
+# concentration). Only built when MCP__HEMOCYTOMETER_URL is configured.
+# Forwards the real ADK user_id as a header so the server can scope its
+# manual-analysis history (search_hemocytometer_history) per user instead of
+# one shared log for everyone.
+HEMOCYTOMETER_URL = settings.mcp.hemocytometer_url
+hemocytometer_toolset_instance = _http_mcp_toolset(
+    HEMOCYTOMETER_URL,
+    header_provider=lambda ctx: {"X-User-Id": ctx.user_id},
+)

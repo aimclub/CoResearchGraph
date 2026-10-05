@@ -31,8 +31,17 @@ class AbstractHITLHandler(ABC):
     """
 
     @abstractmethod
-    async def handle_request(self, request: HITLRequest) -> HITLResponse:
-        """Process a HITL request and return the human's response."""
+    async def handle_request(
+        self, request: HITLRequest, request_id: str | None = None
+    ) -> HITLResponse:
+        """Process a HITL request and return the human's response.
+
+        request_id: optional caller-chosen id. Callers that need to hand the
+        id to a third party BEFORE the human responds (e.g. embed it in a URL
+        shown outside this process) pass it in; handlers that don't track ids
+        (e.g. ConsoleHITLHandler) simply ignore it. Omitted, a handler that
+        does track ids generates its own (unchanged default behaviour).
+        """
         ...
 
     async def notify(self, payload: dict) -> None:
@@ -57,8 +66,10 @@ class DelegatingHITLHandler(AbstractHITLHandler):
     def set_delegate(self, delegate: AbstractHITLHandler):
         self.delegate = delegate
 
-    async def handle_request(self, request: HITLRequest) -> HITLResponse:
-        return await self.delegate.handle_request(request)
+    async def handle_request(
+        self, request: HITLRequest, request_id: str | None = None
+    ) -> HITLResponse:
+        return await self.delegate.handle_request(request, request_id=request_id)
 
     async def notify(self, payload: dict) -> None:
         await self.delegate.notify(payload)
@@ -79,7 +90,9 @@ class ConsoleHITLHandler(AbstractHITLHandler):
         else:
             await super().notify(payload)
 
-    async def handle_request(self, request: HITLRequest) -> HITLResponse:
+    async def handle_request(
+        self, request: HITLRequest, request_id: str | None = None
+    ) -> HITLResponse:
         # `auto` means nobody is asked — including here. Without this the one
         # mode whose whole point is that it runs unattended blocked on `input()`
         # forever on an interactive CLI run.

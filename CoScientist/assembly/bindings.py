@@ -44,6 +44,19 @@ def _vault():
     return vault_toolset_instance
 
 
+def _hemocytometer():
+    from CoScientist.tools import hemocytometer_toolset_instance
+    return hemocytometer_toolset_instance
+
+
+def _hemocytometer_review():
+    from CoScientist.config import get_settings
+    if not get_settings().mcp.hemocytometer_ui_url:
+        return None  # optional=True on the ToolEntry below drops it silently
+    from CoScientist.tools.hemocytometer_review import request_hemocytometer_review
+    return [request_hemocytometer_review]
+
+
 def _retrieval():
     from CoScientist.tools import retrieval_toolset_instance
     return retrieval_toolset_instance
@@ -343,6 +356,55 @@ _RETRIEVAL_DOCS = (
         purpose="Returns server metadata.",
     ),
 )
+
+REGISTRY.register_tool(ToolEntry(
+    key="hemocytometer",
+    factory=_hemocytometer,
+    optional=True,  # built only when MCP__HEMOCYTOMETER_URL is configured
+    runtime_resolved=True,
+    docs=(
+        ToolDoc(
+            name="analyze_hemocytometer_image",
+            signature="analyze_hemocytometer_image(image_url, camera_type='goryaev', ...)",
+            purpose=(
+                "Analyzes a hemocytometer microscopy image: detects the counting-chamber "
+                "grid, counts cells, and estimates cell concentration. Returns a "
+                "presigned S3 URL to the annotated result image."
+            ),
+        ),
+        ToolDoc(
+            name="search_hemocytometer_history",
+            signature="search_hemocytometer_history(limit=5)",
+            purpose=(
+                "Looks up past hemocytometer analyses run manually by a human via the "
+                "web UI (cell_count, concentration, camera_type, dilution, timestamp). "
+                "Does NOT include analyses run by the agent itself."
+            ),
+        ),
+    ),
+))
+
+REGISTRY.register_tool(ToolEntry(
+    key="hemocytometer_review",
+    factory=_hemocytometer_review,
+    optional=True,  # built only when MCP__HEMOCYTOMETER_UI_URL is configured
+    docs=(
+        ToolDoc(
+            name="request_hemocytometer_review",
+            signature="request_hemocytometer_review(message=None)",
+            purpose=(
+                "Sends the user a link to manually review/adjust one or more "
+                "hemocytometer images in the standalone web UI, and WAITS (blocks, "
+                "can take a while) for a single submit before returning. The user "
+                "can compute several images before submitting once — you get back "
+                "a LIST of results (cell_count/concentration_cells_per_ml/"
+                "camera_type/dilution per image), not just one. Use instead of "
+                "analyze_hemocytometer_image when the user wants to drive the "
+                "analysis by hand before you use the numbers."
+            ),
+        ),
+    ),
+))
 
 REGISTRY.register_tool(ToolEntry(
     key="retrieval",

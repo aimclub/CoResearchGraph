@@ -224,6 +224,14 @@ class MCPSettings(BaseModel):
     # unset means the NIR tools drop out and the run completes as before.
     normcontrol_url: Optional[str] = None
 
+    hemocytometer_url: Optional[str] = None
+    # Base URL of the standalone hemocytometer Streamlit UI (the same UI_URL
+    # the server used for its own, now-retired link tool — see
+    # hemocytometer-mcp-server/archived_tools/) — needed here so
+    # request_hemocytometer_review can build a review link without an extra
+    # round-trip through the MCP connection just to ask for it.
+    hemocytometer_ui_url: Optional[str] = None
+
 
 # =========================
 # NIR report (GOST 7.32-2017, via the normcontrol MCP)
