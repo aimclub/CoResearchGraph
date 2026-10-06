@@ -35,7 +35,7 @@ def test_contract_survives_flat_grouped_and_prompt_projections():
     assert normalized["data_contract"] == cap["data_contract"]
     assert index_inventory_tools([normalized])[cap["tool"]]["output_schema"] == cap["output_schema"]
     assert get_grouped_mcp_inventory([normalized])[0]["tools"][0]["data_contract"] == cap["data_contract"]
-    assert _cap_for_prompt(normalized)["output_contract"]["required"] == ["answer"]
+    assert _cap_for_prompt(normalized)["output_schema"] == cap["output_schema"]
 
 
 @pytest.mark.parametrize("cap", [_cap(), _cap(mode="caller_data", scope="training_corpus"), _inventory()[0]])

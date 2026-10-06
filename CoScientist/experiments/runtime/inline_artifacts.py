@@ -41,13 +41,14 @@ def _valid_csv(text: str) -> bool:
 
 
 def _csv_payload(result: Any) -> str | None:
+    candidates: set[str] = set()
     for text in _strings(result):
         for match in _FENCED_BLOCK.finditer(text):
             if match.group("kind").lower() == "csv" and _valid_csv(body := match.group("body").strip()):
-                return body + "\n"
+                candidates.add(body + "\n")
         if _valid_csv(raw := text.strip()):
-            return raw + "\n"
-    return None
+            candidates.add(raw + "\n")
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def _encode_payload(
@@ -59,6 +60,14 @@ def _encode_payload(
     if media_type == "text/csv" or name.lower().endswith(".csv"):
         text = _csv_payload(value)
         return (text.encode("utf-8"), "text/csv") if text is not None else None
+    if media_type == "application/json" or name.lower().endswith(".json"):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                return None
+        if not isinstance(value, (dict, list)):
+            return None
     try:
         return (
             json.dumps(value, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
@@ -115,13 +124,19 @@ def _write_artifact(
     producer_tool: str,
     state: MutableMapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    if not payload or len(payload) > _MAX_INLINE_BYTES:
-        return None
     ext = "" if Path(name).suffix else _EXTENSIONS.get(media_type, ".json")
     folder = Path(get_settings().code_exec.workspace_root) / "experiment_artifacts" / str(task_id) / str(attempt_id)
-    folder.mkdir(parents=True, exist_ok=True)
     destination = folder / (Path(name).name + ext)
-    destination.write_bytes(payload)
+    # The executor's description must never replace bytes already delivered
+    # by the tool or Coder for this exact task/attempt/output.
+    if destination.is_file():
+        payload = destination.read_bytes()
+    else:
+        if not payload or len(payload) > _MAX_INLINE_BYTES:
+            return None
+        folder.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as stream:
+            stream.write(payload)
     artifact = {
         "name": name,
         "role": "data",
@@ -142,11 +157,14 @@ def materialize_inline_result(
     result: Any,
     *,
     producer_tool: str = "fedot_inline_result",
+    output_name: str | None = None,
 ) -> list[dict[str, Any]]:
     """Persist one unambiguous expected artifact from a structured route result."""
     runtime = state.get("experiment_runtime") or {}
     task_id, attempt_id = runtime.get("active_task_id"), runtime.get("active_attempt_id")
     expected = (((runtime.get("tasks") or {}).get(task_id) or {}).get("task") or {}).get("expected_artifacts") or []
+    if output_name is not None:
+        expected = [item for item in expected if item.get("name") == output_name]
     if not task_id or not attempt_id or result is None or len(expected) != 1:
         return []
 
@@ -173,6 +191,50 @@ def materialize_inline_result(
     return [artifact] if artifact else []
 
 
+def capture_structured_tool_result(
+    state: MutableMapping[str, Any], tool: str, data: Any,
+    arguments: Mapping[str, Any] | None = None,
+) -> None:
+    """Preserve every response; bind the complete collection when the route returns."""
+    runtime = state.get("experiment_runtime") or {}
+    tid, aid = runtime.get("active_task_id"), runtime.get("active_attempt_id")
+    task = ((runtime.get("tasks") or {}).get(tid) or {}).get("task") or {}
+    declared = {t.get("name") for s in task.get("mcp_servers") or [] for t in s.get("tools") or []}
+    if not tid or not aid or tool not in declared or not isinstance(data, (dict, list)):
+        return
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    raw = _write_artifact(task_id=tid, attempt_id=aid,
+        name="tool-response-" + hashlib.sha256(payload).hexdigest()[:16] + ".json",
+        media_type="application/json", payload=payload, producer_tool=tool)
+    if raw:
+        raw["role"] = "log"  # An unbound response is not an ordered output.
+        state["mcp_artifacts"] = [*(state.get("mcp_artifacts") or []), raw]
+        attempt = runtime["tasks"][tid]["attempts"][aid]
+        attempt.setdefault("tool_response_artifacts", []).append({
+            "tool": tool, "arguments": dict(arguments or {}), "path": raw["workspace_path"],
+        })
+
+
+def materialize_bound_tool_results(state: MutableMapping[str, Any], attempt: Mapping[str, Any]) -> None:
+    """An explicit output binding covers all its tool calls in this attempt."""
+    runtime = state.get("experiment_runtime") or {}
+    task = runtime["tasks"][runtime["active_task_id"]]["task"]
+    bindings: dict[str, set[str]] = {}
+    for binding in (task.get("design") or {}).get("analysis_artifacts") or []:
+        bindings.setdefault(binding["name"], set()).add(binding.get("path_or_tool") or "")
+    for name, tools in bindings.items():
+        responses = []
+        for row in attempt.get("tool_response_artifacts") or []:
+            if row["tool"] in tools:
+                responses.append({
+                    "tool": row["tool"], "arguments": row["arguments"],
+                    "response": json.loads(Path(row["path"]).read_text(encoding="utf-8")),
+                })
+        if responses:
+            data = responses[0]["response"] if len(responses) == 1 else {"tool_responses": responses}
+            materialize_inline_result(state, data, producer_tool="captured_tool_results", output_name=name)
+
+
 def materialize_outputs_as_artifacts(
     *,
     task_id: str,
@@ -183,22 +245,21 @@ def materialize_outputs_as_artifacts(
     producer_tool: str = "record_result_outputs",
 ) -> list[dict[str, Any]]:
     """Persist expected artifacts already present under result.outputs."""
-    if not outputs or not expected_artifacts:
+    if not expected_artifacts:
         return []
     present = {str(item.get("name") or "") for item in (existing or []) if isinstance(item, Mapping)}
     created: list[dict[str, Any]] = []
-    outputs = dict(outputs)
+    outputs = dict(outputs or {})
     if "mcp_endpoint" not in outputs and "mcp_url" in outputs:
         outputs["mcp_endpoint"] = outputs["mcp_url"]
     if "mcp_url" not in outputs and "mcp_endpoint" in outputs:
         outputs["mcp_url"] = outputs["mcp_endpoint"]
     for spec in expected_artifacts:
         name = str(spec.get("name") or "")
-        if not name or name in present or name not in outputs:
+        if not name or name in present:
             continue
-        if (encoded := _encode_payload(outputs[name], name=name, media_type=spec.get("media_type"))) is None:
-            continue
-        payload, media_type = encoded
+        encoded = _encode_payload(outputs[name], name=name, media_type=spec.get("media_type")) if name in outputs else None
+        payload, media_type = encoded or (b"", spec.get("media_type") or "application/json")
         if artifact := _write_artifact(
             task_id=task_id,
             attempt_id=attempt_id,
@@ -207,6 +268,7 @@ def materialize_outputs_as_artifacts(
             payload=payload,
             producer_tool=producer_tool,
         ):
+            artifact.update(role=spec.get("role") or "data", output_id=spec.get("output_id"))
             created.append(artifact)
             present.add(name)
     # Persist the whole outputs blob when the planner invented a filename the

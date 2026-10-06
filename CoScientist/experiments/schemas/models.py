@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from contextvars import ContextVar, Token
+from pathlib import PurePosixPath
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -269,6 +270,8 @@ class DataRef(StrictModel):
     workspace_path: str | None = None
     source_task_id: str | None = None
     source_artifact_id: str | None = None
+    #: Logical output of the producer. The filename is not this id.
+    source_output_id: str | None = None
     media_type: str | None = None
     required: bool = True
     prepare_instruction: str | None = None
@@ -344,7 +347,9 @@ class DataRef(StrictModel):
         if str(raw.get("kind") or "").strip() == "task_artifact" or str(
             raw.get("source_task_id") or ""
         ).startswith("EXP-"):
-            if not str(raw.get("source_artifact_id") or "").strip():
+            if not str(raw.get("source_artifact_id") or "").strip() and not str(
+                raw.get("source_output_id") or ""
+            ).strip():
                 hint = (
                     str(raw.get("data_id") or "").strip()
                     or str(name_alias or "").strip()
@@ -352,6 +357,14 @@ class DataRef(StrictModel):
                     or "artifact"
                 )
                 raw["source_artifact_id"] = hint
+            token = str(raw.get("source_artifact_id") or "").strip()
+            if (
+                not str(raw.get("source_output_id") or "").strip()
+                and token
+                and not token.startswith("ART-")
+                and token != "artifact"
+            ):
+                raw["source_output_id"] = logical_output_id(token)
             raw.setdefault("kind", "task_artifact")
         if not str(raw.get("description") or "").strip():
             hint = (
@@ -385,7 +398,9 @@ class DataRef(StrictModel):
             "s3": bool(self.bucket and self.s3_key),
             "url": bool(self.url),
             "workspace": bool(self.workspace_path),
-            "task_artifact": bool(self.source_task_id and self.source_artifact_id),
+            "task_artifact": bool(
+                self.source_task_id and (self.source_artifact_id or self.source_output_id)
+            ),
             "to_prepare": bool(self.prepare_instruction),
         }[self.kind]
         if not ok:
@@ -396,6 +411,8 @@ class DataRef(StrictModel):
 
 
 class SuccessCriterion(StrictModel):
+    requirement_id: str = ""
+    requirement_criterion_id: str = ""
     criterion_id: str = Field(min_length=1)
     description: str = Field(min_length=1)
     kind: Literal["threshold", "artifact_exists", "schema", "execution", "expert"]
@@ -415,6 +432,11 @@ class SuccessCriterion(StrictModel):
         if not isinstance(value, dict):
             return value
         raw = dict(value)
+        # Unlinked method criteria have no catalog reference. JSON null and
+        # an omitted optional reference use the same canonical empty string.
+        for field in ("requirement_id", "requirement_criterion_id"):
+            if raw.get(field) is None:
+                raw[field] = ""
         kind = str(raw.get("kind") or "").strip().lower()
         if not str(raw.get("purpose") or "").strip():
             raw["purpose"] = (
@@ -438,8 +460,17 @@ class SuccessCriterion(StrictModel):
         return self
 
 
+def logical_output_id(name: str) -> str:
+    """Stable id of a logical output. A renamed file keeps this id."""
+    stem = PurePosixPath(str(name or "").replace("\\", "/")).stem.lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
+    return slug or "output"
+
+
 class ExpectedArtifact(StrictModel):
     name: str = Field(min_length=1)
+    #: Logical output. Planners may omit it; the filename stem is the adapter.
+    output_id: str = ""
     role: Annotated[
         Literal["data", "model", "plot", "report", "code", "log", "mcp_server"],
         BeforeValidator(
@@ -460,6 +491,43 @@ class ExpectedArtifact(StrictModel):
     media_type: str | None = None
     required: bool = True
     description: str = Field(min_length=1)
+    #: Column names a tabular output must contain. Empty means "readable table".
+    columns: list[str] = Field(default_factory=list)
+    allow_empty: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def fill_output_id(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        raw = dict(data)
+        if not str(raw.get("output_id") or "").strip():
+            raw["output_id"] = logical_output_id(str(raw.get("name") or ""))
+        else:
+            raw["output_id"] = logical_output_id(str(raw.get("output_id")))
+        columns = raw.get("columns")
+        if isinstance(columns, str):
+            raw["columns"] = [part.strip() for part in columns.split(",") if part.strip()]
+        return raw
+
+
+def _unique_output_ids(artifacts: list[ExpectedArtifact]) -> list[ExpectedArtifact]:
+    """One logical id per expected output. A stem clash keeps both, distinctly."""
+    used: set[str] = set()
+    out: list[ExpectedArtifact] = []
+    for art in artifacts:
+        base = art.output_id or logical_output_id(art.name)
+        oid = base
+        if oid in used:
+            suffix = PurePosixPath(art.name).suffix.lower().lstrip(".") or "alt"
+            oid = f"{base}_{suffix}"
+            n = 2
+            while oid in used:
+                oid = f"{base}_{suffix}_{n}"
+                n += 1
+        used.add(oid)
+        out.append(art if art.output_id == oid else art.model_copy(update={"output_id": oid}))
+    return out
 
 
 class HypothesisSpec(StrictModel):
@@ -489,14 +557,14 @@ class HypothesisSpec(StrictModel):
 
 
 def _coerce_hypothesis_ref(value: Any) -> str:
-    """Accept a single id; lists/CSV are normalized elsewhere via also_tests."""
+    """Accept a single id. Empty, None and placeholders stay empty — no invented H1."""
     if isinstance(value, list):
         if not value:
-            raise ValueError("hypothesis_ref list must not be empty")
+            return ""
         value = value[0]
     text = str(value or "").strip()
-    if not text:
-        raise ValueError("hypothesis_ref must be a non-empty string")
+    if not text or text.upper() in {"H0", "N/A", "NA", "NONE", "NULL"}:
+        return ""
     if "," in text:
         text = text.split(",", 1)[0].strip()
     return text.upper() if re.fullmatch(r"H\d+", text, flags=re.I) else text
@@ -524,12 +592,16 @@ def _coerce_also_tests(value: Any) -> list[str]:
 
 
 def _split_hypothesis_list(value: Any) -> tuple[str, list[str]]:
+    if value is None or value == "" or value == []:
+        return "", []
     if isinstance(value, list):
         ids = _coerce_also_tests(value)
         if not ids:
-            raise ValueError("hypothesis_ref list must not be empty")
+            return "", []
         return ids[0], ids[1:]
     text = str(value or "").strip()
+    if not text:
+        return "", []
     if re.search(r"[,;/]", text):
         ids = _coerce_also_tests(re.split(r"[,;/]+", text))
         if ids:
@@ -759,15 +831,36 @@ def _coerce_optional_analysis_artifacts(value: Any) -> list[Any]:
     return fixed
 
 
-class TaskDesign(StrictModel):
-    """Machine-readable scientific node: hypothesis / data / baseline / metrics."""
+def _coerce_target_refs(value: Any) -> list[str]:
+    """One list of question / hypothesis / deliverable ids a step serves."""
+    return _coerce_also_tests(value)
 
-    hypothesis_ref: Annotated[str, BeforeValidator(_coerce_hypothesis_ref)] = Field(min_length=1)
+
+class RequirementLink(StrictModel):
+    """Whether a task prepares a requirement or produces its closing result."""
+
+    requirement_id: str = Field(min_length=1)
+    role: Literal["supports", "delivers"]
+
+
+class TaskDesign(StrictModel):
+    """Machine-readable scientific node. A hypothesis is optional.
+
+    ``target_refs`` is the single answer to "what this step serves".
+    ``hypothesis_ref`` and ``also_tests`` remain as a compatible projection of
+    the hypothesis ids inside that list — they are not a second meaning.
+    """
+
+    hypothesis_ref: Annotated[str, BeforeValidator(_coerce_hypothesis_ref)] = ""
     also_tests: Annotated[list[str], BeforeValidator(_coerce_also_tests)] = Field(default_factory=list)
+    target_refs: Annotated[list[str], BeforeValidator(_coerce_target_refs)] = Field(default_factory=list)
+    target_links: list[RequirementLink] = Field(default_factory=list)
+    step_key: str = ""
     operation_ref: Annotated[
         str,
         BeforeValidator(lambda v: "" if v is None else str(v).strip()),
     ] = ""
+    question_ref: str = ""
     experiment_question: str = ""
     dataset: DesignDataset = Field(default_factory=DesignDataset)
     baselines: Annotated[
@@ -796,21 +889,48 @@ class TaskDesign(StrictModel):
             data["dataset"] = {"name": "", "ref": None, "notes": None}
         elif is_design_placeholder(ds.get("name")):
             data["dataset"] = {**ds, "name": ""}
-        if data.get("hypothesis_ref") is None:
-            return data
-        primary, extras = _split_hypothesis_list(data.get("hypothesis_ref"))
-        data["hypothesis_ref"] = primary
-        also = list(_coerce_also_tests(data.get("also_tests")))
-        for hid in extras:
-            if hid != primary and hid not in also:
-                also.append(hid)
-        data["also_tests"] = also
+        if "hypothesis_ref" in data:
+            primary, extras = _split_hypothesis_list(data.get("hypothesis_ref"))
+            data["hypothesis_ref"] = primary
+            also = list(_coerce_also_tests(data.get("also_tests")))
+            for hid in extras:
+                if hid and hid != primary and hid not in also:
+                    also.append(hid)
+            data["also_tests"] = also
+        targets = list(_coerce_target_refs(data.get("target_refs")))
+        links = data.get("target_links")
+        for link in links if isinstance(links, list) else []:
+            ref = link.get("requirement_id") if isinstance(link, dict) else getattr(link, "requirement_id", "")
+            if ref and ref not in targets:
+                targets.append(ref)
+        for hid in [data.get("hypothesis_ref"), *(data.get("also_tests") or [])]:
+            text = str(hid or "").strip()
+            if text and text not in targets:
+                targets.append(text)
+        data["target_refs"] = targets
+        data["step_key"] = str(data.get("step_key") or "").strip()
         return data
 
-    def covered_hypothesis_ids(self) -> set[str]:
-        ids = {self.hypothesis_ref.strip().upper()}
-        ids.update(h.strip().upper() for h in self.also_tests if str(h).strip())
-        return {h for h in ids if h}
+    @field_validator("target_links")
+    @classmethod
+    def unique_requirement_roles(cls, links: list[RequirementLink]) -> list[RequirementLink]:
+        ids = [link.requirement_id for link in links]
+        if len(ids) != len(set(ids)):
+            raise ValueError("target_links must declare one role per requirement")
+        return links
+
+    def covered_hypothesis_ids(self, requirement_refs: Any = ()) -> set[str]:
+        """Hypothesis ids only. Question and deliverable targets are not hypotheses."""
+        from CoScientist.requirements.coverage import hypothesis_ids
+
+        return set(hypothesis_ids(self.model_dump(), requirement_refs))
+
+    def covered_target_ids(self) -> set[str]:
+        ids = {str(item).strip() for item in self.target_refs if str(item).strip()}
+        if self.hypothesis_ref.strip():
+            ids.add(self.hypothesis_ref.strip())
+        ids.update(str(item).strip() for item in self.also_tests if str(item).strip())
+        return ids
 
 
 def _normalize_task_id(value: Any) -> str:
@@ -876,6 +996,8 @@ class ExperimentTask(StrictModel):
     route: ExecutionRoute
     design: TaskDesign
     code_assessment: CodeAssessment = Field(default_factory=CodeAssessment)
+    coder_fallback_method: str | None = Field(default=None, min_length=1,
+        description="Approved alternative implementation preserving the task's inputs, method constraints and outputs. Null forbids substitution by Coder.")
     mcp_servers: list[MCPServerRef] = Field(default_factory=list)
     repo_url: str | None = None
     post_build_route: Literal["fedot_mas", "react_tools"] | None = None
@@ -917,13 +1039,13 @@ class ExperimentTask(StrictModel):
                 design.pop(key, None)
 
         # Hoist design pieces wrongly placed on the task root.
-        for key in ("hypothesis_ref", "also_tests", "operation_ref", "experiment_question",
+        for key in ("hypothesis_ref", "also_tests", "target_refs", "step_key",
+                    "operation_ref", "experiment_question",
                     "dataset", "baselines", "metrics", "analysis_artifacts"):
             if key in raw and key not in design:
                 design[key] = raw.pop(key)
 
-        if not design.get("hypothesis_ref"):
-            design["hypothesis_ref"] = "H1"
+        # Missing hypothesis_ref stays missing. Do not invent H1 / H0 / N/A.
         raw["design"] = design
 
         # Plan-only fields misplaced on tasks → drop (hoisted in coerce_plan_shape).
@@ -1086,6 +1208,7 @@ class ExperimentTask(StrictModel):
         c_ids = [c.criterion_id for c in self.success_criteria]
         if len(c_ids) != len(set(c_ids)):
             raise ValueError("criterion_id values must be unique inside a task")
+        self.expected_artifacts = _unique_output_ids(self.expected_artifacts)
 
         for ref in self.input_data:
             if ref.kind == "task_artifact" and ref.source_task_id and ref.source_task_id not in self.depends_on:

@@ -39,6 +39,7 @@ auto-assigned per type: `Q1`, `H2`, `E3`, `VM1`, `CC1`, `T1`, …
 |---|---|---|
 | ResearchQuestion | Q | open → decomposed → closed |
 | Hypothesis | H | formulated → under_verification → confirmed / refuted / postponed |
+| Deliverable | DL | specified → in_progress / delivered / partial / blocked / cancelled |
 | Evidence | E | obtained → validated / rejected (requires `attrs.subtype`: literature/experimental/computational/expert/meta) |
 | Conclusion | CL | draft → approved |
 | VerificationMethod | VM | proposed → used / not_used; not_used → used |
@@ -65,6 +66,10 @@ iteration chain: which hypothesis replaced which, and why), `requires` (H→T), 
 (CC→H), `regulates` (C→VM/CC), `constrains` (C→H/VM), `derived_from`
 (artifact→CL/E), `contextualizes` (C→Q), `defines_scope` (Q→EB), `relates_to`
 (E→Q/H), `applies_to` (CM/EM→Q/H/VM/CL).
+A request can also `asks_for` a Deliverable, `contains` a child question,
+`satisfies` / `serves` a Deliverable, and `answers` a question. Zero
+Hypothesis nodes is a valid study. The normalized statement lives in
+`CoScientist/requirements/`; see `docs/requirements.md`.
 
 ### Russian ↔ English
 

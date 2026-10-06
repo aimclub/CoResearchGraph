@@ -321,3 +321,61 @@ def test_guard_does_not_mutate_route_request_payload():
         is None
     )
     assert json.loads(args["request"]) == payload
+
+
+def test_misnested_result_checks_are_refused_before_the_attempt_closes():
+    from types import SimpleNamespace
+    from copy import deepcopy
+    state = {'experiment_runtime': {'active_attempt_id': 'ATT-1'}}
+    before = deepcopy(state)
+    response = guard_route_agent_tool(
+        SimpleNamespace(name='record_result'),
+        {'task_id': 'EXP-1', 'attempt_id': 'ATT-1',
+         'result': {'status': 'success'}, 'criteria_checks': [{'criterion_id': 'C1', 'passed': True}]},
+        SimpleNamespace(state=state),
+    )
+    assert response['error_code'] == 'invalid_result_envelope'
+    assert state == before
+
+
+def test_closing_question_requires_explicit_outcome_without_consuming_attempt():
+    from copy import deepcopy
+
+    raw = _task('EXP-1')
+    raw['design']['target_refs'] = ['Q-1']
+    raw['design']['target_links'] = [{'requirement_id': 'Q-1', 'role': 'delivers'}]
+    state = _approved_state(_plan(raw))
+    state['experiment_context'] = {'requirement_refs': [
+        {'id': 'Q-1', 'kind': 'question', 'formulation': 'What was measured?'}]}
+    started = start_task(state, 'EXP-1')
+    _route_return(state, 'FedotAgent')
+    args = {'task_id': 'EXP-1', 'attempt_id': started['attempt_id'],
+            'result': {'status': 'success', 'summary': 'The measurements were saved.'}}
+    before = deepcopy(state)
+    tool, context = SimpleNamespace(name='record_result'), _tool_context(state)
+    refusal = guard_route_agent_tool(tool, args, context)
+    assert refusal['error_code'] == 'question_outcome_missing'
+    assert refusal['repair_contract']['required_question_outcomes'] == [
+        {'id': 'Q-1', 'question': 'What was measured?'}]
+    schema = refusal['repair_contract']['requirement_outcome_schema']['properties']
+    assert schema['criteria_checks']['type'] == 'object'
+    assert schema['artifact_ids']['type'] == 'array'
+    assert state == before
+    args['result']['outputs'] = {'requirements': {'Q-1': {'answer': 'Measured 10.', 'answer_grounded': True}}}
+    assert guard_route_agent_tool(tool, args, context) is None
+    args['result']['outputs']['requirements']['Q-1'] = {'verdict': 'inconclusive', 'limitation': 'The comparison is unresolved.'}
+    assert guard_route_agent_tool(tool, args, context) is None
+    args['result']['outputs']['requirements']['Q-1']['produced'] = 'a table was produced'
+    assert guard_route_agent_tool(tool, args, context)['error_code'] == 'outcome_contract_invalid'
+    assert state == before
+    args['result']['outputs']['requirements']['Q-1']['produced'] = None
+    assert guard_route_agent_tool(tool, args, context) is None
+    for malformed in ([{'criterion_id': 'C-1', 'passed': True}],
+                      {'C-1': {'criterion_id': 'C-1', 'passed': True}}):
+        args['result']['outputs']['requirements']['Q-1']['criteria_checks'] = malformed
+        refused = guard_route_agent_tool(tool, args, context)
+        assert refused['error_code'] == 'outcome_contract_invalid'
+        assert 'criteria_checks' in refused['repair_contract']['requirement_outcome_schema']['properties']
+        assert state == before
+    args['result']['outputs']['requirements']['Q-1']['criteria_checks'] = {'C-1': True}
+    assert guard_route_agent_tool(tool, args, context) is None

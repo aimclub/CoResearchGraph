@@ -139,3 +139,15 @@ def test_the_callback_is_wired_to_the_agent_in_both_profiles():
         cfg = load_config(resolve_config_path(profile))
         hooks = cfg.agent("HypothesesAgent").callbacks.before_agent
         assert "brief_hypotheses_regime" in hooks, profile
+
+
+def test_deliverable_catalog_does_not_generate_mandatory_hypotheses():
+    state = {'normalized_statement': {'parts': [{'kind': 'deliverable', 'id': 'P1'}]}}
+    response = brief_hypotheses_regime(_ctx(state))
+    assert response is not None
+    assert 'do not invent' in response.parts[0].text
+
+
+def test_hypothesis_catalog_keeps_the_hypothesis_agent_available():
+    state = {'normalized_statement': {'parts': [{'kind': 'hypothesis', 'id': 'P1'}]}}
+    assert brief_hypotheses_regime(_ctx(state)) is None

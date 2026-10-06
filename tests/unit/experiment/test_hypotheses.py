@@ -346,8 +346,7 @@ def test_commit_experiment_hypotheses_normalizes_and_fallbacks():
 
     empty: dict = {"hypotheses": "not-json", "experiment_source_request": "Make BBB antioxidant."}
     commit_experiment_hypotheses(SimpleNamespace(state=empty, user_content=None))
-    assert empty["hypothesis_refs"][0]["hypothesis_id"] == "H1"
-    assert "BBB antioxidant" in empty["hypothesis_refs"][0]["statement"]
+    assert empty["hypothesis_refs"] == []
 
 
 def test_persist_and_seed_hypotheses_use_em_ask_not_tool_prep_noise():
@@ -555,7 +554,7 @@ def test_commit_experiment_hypotheses_skips_postponed_graph_nodes(monkeypatch):
     assert [r["statement"] for r in refs] == ["Active KRAS hypothesis."]
 
 
-def test_commit_experiment_hypotheses_all_sources_empty_falls_back_to_h1(monkeypatch):
+def test_commit_experiment_hypotheses_all_sources_empty_stays_empty(monkeypatch):
     from CoScientist.experiments.hypotheses import commit_experiment_hypotheses
 
     _patch_research_graph(monkeypatch, [])
@@ -564,10 +563,7 @@ def test_commit_experiment_hypotheses_all_sources_empty_falls_back_to_h1(monkeyp
         "experiment_source_request": "Design a BBB-permeable antioxidant molecule.",
     }
     commit_experiment_hypotheses(SimpleNamespace(state=state, user_content=None))
-    refs = state["hypothesis_refs"]
-    assert len(refs) == 1
-    assert refs[0]["hypothesis_id"] == "H1"
-    assert "BBB-permeable antioxidant" in refs[0]["statement"]
+    assert state["hypothesis_refs"] == []
 
 
 def test_bootstrap_research_question_if_empty_seeds_root(monkeypatch):

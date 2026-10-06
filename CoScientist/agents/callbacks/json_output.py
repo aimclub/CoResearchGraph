@@ -81,7 +81,7 @@ def _normalize_ranking_payload(data: Any) -> Any:
 
 def _extract_json(text: str) -> Optional[Any]:
     """First JSON object/array in the text: fenced block, whole text, or the
-    first balanced ``{...}`` candidate that parses."""
+    first document after leading prose; never salvage nested objects."""
     text = text.strip()
 
     match = _JSON_BLOCK_RE.search(text)
@@ -94,22 +94,16 @@ def _extract_json(text: str) -> Optional[Any]:
     if parsed is not None:
         return parsed
 
-    start = text.find("{")
-    while start != -1:
-        depth = 0
-        for i in range(start, len(text)):
-            ch = text[i]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    parsed = _try_loads(text[start : i + 1])
-                    if parsed is not None:
-                        return parsed
-                    break
-        start = text.find("{", start + 1)
-    return None
+    starts = [index for token in ("{", "[") if (index := text.find(token)) >= 0]
+    if not starts:
+        return None
+    try:
+        # Decode the outer document, including braces inside JSON strings.
+        # A broken/truncated document must not turn into one valid nested task.
+        parsed, _ = json.JSONDecoder().raw_decode(text[min(starts):])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
 
 
 def _maybe_apply_tool_rerank(callback_context: CallbackContext, payload: Any) -> None:

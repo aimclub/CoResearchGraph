@@ -497,7 +497,7 @@ def test_task_design_is_required_on_experiment_plan_1_0():
             "tasks": [task],
         }
     )
-    assert plan.tasks[0].design.hypothesis_ref == "H1"
+    assert plan.tasks[0].design.hypothesis_ref == ""
     assert plan.tasks[0].design.baselines == []
     assert plan.tasks[0].design.metrics == []
 
@@ -746,5 +746,15 @@ def test_design_placeholders_are_dropped_not_invented():
     assert "comparative reference method" not in text
     assert "primary_outcome" not in text
     assert "analysis.py" not in text
-    assert "| EXP-1 |" in text and "—" in text
+    assert "## EXP-1" in text and "—" in text
 
+
+
+def test_method_criterion_accepts_absent_catalog_references():
+    from CoScientist.experiments.schemas.models import SuccessCriterion
+    criterion = SuccessCriterion.model_validate({
+        'criterion_id': 'C-1', 'description': 'Output can be opened',
+        'kind': 'artifact_exists', 'verification': 'Open the produced file',
+        'requirement_id': None, 'requirement_criterion_id': None,
+    })
+    assert criterion.requirement_id == criterion.requirement_criterion_id == ''

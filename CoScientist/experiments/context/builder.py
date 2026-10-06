@@ -21,7 +21,6 @@ from CoScientist.experiments.scope import experiment_capabilities, operation_row
 logger = logging.getLogger(__name__)
 _MAX_RETRIEVAL_CALLS = 5
 _DESC_LIMIT = 400
-_PROMPT_DESC_LIMIT = 220
 _CLEAR_ON_NEW_RUN = (
     "experiment_plan", "experiment_runtime", "experiment_task_results", "experiment_summary",
     "experiment_artifacts_manifest",
@@ -68,7 +67,8 @@ _REPO_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _PROMPT_OPTIONAL_KEYS = (
-    "research_focus_id", "research_context", "hypotheses", "hypothesis_refs", "prior_results",
+    "research_focus_id", "research_context", "hypotheses", "hypothesis_refs",
+    "requirement_refs", "user_request", "planning_notes", "prior_results",
     "prior_evidence", "hypothesis_chain_context", "confirmation_criteria",
     "data_refs", "constraints", "operations", "explicit_mcp_servers", "repo_candidates",
     "revision_feedback", "unresolved_gaps", "pipeline_scope", "external_literature_operations", "plan_limits",
@@ -177,6 +177,7 @@ def research_graph_snapshot(callback_context: CallbackContext) -> dict[str, Any]
         return {}
 
     hypothesis_refs: list[dict[str, str]] = []
+    requirement_refs: list[dict[str, Any]] = []
     constraints: list[dict[str, Any]] = []
     criteria: list[dict[str, Any]] = []
     data_refs: list[dict[str, Any]] = []
@@ -204,9 +205,36 @@ def research_graph_snapshot(callback_context: CallbackContext) -> dict[str, Any]
             if not re.fullmatch(r"H\d+", hid):
                 hid = f"H{len(hypothesis_refs) + 1}"
             hypothesis_refs.append({
+                "id": str(attrs.get("stable_id") or hid),
+                "kind": "hypothesis",
                 "hypothesis_id": hid,
                 "statement": re.sub(r"\s+", " ", statement)[:800],
             })
+            if attrs.get("obligation") is True:
+                requirement_refs.append({
+                    "id": str(attrs.get("stable_id") or node.get("id") or ""),
+                    "kind": "hypothesis",
+                    "obligation": True,
+                    "formulation": statement[:400],
+                })
+        elif ntype == "Deliverable":
+            formulation = str(attrs.get("formulation") or "").strip()
+            if formulation:
+                requirement_refs.append({
+                    "id": str(attrs.get("stable_id") or node.get("id") or ""),
+                    "kind": "deliverable",
+                    "obligation": attrs.get("obligation") is not False,
+                    "formulation": formulation[:400],
+                })
+        elif ntype == "ResearchQuestion" and attrs.get("obligation") is True and not attrs.get("container"):
+            formulation = str(attrs.get("formulation") or "").strip()
+            if formulation:
+                requirement_refs.append({
+                    "id": str(attrs.get("stable_id") or node.get("id") or ""),
+                    "kind": "question",
+                    "obligation": True,
+                    "formulation": formulation[:400],
+                })
         elif ntype == "Constraint":
             if content := str(attrs.get("content") or "").strip():
                 constraints.append({
@@ -280,8 +308,25 @@ def research_graph_snapshot(callback_context: CallbackContext) -> dict[str, Any]
                 if node_id in node_by_id
             ][:8],
         })
+    # New graphs keep the complete catalog, including semantic modes and quotes.
+    # Read it before the compact legacy node projection can lose that metadata.
+    planning_notes = []
+    user_request = ""
+    for node in nodes:
+        saved = (node.get("attrs") or {}).get("normalized_statement")
+        if isinstance(saved, dict):
+            user_request = saved.get("source_request") or ""
+            planning_notes = saved.get("planning_notes") or []
+            requirement_refs = [
+                {**part, "volume": saved.get("volume") or {}}
+                for part in saved.get("parts") or [] if not part.get("retired")
+            ]
+            break
     snapshot = {
         "hypothesis_refs": hypothesis_refs[:_MAX_HYPOTHESIS_REFS],
+        "requirement_refs": requirement_refs,
+        "user_request": user_request,
+        "planning_notes": planning_notes,
         "constraints": constraints[:20],
         "confirmation_criteria": criteria[:8],
         "data_refs": data_refs[:20],
@@ -537,7 +582,10 @@ def extract_hypothesis_refs(
                 _add(f"H{int(match.group('num'))}", statement)
             if len(out) >= limit:
                 return out
-    for index, item in enumerate(legacy_hypotheses or []):
+    # An agent's prose output is not a collection of hypothesis records.
+    # Iterating a string here manufactured one hypothesis per character.
+    legacy_items = legacy_hypotheses if isinstance(legacy_hypotheses, (list, tuple)) else []
+    for index, item in enumerate(legacy_items):
         if len(out) >= limit:
             break
         if isinstance(item, str) and (text := item.strip()):
@@ -573,18 +621,6 @@ def _bounded(value: Any, limit: int) -> Any:
         return copy.deepcopy(dict(list(value.items())[:limit]))
     return copy.deepcopy(value)
 
-def _schema_brief(schema: Any) -> dict[str, Any]:
-    """Keep required + param names; drop nested prose."""
-    if not isinstance(schema, dict):
-        return {}
-    brief: dict[str, Any] = {}
-    if required := schema.get("required"):
-        brief["required"] = list(required)[:12]
-    props = schema.get("properties")
-    if isinstance(props, dict) and props:
-        brief["params"] = list(props.keys())[:16]
-    return brief
-
 def _normalize_capabilities(items: Any) -> list[dict[str, Any]]:
     """Project tool dicts into planner/critique inventory shape."""
     out: list[dict[str, Any]] = []
@@ -600,8 +636,8 @@ def _normalize_capabilities(items: Any) -> list[dict[str, Any]]:
         schema = item.get("input_schema") or {}
         out.append({
             "tool": tool, "server_id": server_id,
-            "description": str(item.get("description") or "")[:_DESC_LIMIT],
-            "input_schema": _bounded(schema, 40) if isinstance(schema, dict) else {},
+            "description": str(item.get("description") or ""),
+            "input_schema": copy.deepcopy(schema) if isinstance(schema, dict) else {},
             "score": item.get("score"),
             "url": item.get("url"),
             **contract_metadata(item),
@@ -614,16 +650,16 @@ def _cap_for_prompt(cap: dict[str, Any]) -> dict[str, Any]:
     row = {
         "tool": cap["tool"], "server_id": cap["server_id"],
         "url": cap.get("url"),
-        "description": str(cap.get("description") or "")[:_PROMPT_DESC_LIMIT],
+        "description": str(cap.get("description") or ""),
     }
     if family := str(cap.get("family") or "").strip():
         row["family"] = family
-    row.update(_schema_brief(cap.get("input_schema")))
+    row["input_schema"] = copy.deepcopy(cap.get("input_schema") or {})
     metadata = contract_metadata(cap)
     if "data_contract" in metadata:
         row["data_contract"] = metadata["data_contract"]
     if schema := metadata.get("output_schema"):
-        row["output_contract"] = _schema_brief(schema)
+        row["output_schema"] = schema
     return row
 
 def _prompt_context(context: dict[str, Any]) -> str:
@@ -927,6 +963,8 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
     ]
     context = {
         "experiment_run_id": run_id, "source_request": source_request,
+        "user_request": (state.get("normalized_statement") or {}).get("source_request")
+            or snapshot.get("user_request") or "",
         "plan_capacity_override": state.get("experiment_plan_capacity_override"),
         "plan_limits": {"max_tasks": experiments.max_plan_tasks,
                         "schema_max_tasks": 20, "max_revisions": experiments.max_plan_revisions,
@@ -934,6 +972,13 @@ def build_experiment_context(callback_context: CallbackContext) -> None:
         "research_focus_id": state.get("research_focus_id"), "research_context": research_context,
         "hypotheses": _bounded(state.get("hypotheses") or [], 20),
         "hypothesis_refs": hypothesis_refs,
+        "requirement_refs": (
+            state.get("requirement_refs")
+            or snapshot.get("requirement_refs")
+            or []
+        ),
+        "planning_notes": (state.get("normalized_statement") or {}).get("planning_notes")
+            or snapshot.get("planning_notes") or [],
         # Authority must never be truncated to fit the schema. The preflight
         # rejects >20 compute ops before an LLM call instead of dropping them.
         "operations": copy.deepcopy(experiment_operations),

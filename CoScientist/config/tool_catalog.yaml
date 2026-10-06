@@ -380,6 +380,9 @@ local_tools:
   "experiment_control:record_result":
     display_name: {ru: "Записать результат задачи"}
     description: {ru: "Проверяет и сохраняет итоговый результат попытки."}
+  "experiment_control:recover_task_outputs":
+    display_name: {ru: "Восстановить выходы задачи"}
+    description: {ru: "Заново связывает уже полученный файл с логическим выходом, без нового вычисления."}
   "experiment_control:retry_task":
     display_name: {ru: "Повторить задачу"}
     description: {ru: "Разрешает повтор задачи после ошибки, допускающей повтор."}

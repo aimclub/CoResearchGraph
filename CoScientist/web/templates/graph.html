@@ -334,6 +334,7 @@
       // one card a reader should find first, and because it is far from both
       // the verdict colours and from the orange of an observation.
       hypothesis:           "#facc15",
+      deliverable:          "#fb7185",  // rose: the thing that had to be handed over
       confirmationcriteria: "#8b5cf6",  // violet: the bar
       verificationmethod:   "#14b8a6",  // teal: by what means
       planstep:             "#64748b",  // slate: the intention, background
@@ -375,12 +376,12 @@
                           : STATUS_BAD.has(st) ? CRIT
                           : STATUS_LIVE.has(st) ? WARN : INK2;
 
-    const R_ICON = { researchquestion:'❓', hypothesis:'💡', evidence:'🔬', conclusion:'✅',
+    const R_ICON = { researchquestion:'❓', hypothesis:'💡', deliverable:'📤', evidence:'🔬', conclusion:'✅',
       verificationmethod:'⚙️', confirmationcriteria:'🎯', tool:'🔧', resource:'🔋',
       empiricalbase:'🗄️', constraint:'⚖️', codeartifact:'💻', generateddata:'📦',
       report:'📑', publication:'📰', spec:'📋', efficiencyjustification:'📈',
       costmodel:'💰', efficiencymetric:'📊', framing:'🧩', outcome:'▣' };
-    const R_LEVEL = { researchquestion:0, constraint:0, hypothesis:1, empiricalbase:1,
+    const R_LEVEL = { researchquestion:0, constraint:0, hypothesis:1, deliverable:1, empiricalbase:1,
       verificationmethod:2, confirmationcriteria:2, tool:2,
       // The plan track. Absent from this table the two of them were not in
       // `RESEARCH_KINDS` either, and the tooltip of the very cards a reader
@@ -414,7 +415,7 @@
                                          bold: { color, size: size || 13, mod: "bold" } });
     // Human-readable type names (shown as "Hypothesis 1" instead of the terse id
     // "H1") and edge phrases, so a first-time viewer instantly reads the graph.
-    const R_TYPE_NAME = { researchquestion:"Question", hypothesis:"Hypothesis", evidence:"Evidence",
+    const R_TYPE_NAME = { researchquestion:"Question", hypothesis:"Hypothesis", deliverable:"Deliverable", evidence:"Evidence",
       conclusion:"Conclusion", verificationmethod:"Method", confirmationcriteria:"Criteria",
       tool:"Tool", resource:"Resource", empiricalbase:"Data source", constraint:"Constraint",
       codeartifact:"Code", generateddata:"Dataset", report:"Report", publication:"Publication",

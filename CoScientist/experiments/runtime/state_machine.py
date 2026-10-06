@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, MutableMapping
 from uuid import uuid4
 
@@ -33,12 +34,14 @@ from CoScientist.experiments.runtime.artifacts import (
     has_durable_family_evidence,
     invalid_required_artifact_formats,
     normalise_artifacts,
+    resolve_result_artifact_refs,
     required_artifacts_present,
     route_response_text,
     runtime_has_durable_data_evidence,
     task_requires_managed_s3,
 )
 from CoScientist.experiments.runtime.errors import ExperimentRuntimeError
+from CoScientist.experiments.runtime.outputs import PINS_KEY
 from CoScientist.experiments.runtime.readiness import TERMINAL_TASK_STATES, refresh_readiness
 from CoScientist.experiments.runtime.routing import (
     match_session_inventory_tool,
@@ -112,17 +115,11 @@ def _is_assessment_only_failure(
         return False
     if any(check.purpose == "execution" and check.passed is False for check in checks):
         return False
-    code = str(result.get("error_code") or "").strip().upper()
-    # When the payload also names a concrete infrastructure/execution failure,
-    # preserve the technical recovery path. Otherwise the explicit assessment
-    # checks are the authoritative reason for the negative status.
-    return not any(marker in code for marker in (
-        "TIMEOUT", "EXCEPTION", "NETWORK", "CONNECTION", "HTTP_",
-        "TOOL_ERROR", "TOOL_UNAVAILABLE", "ROUTE_UNAVAILABLE",
-        "SERVER_UNAVAILABLE", "MISSING_", "WRONG_DATASET",
-        "DATASET_MISMATCH", "INPUT_MISMATCH", "EMPTY_RESULT",
-        "INCOMPLETE", "ARTIFACT", "NO_OUTPUT",
-    ))
+    # Only an explicit criterion failure (or no execution error) can be
+    # reconciled as a completed negative assessment. Unknown error codes must
+    # keep the reported failure, not become scientific success by exclusion.
+    code = str(result.get("error_code") or "").strip().lower()
+    return code in {"", "criteria_failed"}
 
 
 def _result_request_digest(result: Mapping[str, Any]) -> str:
@@ -286,10 +283,14 @@ def logical_operation_key(
     design = dump.get("design") or {}
     dataset = design.get("dataset") or {}
     operation_ref = str(design.get("operation_ref") or "").strip()
+    from CoScientist.requirements.execution import step_contract
+
+    # Step identity is not the question text and not the task name. Two steps
+    # of one operation_ref therefore do not share an attempt budget, and a
+    # rename does not reset it.
+    step = step_contract(design, dump)
     if operation_ref:
-        # An operation_ref is the planner's explicit stable identity. Route,
-        # task id and prose may all change while implementing that operation.
-        operation = {"operation_ref": operation_ref}
+        operation = {"operation_ref": operation_ref, "step": step}
     else:
         # Older plans have no operation_ref. Derive identity from the actual
         # contract, deliberately excluding cosmetic ids/names/descriptions and
@@ -306,6 +307,7 @@ def logical_operation_key(
             "repo_url": dump.get("repo_url"),
             "launch_params": dump.get("launch_params") or {},
             "code_requirement": (dump.get("code_assessment") or {}).get("requirement"),
+            "step": step,
             # Names are excluded: output *shape* survives a cosmetic rename.
             "expected_outputs": [
                 {"role": item.get("role"), "media_type": item.get("media_type")}
@@ -438,8 +440,48 @@ def _clear_active(state: MutableMapping[str, Any], runtime: dict[str, Any]) -> N
 
 
 def _finish_if_terminal(runtime: dict[str, Any]) -> None:
-    if all(runtime["tasks"][tid]["status"] in TERMINAL_TASK_STATES for tid in runtime["task_order"]):
+    from CoScientist.experiments.runtime.outputs import is_repairable_block
+
+    def _closed(task_runtime: dict[str, Any]) -> bool:
+        status = task_runtime["status"]
+        if status not in TERMINAL_TASK_STATES:
+            return False
+        # A binding that can still be repaired is not the end of the run.
+        return not is_repairable_block(task_runtime)
+
+    tasks = runtime["tasks"]
+    if all(_closed(tasks[tid]) for tid in runtime["task_order"]):
         runtime["phase"] = "reporting"
+        return
+    if (
+        runtime.get("phase") == "reporting"
+        and runtime.get("approved")
+        and not runtime.get("automation_paused")
+        and not runtime.get("manual_review_required")
+        and not runtime.get("budget_exhausted")
+    ):
+        # A repairable block is still an execution problem. Pause and a
+        # withdrawn approval stay where they are.
+        resumable = any(
+            tasks[tid]["status"] in {"pending", "ready", "running"}
+            or is_repairable_block(tasks[tid])
+            for tid in runtime["task_order"]
+        )
+        if resumable:
+            runtime["phase"] = "execution"
+
+
+def _remember_requirement_projection(
+    state: MutableMapping[str, Any], runtime: dict[str, Any],
+) -> None:
+    """Keep the shared Q/H/DL reading on the runtime the session already stores."""
+    try:
+        from CoScientist.requirements.coverage import projection_from_state
+
+        runtime["requirement_projection"] = projection_from_state(state)
+        state["experiment_requirement_projection"] = runtime["requirement_projection"]
+    except Exception as exc:  # noqa: BLE001 — a projection must not stop the run
+        logger.warning("requirement projection failed: %s", exc)
 
 
 def _sync_after_mutation(
@@ -449,6 +491,7 @@ def _sync_after_mutation(
         _clear_active(state, runtime)
     refresh_readiness(runtime)
     _finish_if_terminal(runtime)
+    _remember_requirement_projection(state, runtime)
     _publish_active_tasks(state, runtime)
 
 
@@ -557,7 +600,7 @@ def approve_plan_with_human_override(
             "invalid_phase",
             f"Plan override requires awaiting_review, got {runtime['phase']!r}.",
         )
-    if decision_source != "human":
+    if decision_source not in {"human", "mode_auto"}:
         raise ExperimentRuntimeError(
             "human_required", "Exhausted plan review requires a human decision."
         )
@@ -659,11 +702,21 @@ def experiment_next_actions(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     runtime = state.get(RUNTIME_KEY) if hasattr(state, "get") else None
     if (
         not isinstance(runtime, Mapping)
-        or runtime.get("phase") != "execution"
         or not runtime.get("approved")
         or _runtime_automation_paused(state, runtime)
+        or runtime.get("phase") not in {"execution", "reporting"}
     ):
         return []
+    from CoScientist.experiments.runtime.outputs import recovery_producer_ids
+
+    repairs = [
+        {"tool": "recover_task_outputs", "arguments": {"task_id": producer_id}}
+        for producer_id in recovery_producer_ids(runtime)
+    ]
+    # A saved run can sit in reporting with a repairable block. The repair is
+    # the action; start_task waits until that call moves the phase back.
+    if runtime.get("phase") != "execution":
+        return repairs
     active_task_id = str(runtime.get("active_task_id") or "")
     active_attempt_id = str(runtime.get("active_attempt_id") or "")
     if active_task_id or active_attempt_id:
@@ -687,7 +740,7 @@ def experiment_next_actions(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             "attempt_id": active_attempt_id,
         }] if route_agent else [])
 
-    actions: list[dict[str, Any]] = []
+    actions: list[dict[str, Any]] = list(repairs)
     for task_id in runtime.get("task_order") or []:
         row = (runtime.get("tasks") or {}).get(task_id) or {}
         status = str(row.get("status") or "")
@@ -712,6 +765,27 @@ def experiment_next_actions(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "arguments": {"task_id": task_id, "reason": reason},
             })
     return actions
+
+
+def _execution_hold_note(runtime: Mapping[str, Any]) -> str:
+    """Why execution has no legal action. Empty next_actions must say so."""
+    stops = [
+        item for item in (runtime.get("output_recovery_stops") or [])
+        if isinstance(item, Mapping)
+    ]
+    if stops:
+        return str(stops[-1].get("message") or "Output recovery stopped.")
+    blocked: list[str] = []
+    tasks = runtime.get("tasks") or {}
+    for task_id in runtime.get("task_order") or []:
+        row = tasks.get(task_id) or {}
+        if str(row.get("status") or "") != "blocked":
+            continue
+        code = str((row.get("blocked_reason") or {}).get("code") or "blocked")
+        blocked.append(f"{task_id}:{code}")
+    if blocked:
+        return "No legal next action. Blocked tasks: " + ", ".join(blocked)
+    return "No legal next action for the current execution state."
 
 
 def get_experiment_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
@@ -777,10 +851,32 @@ def get_experiment_plan(state: MutableMapping[str, Any]) -> dict[str, Any]:
         "state_revision": experiment_state_revision(state),
         "next_actions": experiment_next_actions(state),
     }
+    stops = runtime.get("output_recovery_stops")
+    if stops:
+        view["output_recovery_stops"] = stops
+    if runtime.get("delivery_status"):
+        view["delivery_status"] = runtime.get("delivery_status")
+    if (
+        runtime.get("phase") == "execution"
+        and runtime.get("approved")
+        and not view["next_actions"]
+        and not _runtime_automation_paused(state, runtime)
+    ):
+        view["execution_note"] = _execution_hold_note(runtime)
     if rounds:
         view["replan_reason"] = runtime.get("result_review_feedback")
     if runtime.get("replan_exhausted"):
         view["replan_exhausted"] = True
+    projection = runtime.get("requirement_projection")
+    if not isinstance(projection, list):
+        try:
+            from CoScientist.requirements.coverage import projection_from_state
+
+            projection = projection_from_state(state)
+        except Exception:  # noqa: BLE001 — the control view still has to return
+            projection = None
+    if isinstance(projection, list):
+        view["requirement_projection"] = projection
     return view
 
 
@@ -1038,8 +1134,21 @@ def _resolve_inputs(
             elif data_ref.kind == "task_artifact":
                 artifact = find_artifact(
                     runtime,
-                    str(data_ref.source_artifact_id),
+                    str(data_ref.source_artifact_id or data_ref.source_output_id or ""),
                     source_task_id=str(data_ref.source_task_id) if data_ref.source_task_id else None,
+                    source_output_id=data_ref.source_output_id,
+                    consumer_task_id=task.id,
+                    data_id=data_ref.data_id,
+                )
+                from CoScientist.experiments.runtime.outputs import pin_input
+
+                pin_input(
+                    runtime,
+                    consumer_task_id=task.id,
+                    data_id=data_ref.data_id,
+                    artifact=artifact,
+                    source_task_id=data_ref.source_task_id,
+                    source_output_id=data_ref.source_output_id,
                 )
                 if artifact.get("bucket") and artifact.get("s3_key"):
                     item["resolved_url"], item["expires_at"] = presign(artifact["bucket"], artifact["s3_key"], expiration), expires_at
@@ -1266,15 +1375,36 @@ def start_task(
                 "tool_dataset_scope_mismatch", message, details={"conflicts": conflicts},
                 next_actions=experiment_next_actions(state),
             )
+    from CoScientist.requirements.execution import service_block_reason
+
+    block = service_block_reason(state, task_model) if route in {"react_tools", "fedot_mas"} else ""
+    if block:
+        from CoScientist.experiments.runtime.coder_fallback import coder_fallback_decision
+
+        decision = coder_fallback_decision(
+            task=task_model, task_runtime=task_runtime, runtime=runtime, settings=cfg,
+            route_agents=route_agents, result={"error_code": "service_unavailable", "error_message": block},
+            attempts_on_route=_attempts_for_route(task_runtime, route),
+            total_left=total_attempts < max_total_attempts, assessment_only=False,
+        )
+        if decision and decision.get("coder_fallback"):
+            route = ExecutionRoute.CODER.value
+            task_runtime["coder_brief"] = decision["coder_fallback"]
+            task_runtime["current_route"] = route
+            task_runtime["route_history"].append({"route": route, "reason": block})
+        else:
+            message = block + (" " + decision["message"] if decision else "")
+            exc = ExperimentRuntimeError("service_unavailable", message)
+            _block_unstartable(state, task_id, exc)
+            raise exc
     allowed_hypotheses = {
         str(row.get("hypothesis_id") or "").strip().upper()
         for row in ((state.get("experiment_context") or {}).get("hypothesis_refs") or [])
         if isinstance(row, dict) and row.get("hypothesis_id")
     }
-    task_hypotheses = {
-        task_model.design.hypothesis_ref.strip().upper(),
-        *(str(item).strip().upper() for item in task_model.design.also_tests),
-    }
+    task_hypotheses = task_model.design.covered_hypothesis_ids(
+        (state.get("experiment_context") or {}).get("hypothesis_refs") or [],
+    )
     blocked_hypotheses = sorted(task_hypotheses - allowed_hypotheses) if allowed_hypotheses else []
     if blocked_hypotheses:
         raise ExperimentRuntimeError(
@@ -1287,6 +1417,7 @@ def start_task(
         and task_model.code_assessment.requirement == CodeRequirement.UNKNOWN
         and not task_model.repo_url
         and not mcp_routes_tried(task_runtime)
+        and not task_runtime.get("coder_brief")
     ):
         from CoScientist.experiments.capabilities.inventory import (
             FAMILY_MEDICAL,
@@ -1447,6 +1578,18 @@ def start_task(
         "resolved_inputs": resolved_inputs,
         "upstream_bindings": upstream_bindings,
     }
+    from CoScientist.requirements.coverage import projection_from_state
+
+    envelope["requirements"] = [
+        {"id": row["id"], "kind": row["kind"], "formulation": row["formulation"],
+         "role": "delivers" if task_id in row["closing_tasks"] else "supports"}
+        for row in projection_from_state(state) if task_id in row["tasks"]
+    ]
+    if route == ExecutionRoute.CODER.value and isinstance(task_runtime.get("coder_brief"), dict):
+        envelope["coder_brief"] = {
+            **task_runtime["coder_brief"],
+            "verified_inputs": resolved_inputs,
+        }
     state["experiment_active_envelope"] = envelope
     state["filtered_tools"] = filtered_tools
     state["deployed_mcps"] = deployed_mcps
@@ -1496,8 +1639,12 @@ def _next_fallback(
     used = {entry["route"] for entry in task_runtime["route_history"]}
     # A switched-off route is skipped, not offered: fallback_task would refuse
     # it as route_disabled and leave the task stuck in fallback_pending.
+    from CoScientist.experiments.runtime.coder_fallback import meaning_preserved
+    coder_allowed = cfg.allow_coder_fallback and meaning_preserved(
+        ExperimentTask.model_validate(task_runtime["task"]))[0]
     return next(
-        (r for r in chain[index + 1 :] if r not in used and _route_live(r, cfg, route_agents)), None,
+        (r for r in chain[index + 1 :] if r not in used and _route_live(r, cfg, route_agents)
+         and (r != ExecutionRoute.CODER.value or coder_allowed)), None,
     )
 
 
@@ -1582,6 +1729,31 @@ def record_result(
     if (status := result.get("status")) not in {"success", "partial", "failure"}:
         raise ExperimentRuntimeError("result_status", "Result status must be success, partial, or failure.")
 
+    from CoScientist.experiments.runtime.result_validation import requirement_result_error
+
+    if refusal := requirement_result_error(state, task_id, result, require_question_answers=False):
+        raise ExperimentRuntimeError(
+            refusal["error_code"], refusal["message"],
+            details={"repair_contract": refusal["repair_contract"]},
+        )
+
+    from CoScientist.requirements.execution import is_infrastructure_failure, note_service_stop
+
+    if is_infrastructure_failure(result):
+        # An outage is not a refutation and must not be retried once per object.
+        result = {
+            **result,
+            "status": "failure",
+            "scientific_check": None,
+            "warnings": [
+                *(result.get("warnings") or []),
+                "infrastructure failure is not a scientific verdict",
+            ],
+        }
+        status = "failure"
+        if str(attempt.get("route") or "") in {"react_tools", "fedot_mas"}:
+            note_service_stop(state, task_runtime.get("task") or {}, attempt.get("last_tool_observation"))
+
     if str(attempt.get("route") or "") == ExecutionRoute.ALEMBIC_BUILD.value:
         job_id = str(attempt.get("alembic_job_id") or "").strip()
         if job_id:
@@ -1622,10 +1794,13 @@ def record_result(
             check["purpose"] = criteria_by_id[canonical_id].purpose
     result = {**result, "criteria_checks": raw_checks}
     checks = [CriterionCheck.model_validate(item) for item in raw_checks]
+    from CoScientist.experiments.runtime.inline_artifacts import materialize_bound_tool_results
+
+    materialize_bound_tool_results(state, attempt)
     raw_artifacts = captured_delta(state, attempt)
     raw_artifacts.extend(copy.deepcopy(item) for item in (result.get("artifacts") or []) if isinstance(item, dict))
     outputs = result.get("outputs") or {}
-    if isinstance(outputs, dict) and outputs:
+    if isinstance(outputs, dict):
         from CoScientist.experiments.runtime.inline_artifacts import materialize_outputs_as_artifacts
         raw_artifacts.extend(
             materialize_outputs_as_artifacts(
@@ -1648,6 +1823,8 @@ def record_result(
 
     artifacts, artifact_warnings = normalise_artifacts(raw_artifacts, runtime=runtime, task_runtime=task_runtime,
                                                         attempt=attempt, state=state)
+    if status in {"success", "partial"} and isinstance(outputs, dict):
+        outputs = resolve_result_artifact_refs(outputs, artifacts)
     artifacts_ok, missing_artifacts = required_artifacts_present(task, artifacts, route=attempt_route)
     invalid_formats = invalid_required_artifact_formats(task, artifacts, route=attempt_route)
     criteria_ok, failed_criteria = criteria_valid(task, checks, route=attempt_route)
@@ -1692,14 +1869,23 @@ def record_result(
     if durable_ok:
         checks = attest_durable_criteria(task, checks)
         result = {**result, "criteria_checks": [c.model_dump(mode="json") for c in checks]}
-        if not artifacts_ok and not invalid_formats:
-            artifacts_ok, missing_artifacts = True, []
-            artifact_warnings.append(
-                "accepted_via_durable_family_evidence: S3/file/mcp_url present; "
-                "planner artifact names are not required."
-            )
         criteria_ok, failed_criteria = criteria_valid(task, checks, route=attempt_route)
-        if status == "failure" and not core_failure and not material_partial and criteria_ok and artifacts_ok:
+    from CoScientist.experiments.runtime.outputs import schema_outputs_verified
+
+    if not schema_outputs_verified(task, [item.model_dump(mode="json") for item in artifacts]):
+        rewritten: list[CriterionCheck] = []
+        for check in checks:
+            crit = criteria_by_id.get(check.criterion_id)
+            if crit is not None and crit.kind == "schema" and check.passed is True:
+                rewritten.append(check.model_copy(update={
+                    "passed": False,
+                    "details": "schema requires the opened dataset, not a path or a URL",
+                }))
+            else:
+                rewritten.append(check)
+        checks = rewritten
+        criteria_ok, failed_criteria = criteria_valid(task, checks, route=attempt_route)
+    if status == "failure" and not core_failure and not material_partial and criteria_ok and artifacts_ok:
             # Ярлык оправдан: доказательство действительно есть, и называть это
             # полным провалом неверно. Но retryable=False здесь был отдельной,
             # незаметной потерей: провал получал право не повторяться.
@@ -1778,9 +1964,23 @@ def record_result(
         None,
     )
 
+    result_id = result.get("result_id") or f"RES-{uuid4().hex}"
+    if status in {"success", "partial"}:
+        from CoScientist.experiments.runtime.outputs import publish_bindings
+
+        artifact_warnings.extend(publish_bindings(
+            runtime,
+            task_id=task_id,
+            expected=list(task.expected_artifacts),
+            artifacts=[item.model_dump(mode="json") for item in artifacts],
+            result_id=str(result_id),
+            result_version=result_version,
+            attempt_id=attempt_id,
+        ))
+
     task_result = TaskResult.model_validate({
         "schema_version": "task-result/0.1",
-        "result_id": result.get("result_id") or f"RES-{uuid4().hex}",
+        "result_id": result_id,
         "plan_id": runtime["plan_id"],
         "task_id": task_id,
         "attempt_id": attempt_id,
@@ -1835,16 +2035,31 @@ def record_result(
         total_left = operation_attempt_count(
             state, str(attempt.get("operation_key") or task_runtime.get("operation_key") or "")
         ) < _max_total_attempts(cfg)
-        attempts_left = total_left and _attempts_for_route(task_runtime, route) < cfg.task_max_attempts
         technical_failure = bool(task_result.retryable or core_failure or material_partial)
         next_fb = _next_fallback(task_runtime, cfg, route_agents) if total_left else None
-        # Same-route retries first; else next route in resolve_fallback_chains().
-        if task_result.retryable and attempts_left:
-            task_runtime["status"] = "retry_pending"
-        elif technical_failure and next_fb is not None:
-            task_runtime["status"] = "fallback_pending"
-        else:
-            task_runtime["status"] = "failed"
+        from CoScientist.experiments.runtime.coder_fallback import coder_fallback_decision
+
+        decision = coder_fallback_decision(
+            result=task_result.model_dump(mode="json"),
+            task_runtime=task_runtime,
+            task=task,
+            runtime=runtime,
+            settings=cfg,
+            route_agents=route_agents,
+            attempts_on_route=_attempts_for_route(task_runtime, route),
+            total_left=total_left,
+            assessment_only=assessment_only_failure,
+            next_fallback=next_fb,
+            technical_failure=technical_failure,
+        )
+        task_runtime["status"] = decision["status"]
+        if decision.get("message"):
+            task_runtime["last_message"] = decision["message"]
+        if decision.get("coder_fallback"):
+            task_runtime["coder_fallback"] = decision["coder_fallback"]
+            task_runtime["coder_brief"] = decision["coder_fallback"]
+        if stop := decision.get("stop"):
+            runtime.setdefault("coder_fallback_stops", []).append(stop)
 
     _sync_after_mutation(state, runtime, clear_active=True)
     if post_build:
@@ -1868,6 +2083,370 @@ def record_result(
     if post_build:
         response["post_build"] = post_build
     return response
+
+
+def recover_task_outputs(
+    state: MutableMapping[str, Any],
+    task_id: str,
+) -> dict[str, Any]:
+    """Rebind a finished attempt's files to logical outputs.
+
+    Does not open a new scientific attempt. A failed download spends recovery
+    budget only. Exhausting that budget records a stop, seals the consumers
+    of this producer, and leaves every unrelated task runnable.
+    """
+    from CoScientist.experiments.runtime.outputs import (
+        RECOVERY_BUDGET,
+        REPAIRS_KEY,
+        bindings_cover_required_outputs,
+        pinned_artifact_ids,
+        publish_bindings,
+    )
+
+    runtime = _runtime(state)
+    task_runtime = _task(runtime, task_id)
+    task = ExperimentTask.model_validate(task_runtime["task"])
+    completed = [
+        item for item in (runtime.get("results") or [])
+        if isinstance(item, dict)
+        and item.get("task_id") == task_id
+        and item.get("status") in {"success", "partial"}
+    ]
+    if not completed:
+        raise ExperimentRuntimeError(
+            "output_recovery_nothing",
+            f"Task {task_id} has no completed attempt to rebind.",
+        )
+    latest = completed[-1]
+    before = int(task_runtime.get("output_recovery_used") or 0)
+    if bindings_cover_required_outputs(runtime, task_id):
+        _sync_after_mutation(state, runtime)
+        return {
+            "status": "success",
+            "idempotent": True,
+            "phase": runtime.get("phase"),
+            "recovery_used": before,
+        }
+    if before >= RECOVERY_BUDGET:
+        return _stop_output_recovery(state, runtime, task_id, used=before)
+    task_runtime["output_recovery_used"] = before + 1
+    artifacts = [dict(item) for item in (latest.get("artifacts") or []) if isinstance(item, dict)]
+    artifacts = _protect_pinned_artifacts(runtime, artifacts)
+    frozen_ids = pinned_artifact_ids(runtime)
+    download_failed = _materialize_recovered_artifacts(
+        artifacts, task_id=task_id, attempt_id=str(latest.get("attempt_id") or ""),
+        frozen_ids=frozen_ids,
+    )
+    try:
+        artifacts = _artifacts_for_recovery(task, artifacts, frozen_ids=frozen_ids)
+    except ExperimentRuntimeError as exc:
+        if exc.code != "output_ambiguous":
+            raise
+        latest["artifacts"] = artifacts
+        if int(task_runtime["output_recovery_used"]) >= RECOVERY_BUDGET:
+            stopped = _stop_output_recovery(
+                state, runtime, task_id, used=int(task_runtime["output_recovery_used"]),
+            )
+            stopped["warnings"] = [str(exc)]
+            return stopped
+        raise
+    _convert_recovered_json(task, artifacts, frozen_ids=frozen_ids)
+    from CoScientist.experiments.runtime.outputs import content_verified
+    for art in artifacts:
+        if str(art.get("artifact_id") or "") in frozen_ids:
+            continue
+        expected = next((item for item in task.expected_artifacts
+                         if item.output_id == art.get("output_id") or item.name == art.get("name")), None)
+        art["content_verified"] = expected is not None and content_verified(art, expected)
+    editable = [
+        art for art in artifacts if str(art.get("artifact_id") or "") not in frozen_ids
+    ]
+    problems = _recovery_contract_problems(task, editable)
+    latest["artifacts"] = artifacts
+    warnings = list(problems)
+    if problems:
+        runtime.setdefault(REPAIRS_KEY, []).append({
+            "task_id": task_id,
+            "result_id": latest.get("result_id"),
+            "attempt_id": latest.get("attempt_id"),
+            "code": "materialization_unavailable" if download_failed else "output_contract",
+            "warnings": warnings,
+        })
+        if int(task_runtime["output_recovery_used"]) >= RECOVERY_BUDGET:
+            stopped = _stop_output_recovery(
+                state, runtime, task_id, used=int(task_runtime["output_recovery_used"]),
+            )
+            stopped["warnings"] = warnings
+            return stopped
+        _sync_after_mutation(state, runtime)
+        return {
+            "status": "blocked",
+            "code": "materialization_unavailable" if download_failed else "output_contract",
+            "idempotent": False,
+            "phase": runtime.get("phase"),
+            "warnings": warnings,
+            "recovery_used": task_runtime["output_recovery_used"],
+        }
+    warnings.extend(publish_bindings(
+        runtime,
+        task_id=task_id,
+        expected=list(task.expected_artifacts),
+        artifacts=editable,
+        result_id=str(latest.get("result_id") or ""),
+        result_version=int(latest.get("result_version") or 1),
+        attempt_id=str(latest.get("attempt_id") or ""),
+    ))
+    runtime.setdefault(REPAIRS_KEY, []).append({
+        "task_id": task_id,
+        "result_id": latest.get("result_id"),
+        "attempt_id": latest.get("attempt_id"),
+        "code": "rebound",
+        "warnings": warnings,
+    })
+    _sync_after_mutation(state, runtime)
+    return {
+        "status": "success",
+        "idempotent": False,
+        "phase": runtime.get("phase"),
+        "warnings": warnings,
+        "recovery_used": task_runtime["output_recovery_used"],
+    }
+
+
+def _stop_output_recovery(
+    state: MutableMapping[str, Any],
+    runtime: dict[str, Any],
+    task_id: str,
+    *,
+    used: int,
+) -> dict[str, Any]:
+    """Record the stop, seal this producer's consumers, keep other tasks free."""
+    from CoScientist.experiments.runtime.outputs import RECOVERY_BUDGET, seal_exhausted_consumers
+
+    message = (
+        f"Task {task_id} exhausted {RECOVERY_BUDGET} output-recovery attempts. "
+        "Dependent tasks stay blocked; independent tasks continue."
+    )
+    stops = runtime.setdefault("output_recovery_stops", [])
+    if not any(
+        isinstance(item, dict)
+        and item.get("task_id") == task_id
+        and item.get("code") == "output_recovery_budget"
+        for item in stops
+    ):
+        stops.append({
+            "task_id": task_id,
+            "code": "output_recovery_budget",
+            "message": message,
+            "recovery_used": used,
+        })
+    seal_exhausted_consumers(runtime, task_id, message)
+    done = any(
+        str((runtime.get("tasks") or {}).get(tid, {}).get("status") or "") in {"done", "done_with_warnings"}
+        for tid in (runtime.get("task_order") or [])
+    )
+    if done:
+        runtime["delivery_status"] = "partial"
+    _sync_after_mutation(state, runtime)
+    return {
+        "status": "blocked",
+        "code": "output_recovery_budget",
+        "idempotent": True,
+        "phase": runtime.get("phase"),
+        "recovery_used": used,
+        "message": message,
+        "delivery_status": runtime.get("delivery_status"),
+    }
+
+
+def _protect_pinned_artifacts(
+    runtime: Mapping[str, Any], artifacts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Copy a pinned file forward. Recovery edits the copy, not the pin."""
+    from CoScientist.experiments.runtime.outputs import pinned_artifact_ids
+
+    pinned = pinned_artifact_ids(runtime)
+    if not pinned:
+        return artifacts
+    kept: list[dict[str, Any]] = []
+    for art in artifacts:
+        art_id = str(art.get("artifact_id") or "")
+        if art_id not in pinned:
+            kept.append(art)
+            continue
+        kept.append(dict(art))
+        clone = dict(art)
+        clone["artifact_id"] = f"ART-{uuid4().hex}"
+        clone["output_id"] = None
+        clone["derived_from"] = [*(art.get("derived_from") or []), art_id]
+        kept.append(clone)
+    return kept
+
+
+def _materialize_recovered_artifacts(
+    artifacts: list[dict[str, Any]],
+    *,
+    task_id: str,
+    attempt_id: str,
+    frozen_ids: set[str] | None = None,
+) -> bool:
+    """Download a URL-only result into the workspace. True when a download failed."""
+    from CoScientist.experiments.runtime.artifacts import _materialize_signed_artifact
+    from CoScientist.experiments.runtime.outputs import json_is_pointer
+
+    frozen = frozen_ids or set()
+    failed = False
+    for art in artifacts:
+        if str(art.get("artifact_id") or "") in frozen:
+            continue
+        if str(art.get("role") or "data") not in {"data", "model"}:
+            continue
+        if art.get("workspace_path") and Path(str(art["workspace_path"])).is_file():
+            continue
+        if art.get("bucket") and art.get("s3_key"):
+            continue
+        url = str(art.get("external_url") or "").strip()
+        if not url:
+            continue
+        saved = _materialize_signed_artifact(
+            url, task_id=task_id, attempt_id=attempt_id or "recovery", name=str(art.get("name") or "artifact"),
+        )
+        if not saved:
+            failed = True
+            continue
+        art["workspace_path"] = saved
+        art["external_url"] = None
+        art["durability"] = "workspace"
+        text = Path(saved).read_text(encoding="utf-8", errors="replace")
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, UnicodeError, OSError):
+            payload = None
+        if json_is_pointer(payload):
+            failed = True
+    return failed
+
+
+def _convert_recovered_json(
+    task: ExperimentTask,
+    artifacts: list[dict[str, Any]],
+    *,
+    frozen_ids: set[str] | None = None,
+) -> None:
+    from CoScientist.experiments.runtime.outputs import _expects_json, convert_csv_workspace_to_json
+
+    frozen = frozen_ids or set()
+    for expected in task.expected_artifacts:
+        if not _expects_json(expected):
+            continue
+        for art in artifacts:
+            if str(art.get("artifact_id") or "") in frozen:
+                continue
+            if str(art.get("output_id") or "") != expected.output_id and str(art.get("name") or "") != expected.name:
+                continue
+            path = str(art.get("workspace_path") or "")
+            if not path.lower().endswith(".csv") or not Path(path).is_file():
+                continue
+            converted = convert_csv_workspace_to_json(path, dest_name=expected.name)
+            if not converted:
+                continue
+            art["workspace_path"] = converted
+            art["name"] = expected.name if str(expected.name).lower().endswith(".json") else Path(converted).name
+            art["media_type"] = "application/json"
+            art["bucket"] = None
+            art["s3_key"] = None
+            art["external_url"] = None
+            art["durability"] = "workspace"
+
+
+def _recovery_contract_problems(task: ExperimentTask, artifacts: list[dict[str, Any]]) -> list[str]:
+    from CoScientist.experiments.runtime.outputs import contract_problem
+
+    problems: list[str] = []
+    for expected in task.expected_artifacts:
+        if not expected.required:
+            continue
+        hits = [
+            art for art in artifacts
+            if str(art.get("output_id") or "") == expected.output_id
+            or str(art.get("name") or "") == expected.name
+        ]
+        verified = [art for art in hits if contract_problem(art, expected) is None]
+        if len(verified) > 1:
+            raise ExperimentRuntimeError(
+                "output_ambiguous",
+                f"Output {task.id}/{expected.output_id} matches {len(verified)} artifacts.",
+            )
+        if verified:
+            continue
+        if not hits:
+            problems.append(f"output {expected.output_id} has no artifact")
+            continue
+        problem = contract_problem(hits[0], expected)
+        problems.append(f"{expected.output_id}: {problem or 'contract failed'}")
+    return problems
+
+
+def _artifacts_for_recovery(
+    task: ExperimentTask,
+    artifacts: list[dict[str, Any]],
+    *,
+    frozen_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Old results have no output_id. Attach one only when the match is unique."""
+    from CoScientist.experiments.runtime.outputs import json_is_pointer
+
+    frozen = frozen_ids or set()
+    prepared = [dict(item) for item in artifacts if isinstance(item, dict)]
+    editable = [art for art in prepared if str(art.get("artifact_id") or "") not in frozen]
+    unbound = [
+        item for item in task.expected_artifacts
+        if item.required and not any(
+            _recovery_named(art, item, json_is_pointer) for art in editable
+        )
+    ]
+    candidates = [art for art in editable if _recovery_candidate(art, json_is_pointer)]
+    if len(unbound) == 1 and len(candidates) == 1:
+        candidates[0]["output_id"] = unbound[0].output_id
+        return prepared
+    if len(unbound) == 1 and len(candidates) > 1:
+        raise ExperimentRuntimeError(
+            "output_ambiguous",
+            f"Output {task.id}/{unbound[0].output_id} matches {len(candidates)} files.",
+        )
+    return prepared
+
+
+def _recovery_named(art: dict[str, Any], expected: Any, json_is_pointer) -> bool:
+    """A pointer or a diagnostic file does not already occupy the output."""
+    if not _recovery_candidate(art, json_is_pointer) and not art.get("output_id"):
+        return False
+    if str(art.get("name") or "").strip().lower() in {
+        "family_outputs.json", "tool_limitation", "tool_limitation.json", "tool_limitations.json",
+    }:
+        return False
+    return (
+        str(art.get("output_id") or "") == expected.output_id
+        or str(art.get("name") or "") == expected.name
+    )
+
+
+def _recovery_candidate(art: dict[str, Any], json_is_pointer) -> bool:
+    name = str(art.get("name") or "").strip().lower()
+    if name == "family_outputs.json" or name.startswith("tool_limitation"):
+        return False
+    if art.get("output_id"):
+        return False
+    if str(art.get("role") or "data") not in {"data", "model"}:
+        return False
+    path = str(art.get("workspace_path") or "")
+    if path.lower().endswith(".json") and Path(path).is_file():
+        try:
+            if json_is_pointer(json.loads(Path(path).read_text(encoding="utf-8"))):
+                return False
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+    return True
 
 
 def retry_task(
@@ -1953,7 +2532,11 @@ def fallback_task(
                         f"{post['post_build_route']}. Call start_task('{task_id}') next."
                     ),
                 }
-    route = _next_fallback(task_runtime, cfg, route_agents)
+    forced = task_runtime.get("coder_fallback")
+    if isinstance(forced, dict) and forced.get("route") == ExecutionRoute.CODER.value:
+        route = ExecutionRoute.CODER.value
+    else:
+        route = _next_fallback(task_runtime, cfg, route_agents)
     if route is None or route == ExecutionRoute.CODER.value:
         from CoScientist.experiments.runtime.alembic_bridge import mcp_url_from_task_runtime
 
@@ -1966,6 +2549,10 @@ def fallback_task(
     if route is None:
         raise ExperimentRuntimeError("fallback_exhausted", "No acyclic fallback route remains.")
     if route == ExecutionRoute.CODER.value:
+        from CoScientist.experiments.runtime.coder_fallback import meaning_preserved
+        permitted, why = meaning_preserved(ExperimentTask.model_validate(task_runtime["task"]))
+        if not cfg.allow_coder_fallback or not permitted:
+            raise ExperimentRuntimeError("fallback_not_allowed", why or "Coder fallback is disabled.")
         if runtime_has_durable_data_evidence(runtime, task_id):
             raise ExperimentRuntimeError(
                 "evidence_already_present",
@@ -1974,10 +2561,20 @@ def fallback_task(
             )
     if not _route_enabled(route, cfg):
         raise ExperimentRuntimeError("route_disabled", f"Fallback route {route!r} is disabled.")
+    previous_route = str(task_runtime.get("current_route") or "")
     task_runtime["current_route"] = route
     task_runtime["route_history"].append({"route": route, "reason": reason})
     task_runtime["status"] = "ready"
     task_runtime["last_message"] = f"Fallback to {route}: {reason}"
+    if isinstance(forced, dict) and route == ExecutionRoute.CODER.value:
+        task_runtime["route_substitution"] = {
+            "from_route": previous_route,
+            "route": route,
+            "reason": reason,
+            "limits": forced.get("limits"),
+            "mcp_diagnostics": forced.get("mcp_diagnostics"),
+        }
+        task_runtime.pop("coder_fallback", None)
     _publish_active_tasks(state, runtime)
     return {
         "status": "success",
@@ -2207,6 +2804,13 @@ def request_task_redo(
             "invalid_phase", "Targeted redo requires completed execution or result review."
         )
     preview = preview_task_redo(state, task_ids)
+    # Pins belong to a consumer execution. Reopened consumers must resolve the
+    # new producer version; completed, unrelated consumers keep their inputs.
+    affected = set(preview["affected_task_ids"])
+    runtime[PINS_KEY] = {
+        key: pin for key, pin in (runtime.get(PINS_KEY) or {}).items()
+        if key.split("/", 1)[0] not in affected
+    }
     selected = set(preview["selected_task_ids"])
     request_no = len(runtime.get("redo_requests") or []) + 1
     prior_result_ids: dict[str, str] = {}
@@ -2338,4 +2942,3 @@ __all__ = [
     "skip_task",
     "start_task",
 ]
-

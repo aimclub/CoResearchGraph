@@ -42,7 +42,6 @@ _MAX_GENERATED_DATA = 5
 #: inventory. The VM keeps the full list in ``mcp_servers`` either way.
 _MAX_TOOLS_PER_TASK = 8
 _TEXT_LIMIT = 800
-_HID_RE = re.compile(r"H\d+", re.IGNORECASE)
 
 
 def _enabled() -> bool:
@@ -58,8 +57,8 @@ def _graph_nodes(store: Any) -> dict[str, dict[str, Any]]:
     """id → {type, status} for every node currently in the graph."""
     try:
         return {
-            str(n.get("id")): {"type": n.get("type"), "status": n.get("status")}
-            for n in (store.overview().get("nodes") or [])
+            str(n.get("id")): {"type": n.get("type"), "status": n.get("status"), "attrs": n.get("attrs") or {}}
+            for n in ((store.full() if hasattr(store, "full") else store.overview()).get("nodes") or [])
             if isinstance(n, dict) and n.get("id")
         }
     except Exception:  # noqa: BLE001
@@ -84,13 +83,121 @@ def _clean(value: Any, limit: int = _TEXT_LIMIT) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())[:limit]
 
 
-def _task_hypothesis_ids(design: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
-    for raw in [design.get("hypothesis_ref"), *(design.get("also_tests") or [])]:
-        hid = str(raw or "").strip().upper()
-        if hid and _HID_RE.fullmatch(hid) and hid not in ids:
-            ids.append(hid)
-    return ids
+def _target_ids(design: dict[str, Any]) -> list[str]:
+    from CoScientist.requirements.coverage import target_ids
+
+    return target_ids(design if isinstance(design, dict) else {})
+
+
+def _result_is_infrastructure(task_result: dict[str, Any]) -> bool:
+    from CoScientist.requirements.execution import is_infrastructure_failure
+
+    return is_infrastructure_failure(task_result)
+
+
+def _full_nodes(store: Any) -> dict[str, dict[str, Any]]:
+    """id → the stored node, including attrs the overview leaves out."""
+    try:
+        return {
+            str(node.get("id")): node
+            for node in (store.full().get("nodes") or [])
+            if isinstance(node, dict) and node.get("id")
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _nodes_by_requirement(graph_nodes: dict[str, dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Map a requirement id or stable_id to its question, hypothesis or deliverable."""
+    found: dict[str, tuple[str, dict[str, Any]]] = {}
+    for nid, node in graph_nodes.items():
+        if node.get("type") not in {"ResearchQuestion", "Hypothesis", "Deliverable"}:
+            continue
+        found[str(nid)] = (str(nid), node)
+        stable = str((node.get("attrs") or {}).get("stable_id") or "").strip()
+        if stable:
+            found[stable] = (str(nid), node)
+    return found
+
+
+def _assessment_payload(state: MutableMapping[str, Any], task_id: str) -> list[dict[str, Any]]:
+    from CoScientist.requirements.coverage import projection_from_state
+
+    rows = []
+    for row in projection_from_state(state):
+        tasks = set(row.get("tasks") or [])
+        if task_id not in tasks:
+            continue
+        rows.append({
+            "id": row.get("id"),
+            "kind": row.get("kind"),
+            "status": row.get("status"),
+            "actual": row.get("actual"),
+            "grounds": row.get("grounds"),
+            "debt": row.get("debt"),
+        })
+    return rows
+
+
+def _merge_requirement_assessment(
+    store: Any, evidence_id: Any, state: MutableMapping[str, Any], task_id: str,
+) -> None:
+    """Rewrite the assessment on the existing evidence. Do not add another node."""
+    if not evidence_id:
+        return
+    payload = _assessment_payload(state, task_id)
+    if not payload:
+        return
+    store.commit(
+        source=_SOURCE,
+        nodes=[{"id": evidence_id, "attrs": {"requirement_assessment": payload}}],
+        enforce_permissions=False,
+    )
+    _mirror_requirement_assessment(store, state)
+
+
+def _mirror_requirement_assessment(store: Any, state: MutableMapping[str, Any]) -> None:
+    """Persist the same catalog assessment used by the plan and runtime."""
+    from CoScientist.requirements.coverage import projection_from_state
+
+    if not isinstance(state.get("normalized_statement"), dict):
+        return
+    root_id = store.root_id()
+    if root_id:
+        store.commit(
+            source=_SOURCE,
+            nodes=[{"id": root_id, "attrs": {
+                "requirement_assessment": projection_from_state(state),
+            }}],
+            enforce_permissions=False,
+        )
+
+
+def refresh_requirement_assessment(
+    store: Any, state: MutableMapping[str, Any], task_id: str,
+) -> None:
+    """After a repair, update the assessment already stored for this task."""
+    try:
+        if not _enabled() or store is None:
+            return
+        for node in (store.full().get("nodes") or []):
+            if node.get("type") != "Evidence":
+                continue
+            if str((node.get("attrs") or {}).get("task_id") or "") != str(task_id):
+                continue
+            _merge_requirement_assessment(store, node.get("id"), state, task_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("requirement assessment refresh failed: %s", exc)
+
+
+def _task_hypothesis_ids(design: dict[str, Any], graph_nodes: dict[str, Any] | None = None) -> list[str]:
+    """Hypothesis ids from target_refs, including the legacy fields it absorbs."""
+    from CoScientist.requirements.coverage import hypothesis_ids
+
+    refs = [{"id": (node.get("attrs") or {}).get("stable_id") or nid,
+             "kind": "hypothesis", "hypothesis_id": nid}
+            for nid, node in (graph_nodes or {}).items() if node.get("type") == "Hypothesis"]
+    return hypothesis_ids(design, refs)
 
 
 def _plan_tasks(state: MutableMapping[str, Any]) -> list[dict[str, Any]]:
@@ -106,10 +213,10 @@ def _task_by_id(state: MutableMapping[str, Any], task_id: str) -> dict[str, Any]
     return None
 
 
-def _covered_hypothesis_ids(tasks: list[dict[str, Any]]) -> set[str]:
+def _covered_hypothesis_ids(tasks: list[dict[str, Any]], graph_nodes: dict[str, Any] | None = None) -> set[str]:
     covered: set[str] = set()
     for task in tasks:
-        covered.update(_task_hypothesis_ids(task.get("design") or {}))
+        covered.update(_task_hypothesis_ids(task.get("design") or {}, graph_nodes))
     return covered
 
 
@@ -117,7 +224,7 @@ def _task_hypotheses_eligible(
     store: Any, graph_nodes: dict[str, dict[str, Any]], task: dict[str, Any],
 ) -> bool:
     """Reject a task that names a known, still-locked chain successor."""
-    for hid in _task_hypothesis_ids(task.get("design") or {}):
+    for hid in _task_hypothesis_ids(task.get("design") or {}, graph_nodes):
         if graph_nodes.get(hid, {}).get("type") != "Hypothesis":
             continue
         try:
@@ -764,7 +871,7 @@ def publish_plan_to_graph(store: Any, state: MutableMapping[str, Any]) -> None:
                 ref_to_task[ref] = task_id
                 nodes.append({"type": "VerificationMethod", "ref": ref, "attrs": attrs})
                 vm_ref = f"#{ref}"
-                for hid in _task_hypothesis_ids(task.get("design") or {}):
+                for hid in _task_hypothesis_ids(task.get("design") or {}, graph_nodes):
                     if graph_nodes.get(hid, {}).get("type") == "Hypothesis":
                         edges.append({"type": "tested_by", "from": hid, "to": f"#{ref}"})
             for tool in _planned_tools(task):
@@ -831,7 +938,8 @@ def publish_plan_to_graph(store: Any, state: MutableMapping[str, Any]) -> None:
         ]
         if stale:
             store.commit(source=_SOURCE, status_updates=stale, enforce_permissions=False)
-        postponed, revived = _sync_uncovered_hypotheses(store, _graph_nodes(store), _covered_hypothesis_ids(tasks))
+        graph_nodes = _graph_nodes(store)
+        postponed, revived = _sync_uncovered_hypotheses(store, graph_nodes, _covered_hypothesis_ids(tasks, graph_nodes))
         audit(
             logger,
             f"EXPERIMENT_GRAPH_PLAN_PUBLISHED plan_id={plan_id} "
@@ -933,13 +1041,15 @@ def _advance_task_card(store: Any, state: MutableMapping[str, Any],
         current = nodes.get(xt_id, {})
         if current.get("type") != "ExperimentTask":
             return False
-        if current.get("status") == final:
+        if current.get("status") == final and not (
+            final == "done" and (current.get("attrs") or {}).get("failure_reason")
+        ):
             return True
         update: dict[str, Any] = {"id": xt_id, "status": final,
                                   "reason": f"задача {task_id}: {_ru_status(status)}"}
         # A card that says a thing failed and not why is the gap the graph
         # reports as `unreasoned_failures`, so the failure carries its message.
-        attrs = None
+        attrs = {"failure_reason": ""} if final == "done" else None
         if final == "failed":
             why = _clean(task_result.get("error_message")
                          or task_result.get("error")
@@ -1150,6 +1260,15 @@ def publish_result_to_graph(
     try:
         if not _enabled() or store is None or not isinstance(task_result, dict):
             return
+        result_id = str(task_result.get("result_id") or "")
+        if result_id:
+            try:
+                for node in (store.full().get("nodes") or []):
+                    if str((node.get("attrs") or {}).get("result_id") or "") == result_id:
+                        _merge_requirement_assessment(store, node.get("id"), state, task_id)
+                        return
+            except Exception:  # noqa: BLE001
+                pass
         status = str(task_result.get("status") or "")
         task_final = "done" if status in ("success", "partial") else "failed"
         # FIRST, and not conditional on the method. The two records are
@@ -1162,6 +1281,7 @@ def publish_result_to_graph(
         )
         if task_advanced:
             _settle_outer_plan(store, state)
+        _mirror_requirement_assessment(store, state)
         vm_id = _vm_ids(state).get(str(task_id))
         if not vm_id:
             return
@@ -1222,11 +1342,18 @@ def publish_result_to_graph(
         })
         edges.append({"type": "produces", "from": vm_id, "to": "#e_0"})
 
-        if status in ("success", "partial"):
-            for hid in _task_hypothesis_ids((task or {}).get("design") or {}):
+        design = (task or {}).get("design") or {}
+        requirement_index = _nodes_by_requirement(_full_nodes(store) or graph_nodes)
+        if status in ("success", "partial") and not _result_is_infrastructure(task_result):
+            for hid in _task_hypothesis_ids(design, graph_nodes):
                 if (graph_nodes.get(hid, {}).get("type") == "Hypothesis"
                         and store.hypothesis_eligible(hid)):
                     edges.append({"type": "relates_to", "from": "#e_0", "to": hid})
+            for ref in _target_ids(design):
+                hit = requirement_index.get(ref)
+                if hit and hit[1].get("type") == "ResearchQuestion":
+                    edges.append({"type": "answers", "from": "#e_0", "to": hit[0]})
+        evidence_attrs["requirement_assessment"] = _assessment_payload(state, task_id)
         # Logs and diagnostics from a failed attempt are useful attachments too.
         for i, artifact in enumerate(artifacts[:_MAX_GENERATED_DATA]):
             location = _artifact_location(artifact)
@@ -1244,6 +1371,11 @@ def publish_result_to_graph(
                 attrs["session_artifact_id"] = aid
             nodes.append({"type": "GeneratedData", "ref": ref, "attrs": attrs})
             edges.append({"type": "derived_from", "from": f"#{ref}", "to": "#e_0"})
+            if status in ("success", "partial") and not _result_is_infrastructure(task_result):
+                for ref_id in _target_ids((task or {}).get("design") or {}):
+                    hit = requirement_index.get(ref_id)
+                    if hit and hit[1].get("type") == "Deliverable":
+                        edges.append({"type": "satisfies", "from": f"#{ref}", "to": hit[0]})
         status_updates = []
         current_vm_status = _graph_nodes(store).get(vm_id, {}).get("status")
         # `not_used → used` is the one move back: a method the study had given

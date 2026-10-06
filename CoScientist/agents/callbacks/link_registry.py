@@ -1041,13 +1041,16 @@ def expand_link_refs(
     parts = getattr(content, "parts", None) if content is not None else None
     if not parts:
         return None
+    agent = getattr(getattr(callback_context, "_invocation_context", None), "agent", None)
+    as_markdown = getattr(agent, "output_schema", None) is None
     for part in parts:
         text = getattr(part, "text", None)
         if not text:
             continue
         try:
-            # The one egress that a human reads, so links go out named.
-            resolved = _resolve_value(text, registry, as_markdown=True)
+            # Prose gets named links; schema-bound data keeps literal URLs.
+            # Adding Markdown inside a source quote invalidates its provenance.
+            resolved = _resolve_value(text, registry, as_markdown=as_markdown)
         except Exception as exc:  # noqa: BLE001
             logger.error("expand_link_refs failed: %s", exc)
             continue

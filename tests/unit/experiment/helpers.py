@@ -92,6 +92,7 @@ def _task(
         "description": "Compute a bounded chemical property using the ready MCP.",
         "rationale": "Produces direct computational evidence for the hypothesis.",
         "route": route,
+        "coder_fallback_method": "Compute the same bounded property from the same inputs with a local implementation; preserve the declared metrics and output schema.",
         "design": design or _design(hypothesis_ref),
         "mcp_servers": [_server(tool)] if route in {"fedot_mas", "react_tools"} else [],
         "input_data": [],
@@ -348,4 +349,3 @@ class _FakeInitGraph:
     def init_research(self, source: str, question: str):
         self.init_calls.append({"source": source, "question": question})
         return {"ok": True, "root_id": "Q1"}
-

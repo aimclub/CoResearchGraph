@@ -36,8 +36,8 @@ _PENDING_RECORD_ALLOWED = frozenset(
     {"record_result", "skip_task", "amend_task", "get_experiment_plan"}
 )
 _CONTROL_TOOLS = frozenset({
-    "get_experiment_plan", "start_task", "record_result", "retry_task",
-    "fallback_task", "skip_task", "amend_task",
+    "get_experiment_plan", "start_task", "record_result", "recover_task_outputs",
+    "retry_task", "fallback_task", "skip_task", "amend_task",
 })
 _CONTROL_OBSERVATION_KEY = "experiment_last_control_observation"
 _CONTROL_FAILURE_KEY = "experiment_last_control_failure"
@@ -334,6 +334,15 @@ def guard_route_agent_tool(
 ) -> dict[str, Any] | None:
     """Refuse second/mismatched AgentTool, or control calls before record."""
     tool_name = getattr(tool, "name", "") or ""
+    if tool_name == "record_result":
+        unexpected = set(args) - {"task_id", "attempt_id", "result"}
+        if unexpected:
+            return {
+                "status": "refused", "error_code": "invalid_result_envelope",
+                "message": "record_result accepts task_id, attempt_id and result only. "
+                "Put result fields inside result, including criteria_checks, outputs and warnings. "
+                f"Unexpected top-level fields: {sorted(unexpected)}. The attempt remains open.",
+            }
     if tool_name == "ResearchAgent":
         from CoScientist.experiments.scope import LITERATURE_HANDOFF
 
@@ -342,6 +351,11 @@ def guard_route_agent_tool(
             "message": LITERATURE_HANDOFF,
         }
     state = tool_context.state
+    if tool_name == "record_result":
+        from CoScientist.experiments.runtime.result_validation import requirement_result_error
+
+        if refusal := requirement_result_error(state, args.get("task_id"), args.get("result") or {}):
+            return refusal
     pending = _pending_record_attempt(state)
     if tool_name in ROUTE_AGENT_NAMES:
         if tool_name == "FedotAgent" and not fedot_route_available():
@@ -900,7 +914,7 @@ def enforce_continue_until_reporting(
 
 
 _CONTROL_TRANSITION_TOOLS = frozenset(
-    {"retry_task", "fallback_task", "start_task", "skip_task", "amend_task"}
+    {"retry_task", "fallback_task", "start_task", "skip_task", "amend_task", "recover_task_outputs"}
 )
 
 

@@ -42,20 +42,38 @@ def _is_html(text: str) -> bool:
     return (text or "").lstrip()[:64].lower().startswith(("<!doctype", "<html", "<head", "<?xml"))
 
 
+def _with_preview(table: Dict[str, Any], *, max_rows: int) -> Dict[str, Any]:
+    """Keep every row. The preview is a separate, explicitly truncated view."""
+    rows = list(table.get("rows") or [])
+    total = int(table.get("total_rows") or len(rows))
+    preview = rows[:max_rows]
+    table.update({
+        "rows": rows,
+        "preview_rows": preview,
+        "total_rows": total,
+        "preview_limit": max_rows,
+        "truncated": total > len(preview),
+    })
+    return table
+
+
 def _table_from_records(records: Sequence[Any], *, max_rows: int = _MAX_ROWS) -> Optional[Dict[str, Any]]:
     """Build ``{columns, rows}`` from a list of record dicts (JSON shape)."""
-    records = [r for r in records if isinstance(r, Mapping)][:max_rows]
-    if not records:
+    all_records = [r for r in records if isinstance(r, Mapping)]
+    if not all_records:
         return None
     columns: List[str] = []
-    for row in records:
+    for row in all_records:
         for key in row:
             if str(key) not in columns:
                 columns.append(str(key))
     if not columns:
         return None
-    rows = [{c: _cell(r.get(c)) for c in columns} for r in records]
-    return {"columns": columns, "rows": rows, "format": "json"}
+    rows = [{c: _cell(r.get(c)) for c in columns} for r in all_records]
+    return _with_preview(
+        {"columns": columns, "rows": rows, "format": "json", "total_rows": len(rows)},
+        max_rows=max_rows,
+    )
 
 
 def normalize_records_to_table(payload: Any, *, max_rows: int = _MAX_ROWS) -> Optional[Dict[str, Any]]:
@@ -67,9 +85,14 @@ def normalize_records_to_table(payload: Any, *, max_rows: int = _MAX_ROWS) -> Op
     cols, rows = payload.get("columns"), payload.get("rows")
     if isinstance(cols, list) and isinstance(rows, list):
         cols = [str(c) for c in cols if str(c)]
-        rows = [{c: _cell(r.get(c)) for c in cols} for r in rows[:max_rows] if isinstance(r, Mapping)]
-        if cols and rows:
-            return {"columns": cols, "rows": rows, "format": payload.get("format") or "json"}
+        all_rows = [{c: _cell(r.get(c)) for c in cols} for r in rows if isinstance(r, Mapping)]
+        if cols and all_rows:
+            return _with_preview({
+                "columns": cols,
+                "rows": all_rows,
+                "format": payload.get("format") or "json",
+                "total_rows": len(all_rows),
+            }, max_rows=max_rows)
     for key in ("rows", "data", "results", "items", "records"):
         nested = payload.get(key)
         if isinstance(nested, list) and nested:
@@ -95,13 +118,17 @@ def parse_csv_table(text: str, *, max_rows: int = _MAX_ROWS) -> Optional[Dict[st
         columns = [c for c in (reader.fieldnames or []) if c]
         rows = [
             {c: (row.get(c) or "").strip() for c in columns}
-            for i, row in enumerate(reader)
-            if i < max_rows
+            for row in reader
         ]
     except csv.Error as exc:
         _log.info("artifact handoff: csv parse failed (%s)", exc)
         return None
-    return {"columns": columns, "rows": rows, "format": "csv"} if columns else None
+    if not columns:
+        return None
+    return _with_preview(
+        {"columns": columns, "rows": rows, "format": "csv", "total_rows": len(rows)},
+        max_rows=max_rows,
+    )
 
 
 def parse_artifact_table(
@@ -179,9 +206,13 @@ def project_tables_to_schema_args(
     tables: Sequence[Mapping[str, Any]],
     arg_names: Sequence[str],
     *,
-    max_values_per_arg: int = _MAX_ROWS,
+    max_values_per_arg: Optional[int] = None,
 ) -> Dict[str, List[str]]:
-    """Map table columns → arg names via casefold equality only."""
+    """Map table columns → arg names via casefold equality only.
+
+    The default keeps every value. A preview limit belongs in
+    ``format_upstream_inputs``, not in the values the next step computes on.
+    """
     if not tables or not arg_names:
         return {}
     want = {a.casefold(): a for a in arg_names}
@@ -195,7 +226,7 @@ def project_tables_to_schema_args(
                 continue
             bucket = out.setdefault(arg, [])
             for row in rows:
-                if len(bucket) >= max_values_per_arg:
+                if max_values_per_arg is not None and len(bucket) >= max_values_per_arg:
                     break
                 val = str(row.get(col) or "").strip() if isinstance(row, Mapping) else ""
                 if val and val not in bucket:
@@ -208,12 +239,18 @@ def format_upstream_inputs(projected: Mapping[str, Sequence[str]]) -> str:
         return ""
     lines = [
         "Upstream artifact inputs (from previous MCP structured results).",
-        "For each key below, tool arguments with the same name MUST use ONLY these values.",
+        "Values below may be a preview. total_rows and truncated on the table are authoritative.",
+        "Use the full table (rows / url / workspace_path). Do not compute on the preview alone.",
         "Do not invent replacements for these keys.",
     ]
     for key, values in projected.items():
-        lines.append(f"{key}:")
-        lines.extend(f"  - {v}" for v in values)
+        shown = list(values[:_MAX_ROWS])
+        lines.append(f"{key}: ({len(shown)} shown of {len(values)}; truncated={len(values) > len(shown)})")
+        lines.extend(f"  - {v}" for v in shown)
+        if len(values) > len(shown):
+            lines.append(
+                f"  … preview only; {len(values)} values are in the table and must all be used"
+            )
     return "\n".join(lines)
 
 
@@ -276,7 +313,11 @@ def materialize_tables_from_artifacts(
         compact = {
             "columns": list(table.get("columns") or []),
             "rows": list(table.get("rows") or []),
+            "preview_rows": list(table.get("preview_rows") or [])[:_MAX_ROWS],
             "format": table.get("format"),
+            "total_rows": table.get("total_rows", len(table.get("rows") or [])),
+            "truncated": bool(table.get("truncated")),
+            "preview_limit": table.get("preview_limit", _MAX_ROWS),
         }
         if isinstance(art, MutableMapping):
             art["table"] = compact

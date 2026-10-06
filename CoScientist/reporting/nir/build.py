@@ -139,6 +139,7 @@ class SectionPlan:
     id: str
     title: str
     digest: List[str] = field(default_factory=list)
+    fixed_content: bool = False
     figures: List[Dict[str, Any]] = field(default_factory=list)
     tables: List[Dict[str, Any]] = field(default_factory=list)
     #: The graph node this section reports on, kept for the traceability table
@@ -563,6 +564,18 @@ def build_outline(ev: NirEvidence, bundle: Optional[AssetBundle] = None) -> NirO
     the end. What does not fit goes to the results section.
     """
     outline = NirOutline(gaps=list(ev.gaps))
+    try:
+        from CoScientist.requirements.completion import evaluate_nodes
+
+        done = evaluate_nodes(ev.nodes, ev.edges)
+        if done.asserted and done.fulfillment != "fulfilled":
+            outline.gaps.append(
+                "Выполнение: "
+                + done.fulfillment
+                + ". Отчёт описывает это состояние и не закрывает невыполненный заказ."
+            )
+    except Exception:  # noqa: BLE001 — a report must still build
+        pass
     # Built once: every digest line below is rewritten through it.
     labels = _label_map(ev)
     question = ev.question
@@ -572,6 +585,27 @@ def build_outline(ev: NirEvidence, bundle: Optional[AssetBundle] = None) -> NirO
         outline.question = ev.original_request
 
     taken: List[str] = []
+
+    from CoScientist.requirements.coverage import project_requirements, render_requirement_report
+    for node in ev.nodes:
+        attrs = node.get("attrs") or {}
+        statement = attrs.get("normalized_statement")
+        if not isinstance(statement, dict):
+            continue
+        refs = [{**part, "volume": statement.get("volume") or {}}
+                for part in statement.get("parts") or [] if not part.get("retired")]
+        rows = attrs.get("requirement_assessment")
+        if not isinstance(rows, list):
+            rows = project_requirements([], refs)
+        if rows:
+            section = SectionPlan(
+                id="requirements", title="Результаты по требованиям",
+                digest=[line for line in render_requirement_report(rows, "ru", markdown=False).splitlines() if line],
+                fixed_content=True,
+            )
+            taken.append(section.id)
+            outline.sections.append(section)
+        break
 
     method = SectionPlan(
         id=_slug("metodika", "metodika", taken),
@@ -1032,7 +1066,7 @@ def build_nir_values(
 
     sections: List[Dict[str, Any]] = []
     for plan in outline.sections:
-        written = [p for p in prose.section_texts.get(plan.id, []) if str(p).strip()]
+        written = plan.digest if plan.fixed_content else [p for p in prose.section_texts.get(plan.id, []) if str(p).strip()]
         if not written:
             # Fall back to the evidence itself so the section is never empty.
             written = plan.digest[:6] or [
@@ -1054,7 +1088,7 @@ def build_nir_values(
         blocks.extend(plan.tables)
         # The author's heading wins: it knows what the section became, while the
         # builder only guessed from the hypothesis it was planned around.
-        written_title = _sentence(prose.section_titles.get(plan.id), _MAX_TITLE_CHARS)
+        written_title = plan.title if plan.fixed_content else _sentence(prose.section_titles.get(plan.id), _MAX_TITLE_CHARS)
         sections.append({
             "id": plan.id,
             "title": written_title or plan.title,

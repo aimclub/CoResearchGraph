@@ -896,13 +896,15 @@ def test_managed_data_satisfies_mistyped_required_data_name(tmp_path, monkeypatc
     approve_plan(state)
     started = start_task(state, "EXP-1")
     mark_route_returned(state, "FedotAgent")
+    csv_path = tmp_path / "aabbccdd11223344.csv"
+    csv_path.write_text("smiles,qed\nCCO,0.5\n", encoding="utf-8")
     state["fedot_artifacts"] = [
         {
-            "url": "http://10.32.1.114:9000/molecule-generative-mcp/generated/alzheimer/aabbccdd11223344.csv",
-            "s3_key": "generated/alzheimer/aabbccdd11223344.csv",
-            "bucket": "molecule-generative-mcp",
+            "name": "aabbccdd11223344.csv",
+            "workspace_path": str(csv_path),
             "tool": "generate_case_mols",
             "role": "data",
+            "media_type": "text/csv",
         }
     ]
     stored = record_result(
@@ -912,9 +914,13 @@ def test_managed_data_satisfies_mistyped_required_data_name(tmp_path, monkeypatc
         _success_result("EXP-1"),
     )
     assert stored["task_result"]["status"] == "success"
-    assert stored["task_result"]["artifacts"][0]["name"] == "generated_molecules.json"
-    assert stored["task_result"]["artifacts"][0]["durability"] == "managed"
-    assert stored["task_result"]["artifacts"][0]["s3_key"].endswith(".csv")
+    artifact = stored["task_result"]["artifacts"][0]
+    assert artifact["name"] == "generated_molecules.json"
+    assert artifact["output_id"] == "generated_molecules"
+    assert artifact["workspace_path"]
+    body = Path(artifact["workspace_path"]).read_text(encoding="utf-8")
+    assert body.startswith("[")
+    assert "CCO" in body
 
 
 def test_resolve_fallback_chains_from_settings():
@@ -942,7 +948,7 @@ def test_record_result_accepts_s3_csv_when_planner_name_differs():
         "name": "comprehensive_report.md",
         "role": "report",
         "media_type": "text/markdown",
-        "required": True,
+        "required": False,
         "description": "Narrative report the planner invented.",
     })
     state = _approved_state(_plan(task))
@@ -1658,3 +1664,52 @@ def test_fedot_switched_off_after_the_fallback_chose_it_does_not_strand_the_task
     assert task_runtime["status"] == "failed"
     with pytest.raises(ExperimentRuntimeError, match="requires fallback_pending"):
         fallback_task(state, "EXP-1", "still empty", settings=off, route_agents=live)
+
+
+@pytest.mark.parametrize('outputs', [
+    {'produced': 'рецептура и масса на 1 г (расчёт)'},
+    {'requirements': {'DL-1': {'produced': 'a table was produced'}}},
+    {'requirements': {'DL-1': {'criteria_checks': [{'criterion_id': 'C1', 'passed': True}]}}},
+    {'requirements': {'DL-1': {'criteria_checks': {'C1': {'passed': True}}}}},
+    {'requirements': []},
+    {'requirements': {'DL-1': None}},
+])
+def test_invalid_requirement_result_is_repairable_before_commit(outputs, monkeypatch):
+    """Real log failures must never commit or reach graph publication first."""
+    from copy import deepcopy
+    from CoScientist.experiments.runtime.tools import ExperimentControlToolset
+    from CoScientist.experiments.runtime import tools as control_tools
+
+    state = _approved_state(_plan(_task('EXP-1')))
+    started = start_task(state, 'EXP-1')
+    _route_return(state, 'FedotAgent')
+    state['fedot_artifacts'] = [{
+        'name': 'exp-1-result.csv', 'bucket': 'managed-experiments',
+        's3_key': 'experiments/run/EXP-1/result.csv', 'tool': 'estimate_property',
+    }]
+    before = deepcopy(state)
+    payload = {**_success_result('EXP-1'), 'outputs': outputs}
+    with pytest.raises(ExperimentRuntimeError) as raised:
+        record_result(state, 'EXP-1', started['attempt_id'], payload)
+    assert raised.value.code == 'outcome_contract_invalid'
+    assert state == before
+
+    published = []
+    monkeypatch.setattr(control_tools, '_mirror_result_to_graph', lambda *args: published.append(args))
+    toolset = ExperimentControlToolset()
+    refused = toolset.record_result('EXP-1', started['attempt_id'], payload, _tool_context(state))
+    assert refused['error_code'] == 'outcome_contract_invalid'
+    assert refused['details']['repair_contract']['requirement_outcome_schema']
+    assert not published
+    assert state == before
+
+    fixed = {**payload, 'outputs': {'requirements': {'DL-1': {
+        'produced': 1, 'criteria_checks': {'C1': True},
+    }}}}
+    stored = toolset.record_result('EXP-1', started['attempt_id'], fixed, _tool_context(state))
+    assert stored['status'] == 'success'
+    assert len(published) == 1
+    assert len(state['experiment_runtime']['results']) == 1
+    repeated = record_result(state, 'EXP-1', started['attempt_id'], fixed)
+    assert repeated['idempotent'] is True
+    assert len(state['experiment_runtime']['results']) == 1

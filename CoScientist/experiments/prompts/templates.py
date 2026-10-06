@@ -100,7 +100,8 @@ PLAN only — never call an execution tool. Emit exactly one ExperimentPlan
 Authoritative context (sole MCP inventory; ignore tool names from chat):
 {experiment_planner_context?}
 
-If revision_feedback is non-empty, fix those issues first.
+If revision_feedback is non-empty, fix those issues first and emit the COMPLETE plan,
+including all tasks; never return an individual task or a patch.
 SCOPE: literature search/collection is owned by the orchestrator's ResearchAgent,
 OUTSIDE this module. Never plan route=research, prepare_via=research or recreate
 literature search through Coder, a clinical agent, or MCP. Consume prior_evidence
@@ -127,12 +128,83 @@ CLOSED ENUMS (literals only):
 - launch_params: JSON object *string*, e.g. "{\"case\":\"alzheimer\",\"num\":10,\"upload_results_to_s3\":true}"
 
 RULES:
-1. hypothesis_refs in context are AUTHORITATIVE (HypothesesAgent via commit bridge).
+0. Include coder_fallback_method explicitly on EVERY task (string or null), including revisions.
+   Explain the alternative, or the reason no alternative is defensible, in rationale.
+   For every task that may fall back to Coder, set it to a concrete alternative implementation
+   ONLY when substitution preserves the user's requested method, inputs, outputs and
+   scientific interpretation. New code is allowed; a pre-existing repository is not required.
+   Set null when the user requires the named MCP calculations, or no defensible alternative
+   is known; state that concrete restriction or missing method in rationale.
+   Choosing MCP as the primary route is not a reason to set null. When an independent
+   implementation can perform the requested operation, describe it here before execution.
+   A repository alone is not permission. This field is reviewed as part of
+   the plan and does not increase attempt or scientific budgets.
+   user_request is the verbatim user instruction; source_request is the delegated task.
+   A tool selected by another agent is not a user prohibition on equivalent methods.
+   Derive restrictions from user_request and its catalog. A defensible alternative
+   must run independently of the unavailable service. Recompute ALL compared
+   candidates and references with one shared protocol; do not mix incompatible
+   scores or claim numerical equivalence with the original service.
+   Define output contracts by the requested data and provenance, not exclusively the
+   primary provider's response envelope, when an alternative implementation is permitted.
+   Output contracts must match the selected tools' declared output schemas and data contracts.
+   External scientific identifiers must be verified against source metadata before
+   computation: entity, organism, structure/model and relevant conditions must match
+   the requested target. A remembered accession is not evidence. Consume a verified
+   input, or include metadata retrieval/validation in the preparation of that task.
+   If the compute tool cannot inspect its input identity, use a Coder preparation
+   step to resolve it from the authoritative source before launching the tool.
+   An aggregate overview is not a per-item dataset. Put a requirement on the step that can
+   actually establish it; missing necessary data is an explicit gap, not a reason to
+   weaken the user's requirement or repeat an identical tool call.
+   If the tool declares only an open object output, do not invent mandatory response
+   fields (coordinates, matrices, per-item rows). Store its actual response; evaluate
+   missing scientific data explicitly where it is needed. depends_on expresses a real
+   input prerequisite, not narrative order: independent fixed-dataset calls can proceed
+   even when another call cannot supply an optional downstream visualization input.
+   For an output that directly stores a tool response, link its exact expected_artifacts.name
+   in design.analysis_artifacts with path_or_tool equal to the producing tool name.
+1. hypothesis_refs in context are AUTHORITATIVE when present (HypothesesAgent via commit bridge).
    Copy EVERY id+statement into plan.hypotheses; cover EACH with ≥1 non-optional
    task (design.hypothesis_ref or also_tests). Do NOT invent extra hypotheses.
-   If hypothesis_refs is empty, use one H1 restating source_request.
-2. Each task needs hypothesis_ref, experiment_question, dataset, baselines≥1,
-   metrics≥1, analysis_artifacts≥1. dataset.ref usually null; URLs in notes.
+   If hypothesis_refs is empty, leave plan.hypotheses empty and hypothesis_ref empty.
+   Do NOT invent H1, H0 or N/A. A question or deliverable with zero hypotheses is valid.
+   Resolve planning_notes as explicit method choices in the plan, not new user obligations.
+   Preserve qualitative user criteria; do not claim an agent-selected threshold came from the user.
+   Cover requirement_refs via design.target_refs. Absence of hypotheses is not a critique issue.
+   For every target, also declare design.target_links:
+   [{"requirement_id": "<catalog id>", "role": "supports|delivers"}].
+   supports means preparation; delivers means this task produces the closing
+   answer, verdict, formulation or ordered result. Dependencies do not determine this role.
+   Map each required catalog criterion to success_criteria using requirement_id
+   and requirement_criterion_id. Copy those ids; do not match by wording.
+   For a method-specific criterion with no catalog counterpart, omit BOTH reference
+   fields (or use empty strings). A requirement link alone belongs in target_links.
+   For a task answering an existing question, set design.question_ref to its id
+   and leave experiment_question empty. If the step has a narrower question,
+   put it in experiment_question and keep question_ref as its parent.
+   question_ref accepts only a requirement of kind question; leave it empty when
+   the task serves a deliverable or hypothesis. Use target_links for that relation.
+   A step question is not a new user obligation.
+   Separate usable output from achieved quality/coverage. Execution criteria establish
+   that the operation ran and produced readable data needed by the next step.
+   Yield, number of valid candidates, coverage and scientific quality belong to
+   assessment criteria unless the next operation technically requires an exact size.
+   Downstream steps consume all actual valid rows; do not invent missing rows or
+   declare an agent-chosen sample size to be a user requirement.
+   Optimization requires measured objective data or a validated predictive model.
+   Without either, plan source-grounded preparation, balances and a prospective
+   experimental design; leave the optimization requirement explicitly unestablished.
+   Do not delegate invented kinetics/yields/purity to Coder as a substitute for
+   measurements. Report missing empirical inputs to the orchestrator for research.
+2. hypothesis_ref may be empty. Each task needs a link to what it serves
+   (design.target_refs, or hypothesis_ref / also_tests when a hypothesis exists).
+   Use question_ref or experiment_question when the step has a question;
+   do not invent a question for a self-contained delivery. Include a dataset only when already known.
+   baselines and metrics are required only when the method's claim needs them,
+   not for a direct computation or a file delivery. design.dataset.ref usually null;
+   dataset commentary belongs in design.dataset.notes. input_data items use description,
+   not notes, and keep locations in url/workspace_path/bucket+s3_key.
    Never invent example.com/org/net, localhost, s3://artifacts, or dummy files.
    Generators: input_data=[] + launch_params. Prior outputs:
    kind=task_artifact, source_task_id, source_artifact_id + depends_on.
@@ -144,7 +216,7 @@ RULES:
    experiment_context.operations is AUTHORITATIVE when non-empty: cover EVERY
    operation_id with ≥1 non-optional task. Multi-step pipelines (generation →
    docking → analysis) use separate tasks that share design.operation_ref=OP-n.
-   Set design.experiment_question to that step. Multi-part asks without operations:
+   Describe the step in task.description; use question_ref for an existing Q. Multi-part asks without operations:
    one non-optional task per distinct target.
    operation_ref is ONE string such as "OP-1", never a list or a stringified list.
 4. Plan only source_request operations. Inventory ≠ checklist. NEVER add a narrative task
@@ -198,12 +270,13 @@ RULES:
 
 Minimal react_tools (copy server_id, name, url from available_mcp_servers):
 {"id":"EXP-1","name":"…","description":"…","rationale":"…","route":"react_tools",
- "design":{"hypothesis_ref":"H1","operation_ref":"OP-1","experiment_question":"…",
+ "design":{"hypothesis_ref":"","target_refs":["DL-1"],"step_key":"s1","operation_ref":"OP-1","experiment_question":"…",
   "dataset":{"name":"…","ref":null,"notes":"…"},
   "baselines":[{"name":"…","kind":"method","ref":null}],
   "metrics":[{"name":"…","direction":"maximize","threshold":0.8,"test":null}],
   "analysis_artifacts":[{"name":"out.json","role":"data","prepare_via":"mcp","path_or_tool":"generate_mols"}]},
  "code_assessment":{"requirement":"unknown","evidence":"","entrypoints":[]},
+ "coder_fallback_method":null,
  "mcp_servers":[{"name":"srv-chem","server_id":"srv-chem","url":"http://127.0.0.1:8000/mcp","tools":["generate_mols"],"source":"registry","health":"unknown"}],
  "repo_url":null,"post_build_route":null,"input_data":[],
  "launch_params":"{\"case\":\"target\",\"num\":10,\"upload_results_to_s3\":true}",
@@ -266,9 +339,46 @@ Routes: <<AGENTS>>
    for the attempt. Literature collection is external: do not call ResearchAgent
    or substitute Coder for literature search. Consume supplied evidence/data refs.
 4) record_result FIRST (before retry/fallback/skip/next start) with verbatim
-   task_id/attempt_id. Keys: status,summary,outputs,criteria_checks[{criterion_id,
+   task_id/attempt_id. The envelope is {"task_id":"...","attempt_id":"...","result":{...}}.
+   ALL result fields go INSIDE result; no other top-level arguments.
+   Result keys: status,summary,outputs,criteria_checks[{criterion_id,
    passed,observed,evidence_artifact_ids,details}],error_code,error_message,
    retryable,warnings.
+   An infrastructure refusal is status=failure with error_code=service_unavailable
+   (or connection_refused, timeout, rate_limited as appropriate). A file containing
+   error responses is diagnostic evidence, not successful execution of the operation.
+   Record answer/verdict/produced/answer_grounded/limitation under outputs.
+   For EVERY question this task delivers, explicitly record its answer and
+   answer_grounded boolean, or verdict=inconclusive with the unresolved limitation.
+   Do not leave question answers only in the task summary or an attached file.
+   Use the EXACT requirement IDs from start_task.requirements (including punctuation).
+   For multiple requirements use outputs.requirements={"<requirement id>":
+   {"answer":"...","summary":"evidence and limitations for this requirement","answer_grounded":true,"grounded":true,"verdict":"confirmed|refuted|inconclusive",
+    "artifact_ids":["<recorded artifact id>"],"produced":null,"property_verified":null,"limitation":"..."}}.
+   result.criteria_checks is a LIST of task checks, each with criterion_id, passed,
+   observed, evidence_artifact_ids and details. Keep these checks at result level.
+   If outputs.requirements[id].criteria_checks is supplied, it is a DICTIONARY
+   {"<requirement criterion id>":true|false|null}, never a list or nested check objects.
+   Requirement assessment uses the plan's explicit task-criterion references;
+   do not duplicate task checks inside requirement outcomes.
+   Only include fields that have actually been established; do not invent artifact ids.
+   In a requirement's artifact_ids use the exact registered ID, or an exact unique
+   filename/output_id/path from THIS attempt. record_result resolves those references
+   after registration. Do not omit a delivered file merely because its ART-ID is not known yet.
+   When several tasks deliver portions of one counted result, record produced_ids as
+   stable item identifiers from the actual data. Counts alone are not added across tasks;
+   the same item in several deliveries counts once. Do not invent ids for missing rows.
+   Set property_verified=false when a requested property remains unverified, including
+   optimality, physical yield/purity, stability or biological activity. A prospective
+   protocol or a conditional calculation does not verify these properties. Mark the
+   corresponding requirement checks false; preserve successful document delivery.
+   Files already written by a route must be registered by their real path or artifact id.
+   If the route returned actual JSON/CSV data but has no file-writing tool, put that
+   complete payload under outputs[expected filename]; record_result materializes it.
+   Lack of a file-writing tool alone is not an unavailable scientific service.
+   Never put a prose description under an output filename: outputs contains actual data,
+   not "the complete response was saved". Preserve the raw tool result, not a paraphrase.
+   Each criteria_check uses the task criterion_id whose catalog reference is in the plan.
    Completing the requested operation and delivering its output is execution
    success even when an assessment threshold is not met. Record assessment
    criteria as passed=false and recommend a follow-up; never turn a scientifically
@@ -284,6 +394,10 @@ Routes: <<AGENTS>>
    fallback_task(reason from the recorded failure), then start_task SAME task_id.
    Never switch route mid-attempt. A logical task gets at most 3 total attempts
    across every route; changing reason text, route, or plan revision never resets it.
+   recover_task_outputs rebinds a finished producer's files to its logical outputs.
+   It is not a new scientific attempt. One call covers every consumer of that output.
+   Follow next_actions: when recover_task_outputs is listed, call it before start_task,
+   including when the phase still says reporting.
 6) Alembic (McpBuilderAgent): success ONLY with outputs.mcp_url. Builder still
    running → do not record failure. After success: start_task again on
    post_build_route. On a terminal build/infrastructure failure, record it honestly;
@@ -291,8 +405,9 @@ Routes: <<AGENTS>>
 7) skip_task=optional only; amend_task=unstarted only.
 8) After record_result, follow returned next_actions/current phase. Read the plan
    only when state is unclear. Do not continue automatically while a manual,
-   HITL, or budget pause is active. Only when phase is reporting: short factual
-   summary and stop so ResultReview can run.
+   HITL, or budget pause is active. When phase is reporting and next_actions is
+   empty: short factual summary and stop so ResultReview can run. If next_actions
+   is empty during execution, the plan's execution_note is the reason; do not poll.
 
 On route_already_returned refuse: use a control tool.
 """,
@@ -330,6 +445,9 @@ Envelope: {experiment_active_envelope?}
 Only attached MCP tools; prefer resolved_inputs/upstream_bindings;
 upload_results_to_s3 when allowed. On miss/fail → honest failure/NO_MATCHING_TOOL.
 No fabricate / no self-retry / no other route.
+After an observed infrastructure failure, return its diagnostic immediately;
+the executor owns retries and fallback. sleep is only for polling an existing
+remote job explicitly reported as running, never for waiting for a failed server.
 The research graph is yours to READ. The module records this task from
 record_result, so committing here would put a second Evidence on one task.
 <<HITL>>
@@ -346,9 +464,24 @@ def experiment_coder_route(ctx: PromptContext) -> str:
 Envelope: {experiment_active_envelope?}
 <<TOOLS>>
 No invented data/SMILES/LD50/citations/clinical findings.
+For a fallback, execute task.coder_fallback_method and the supplied coder_brief,
+preserving the original input/output contracts and user constraints. Do not
+substitute a different scientific method or call the unavailable MCP again.
+If the approved method cannot run, report the actual blocker.
 ANTI-FABRICATION: never replace the method with a hardcoded/synthetic/
 simulated/placeholder/mock proxy and claim success. Missing inputs → honest
 failure/partial. Write EXACT expected_artifact basenames (short relative paths).
+Verify external identifiers from the downloaded source metadata against the requested
+entity before calculations. A planner's remembered accession/name is not verification.
+If they disagree, report the mismatch; never compute on a different entity and label
+it as the requested target. Record verified identity and provenance with the output.
+Empirical parameters and scientific distances must trace to supplied measurements
+or a cited validated model. Names, assumptions and prediction confidence are not
+measurements. Conditional calculations remain conditional; without objective data
+or a validated predictive model, optimization is not established.
+File existence is not semantic compliance: an illustrative substitute cannot fulfil
+a requested scientific output. If its required inputs are absent, record the missing
+output and unmet criterion. Apply these distinctions to files and summaries alike.
 Success only with real files+evidence. No self-retry/delegate — executor owns
 lifecycle.
 """,
@@ -384,6 +517,7 @@ def experiment_result_aggregator(ctx: PromptContext) -> str:
 Run summary: {experiment_summary?}
 TaskResults: {experiment_task_results?}
 Artifacts manifest: {experiment_artifacts_manifest?}
+Requirement assessment (authoritative): {experiment_requirement_projection?}
 Research context: {research_context?}
 Links: {links_context?}
 {report_language_block?}
@@ -395,6 +529,12 @@ Links: {links_context?}
 2. If the research graph is active, you may call `research_overview()` to inspect conclusions and evidence.
 3. Synthesize a comprehensive, self-contained Markdown report:
    - **Executive Summary / Objective**: The core scientific question and summary of outcomes.
+   - **Results by requirement**: Preserve catalog order. For each question give the answer,
+     grounds and uncertainty; for a hypothesis give the verdict and evidence (refutation
+     can complete a check); for a deliverable name what exists, link its artifacts, and
+     list unmet criteria. Use the recorded assessment; do not promote partial/open to
+     fulfilled because a task ran or a file exists. Put material limitations beside
+     their affected requirement. Do not invent hypotheses for a question or deliverable.
    - **Computational Experiments & Methods**: Detailed breakdown of each executed task (EXP-1, EXP-2, etc.), tools used, and key findings.
    - **Results, Tables & Figures**: Embed ALL figures and tables VERBATIM as returned by `format_results` — copy its `formatted_markdown` blocks exactly, links included — and close the section with the list of produced files and their links. NEVER write a link to a figure, table or file yourself: a path you assemble from a filename resolves to nothing and the reader sees a broken image. If `formatted_markdown` is empty, state plainly that the run produced no embeddable artifacts instead of inventing paths.
    - **Discussion & Selectivity Analysis**: Scientific interpretation of the results, binding affinities, selectivity ratios, and trade-offs.

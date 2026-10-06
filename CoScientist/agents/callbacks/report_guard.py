@@ -138,6 +138,12 @@ def _why(state: Any, lang: str) -> str:
     # operator. It stays as the fallback for the cases the table has no word for.
     if pause:
         said = _PAUSE_WORDS[lang].get(pause, pause)
+        diagnosis = state.get("experiment_plan_stop_diagnosis") if hasattr(state, "get") else None
+        if isinstance(diagnosis, dict) and diagnosis.get("primary_issue"):
+            # Name the blocker that was actually left. Do not substitute
+            # "the plan is too complex" when the critique said something else.
+            if not (diagnosis.get("blamed_complexity") is False and "complex" in said.lower()):
+                said = f"{said}: {diagnosis['primary_issue']}"
         return f"{said} (phase={phase})" if phase else said
     said = str(state.get("experiment_execution_summary") or "").strip()
     if said:

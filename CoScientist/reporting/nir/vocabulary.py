@@ -56,6 +56,7 @@ NODE_WORDS: Dict[str, str] = {**_KIND_WORDS, **_KIND_OVERRIDES}
 NODE_PURPOSE: Dict[str, str] = {
     "ResearchQuestion": "вопрос, на который отвечает работа",
     "Hypothesis": "проверяемое предположение",
+    "Deliverable": "передаваемый результат",
     "Evidence": "зафиксированное наблюдение",
     "Conclusion": "вывод по итогам проверки",
     "VerificationMethod": "способ проверки предположения",

@@ -44,6 +44,10 @@ class ArtifactRef(StrictModel):
     derived_from: list[str] = Field(default_factory=list)
     created_at: datetime
     durability: Literal["managed", "workspace", "transient"]
+    #: Logical output this file satisfies. Independent of ``name``.
+    output_id: str | None = None
+    #: Set by runtime after opening bytes, never copied from the route response.
+    content_verified: bool = False
     #: Our own copy in the session's artifact store, when one was taken.
     #:
     #: Deliberately NOT named `artifact_id` — that one is this runtime's own

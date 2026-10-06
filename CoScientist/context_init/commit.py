@@ -26,10 +26,21 @@ _REMAINING_LIMIT = re.compile(r"^\s*([\d.]+)\s*/\s*([\d.]+)\s*$")
 
 
 def _block_source(block: FrameBlock) -> str:
-    """`human` when any set field of the block came from a human, else agent."""
+    """`human` when any set field of the block came from a human, else agent.
+
+    This is a coarse label for a whole block. It is not proof that every field
+    in the block is a user obligation — use ``_field_source`` for that.
+    """
     for f in block.set_fields():
         if f.status in _HUMAN_STATUSES:
             return HUMAN_SOURCE
+    return AGENT_SOURCE
+
+
+def _field_source(field) -> str:
+    """Provenance of one field. An agent value beside a human value stays agent."""
+    if getattr(field, "status", "") in _HUMAN_STATUSES:
+        return HUMAN_SOURCE
     return AGENT_SOURCE
 
 
@@ -56,6 +67,15 @@ def frame_constraint_rows(frame: ResearchFrame) -> List[Dict[str, Any]]:
             "title": block.title,
             "subtype": block.subtype,
             "content": _content(block),
+            "fields": [
+                {
+                    "name": f.name,
+                    "value": f.value,
+                    "status": f.status,
+                    "source": _field_source(f),
+                }
+                for f in block.set_fields()
+            ],
         })
     return rows
 
@@ -83,6 +103,7 @@ def frame_to_init_kwargs(frame: ResearchFrame) -> Dict[str, Any]:
                 if f.name == "formulation":
                     continue  # the root formulation is passed separately
                 question_attrs[f.name] = f.value
+                question_attrs[f"{f.name}_source"] = _field_source(f)
                 if f.status in _HUMAN_STATUSES:
                     question_source = HUMAN_SOURCE
             question_source = question_source or (
@@ -115,8 +136,19 @@ def frame_to_init_kwargs(frame: ResearchFrame) -> Dict[str, Any]:
                     "source": src})
 
         elif block.kind == "confirmation_criteria":
-            confirmation_criteria.append({
-                "attrs": {f.name: f.value for f in set_fields}, "source": src})
+            # A human value in the same block does not make an agent proposal
+            # a user threshold. Obligation follows each field's own source.
+            attrs = {}
+            human_names = []
+            for f in set_fields:
+                attrs[f.name] = f.value
+                attrs[f"{f.name}_source"] = _field_source(f)
+                if _field_source(f) == HUMAN_SOURCE:
+                    human_names.append(f.name)
+            attrs["obligation_fields"] = human_names
+            field_sources = {_field_source(f) for f in set_fields}
+            criteria_source = HUMAN_SOURCE if field_sources == {HUMAN_SOURCE} else AGENT_SOURCE
+            confirmation_criteria.append({"attrs": attrs, "source": criteria_source})
 
         elif block.kind == "cost_model":
             attrs = {f.name: f.value for f in set_fields}

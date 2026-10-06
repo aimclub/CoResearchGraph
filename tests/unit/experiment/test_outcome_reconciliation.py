@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from CoScientist.experiments.outcome.reconciliation import (
     DispositionKind,
     reconcile_scientific_outcome,
@@ -24,13 +21,20 @@ def _approved_state(**extra):
 
 
 def test_test1_snapshot_is_a_recoverable_pause_not_completion():
-    root = Path(__file__).resolve().parents[3]
-    snapshot = root / (
-        "graph_runs/web_state/adk_sessions/coscientist_app/"
-        "user_6f7b3af231cc48029f87ddc901a2facd/"
-        "session_6496a804c45b43858c015a7c9e2ca026.json"
-    )
-    state = json.loads(snapshot.read_text(encoding="utf-8"))["state"]
+    # Minimal saved-state reproduction; independent of a developer's local session.
+    state = {
+        "experiment_plan_review_paused": True,
+        "experiment_review_pause_reason": "max_plan_revisions",
+        "experiment_module_outcome": {
+            "status": "blocked", "stage": "plan_review",
+            "reason": "max_plan_revisions", "accepted": False,
+        },
+        "_master_active_tasks": [
+            {"id": "TASK-1", "status": "TODO"},
+            {"id": "TASK-2", "status": "DONE"},
+            {"id": "TASK-3", "status": "TODO"},
+        ],
+    }
 
     disposition = reconcile_scientific_outcome(state, current_run_id="run-limited")
 

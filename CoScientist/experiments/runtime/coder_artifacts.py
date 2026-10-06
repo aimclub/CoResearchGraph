@@ -16,41 +16,6 @@ _WORKSPACE_STATE_KEY = "coder_workspace_id"
 _log = logging.getLogger(__name__)
 
 
-def _mirror(state: Mapping[str, Any], destination: Path, payload: bytes,
-            record: MutableMapping[str, Any]) -> None:
-    """Copy a promoted artifact into the session store and note its id.
-
-    ``promote_coder_workspace_artifacts`` has no ADK context, but the scope is
-    pinned in state by ``session_key`` the first time anything resolves it —
-    the same reason ``workspace_sync`` reads it from there rather than from a
-    context it does not have.
-    """
-    try:
-        from CoScientist.graph.session_scope import (
-            GRAPH_SCOPE_SESSION_KEY,
-            GRAPH_SCOPE_USER_KEY,
-        )
-        from CoScientist.reporting.mirror import mirror_artifact
-
-        user_id = str(state.get(GRAPH_SCOPE_USER_KEY) or "")
-        session_id = str(state.get(GRAPH_SCOPE_SESSION_KEY) or "")
-        if not (user_id and session_id):
-            return
-        mirrored = mirror_artifact(
-            user_id=user_id, session_id=session_id,
-            payload=payload, path=destination,
-            filename=Path(record["name"]).name,
-            label=str(record.get("name") or ""),
-            tool="CoderAgent", source_kind="coder",
-        )
-        if mirrored.get("artifact_id"):
-            record["artifact_id"] = mirrored["artifact_id"]
-        if mirrored.get("bucket"):
-            record["bucket"], record["s3_key"] = mirrored["bucket"], mirrored["s3_key"]
-    except Exception as exc:  # noqa: BLE001 — promotion must not fail on this
-        _log.warning("coder artifact mirror failed for %s (%s)", destination, exc)
-
-
 def _find_candidate(root: Path, expected_name: str) -> Path | None:
     """Locate a sandbox file by exact basename, then by normalized stem."""
     if not root.is_dir():
@@ -230,13 +195,8 @@ def promote_coder_workspace_artifacts(
             "producer_tool": "CoderAgent",
             "source": "coder_workspace",
         }
-        # Until now a coder artifact carried nothing but a path on this machine.
-        # The report collector needs a url or a bucket to pick something up, and
-        # these files also sit outside the directory it walks — so every one of
-        # them was produced, written to disk, and never seen by anyone. The
-        # bytes and the digest are already in hand here, so the mirror costs a
-        # copy and gives the file an address.
-        _mirror(state, destination, payload, record)
+        # normalise_artifacts publishes the local file once, retaining its
+        # readable canonical path for schema verification and downstream inputs.
         if record["workspace_path"] not in existing:
             bucket.append(record)
             existing.add(record["workspace_path"])

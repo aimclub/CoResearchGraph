@@ -200,8 +200,14 @@ def test_context_init_agent_may_write_its_frame():
 
 
 def test_context_init_agent_cannot_write_others_nodes():
+    # A statement may record the hypothesis or deliverable it actually contains.
+    # Evidence and a support edge stay with the agents that produce them.
     assert schema.validate_node_draft(
-        "ContextInitAgent", "Hypothesis", "formulated", {})
+        "ContextInitAgent", "Hypothesis", "formulated", {"formulation": "x"}) == []
+    assert schema.validate_node_draft(
+        "ContextInitAgent", "Deliverable", "specified", {"formulation": "x"}) == []
+    assert schema.validate_node_draft(
+        "ContextInitAgent", "Evidence", "obtained", {"subtype": "literature"})
     assert schema.validate_edge(
         "ContextInitAgent", "supports", "Evidence", "Hypothesis")
 
@@ -212,6 +218,11 @@ def test_post_final_events_seeds_graph_and_emits_no_chat_message(tmp_path, monke
     monkeypatch.setattr("CoScientist.context_init.agent.get_research_graph", lambda _ctx: store)
 
     frame = _filled_frame()
+    from CoScientist.requirements.models import StatementDraft
+    frame.statement_draft = StatementDraft.model_validate({"parts": [{
+        "kind": "question", "formulation": frame.original_request,
+        "source": "user_request", "quote": frame.original_request,
+    }]})
     agent = ContextInitSessionAgent(name="ContextInitSessionAgent", output_key="research_frame")
     ctx = SimpleNamespace(
         session=SimpleNamespace(state={"research_frame": frame.model_dump()}),
@@ -224,7 +235,8 @@ def test_post_final_events_seeds_graph_and_emits_no_chat_message(tmp_path, monke
     event = events[0]
 
     # Verify state delta is populated correctly
-    assert event.actions.state_delta[FRAME_STATE_KEY] == frame.model_dump()
+    assert event.actions.state_delta[FRAME_STATE_KEY]["original_request"] == frame.original_request
+    assert event.actions.state_delta["normalized_statement"]["uncertain"] is False
     assert event.actions.state_delta[FRAME_COMPLETED_STATE_KEY] is True
     assert event.actions.state_delta["orchestrator_root_goal"] == frame.original_request
 
@@ -234,3 +246,67 @@ def test_post_final_events_seeds_graph_and_emits_no_chat_message(tmp_path, monke
 
     # Verify no visible chat text is emitted
     assert event.content is None
+
+
+def _post_events(frame, store, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("CoScientist.context_init.agent.get_research_graph", lambda _ctx: store)
+    agent = ContextInitSessionAgent(name="ContextInitSessionAgent", output_key="research_frame")
+    ctx = SimpleNamespace(session=SimpleNamespace(state={"research_frame": frame.model_dump()}),
+                          invocation_id="test", branch="main")
+    return list(agent._post_final_events(ctx, ""))[0].actions.state_delta
+
+
+def test_missing_catalog_is_visible_and_does_not_mark_frame_initialized(tmp_path, monkeypatch):
+    delta = _post_events(_filled_frame(), ResearchGraphStore(directory=str(tmp_path)), monkeypatch)
+    assert delta["normalized_statement"]["uncertain"] is True
+    assert delta["requirement_refs"] == []
+    assert delta[FRAME_COMPLETED_STATE_KEY] is False
+
+
+def test_failed_catalog_commit_does_not_mark_frame_initialized(tmp_path, monkeypatch):
+    from CoScientist.requirements.models import StatementDraft
+    frame = _filled_frame()
+    frame.statement_draft = StatementDraft.model_validate({"parts": [{
+        "kind": "question", "formulation": frame.original_request,
+        "source": "user_request", "quote": frame.original_request,
+    }]})
+    monkeypatch.setattr("CoScientist.requirements.graph_io.commit_statement", lambda *_: {"ok": False})
+    delta = _post_events(frame, ResearchGraphStore(directory=str(tmp_path)), monkeypatch)
+    assert delta["normalized_statement"]["uncertain"] is False
+    assert delta[FRAME_COMPLETED_STATE_KEY] is False
+
+
+def test_context_init_prompt_and_schema_request_the_semantic_catalog():
+    from CoScientist.agents.prompts.templates import context_init
+    from CoScientist.requirements.prompt import STATEMENT_PROMPT
+    prompt = context_init(None)
+    assert STATEMENT_PROMPT in prompt
+    assert '"statement_draft"' in prompt
+    schema = ResearchFrame.model_json_schema()
+    assert "StatementDraft" in schema["$defs"]
+    assert "hypothesis_mode" in schema["$defs"]["StatementPartDraft"]["properties"]
+
+
+def test_statement_repair_receives_the_rejected_draft_and_trusted_request():
+    import json
+    from types import SimpleNamespace
+    from CoScientist.requirements.models import StatementDraft
+
+    source = "Compare these two approaches."
+    frame = ResearchFrame.blank(source)
+    frame.statement_draft = StatementDraft.model_validate({"parts": [{
+        "kind": "question", "formulation": source, "source": "user_request",
+        "quote": source, "hypothesis_mode": "check",
+    }], "volume": {"input_count": 2, "input_count_quote": "these two approaches"}})
+    agent = ContextInitSessionAgent(name="ContextInitAgent", output_key="research_frame")
+    state = {"research_frame": frame.model_dump()}
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state))
+    feedback = agent._unfinished_feedback(ctx)
+    assert "hypothesis_mode belongs only to a hypothesis" in feedback
+    assert "count lacks a source quote containing its value" in feedback
+    repair = json.loads(feedback.split("Draft to repair against its trusted source: ", 1)[1])
+    assert repair["original_request"] == source
+    assert repair["statement_draft"] == frame.statement_draft.model_dump()
+    # The repair is model work; validation does not rewrite or accept the rejected draft.
+    assert state["research_frame"] == frame.model_dump()

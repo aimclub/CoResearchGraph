@@ -94,3 +94,22 @@ def test_an_unknown_reference_is_left_where_a_reader_can_see_it():
 def test_tool_arguments_still_get_the_bare_url():
     """A tool needs an address, not prose. ``as_markdown`` defaults to off."""
     assert expand_refs(f"{REF}", REGISTRY) == URL
+
+
+@pytest.mark.parametrize("schema_bound", [False, True])
+def test_agent_egress_preserves_literal_urls_in_schema_bound_source_quotes(schema_bound):
+    import json
+    from types import SimpleNamespace
+    from google.genai import types
+    from CoScientist.agents.callbacks.link_registry import USER_LINKS_STATE_KEY, expand_link_refs
+
+    ctx = SimpleNamespace(state={USER_LINKS_STATE_KEY: REGISTRY},
+        _invocation_context=SimpleNamespace(agent=SimpleNamespace(output_schema=dict if schema_bound else None)))
+    text = json.dumps({"quote": f"Use {REF} as the data source."}) if schema_bound else f"Use {REF}."
+    response = SimpleNamespace(content=types.Content(parts=[types.Part(text=text)]))
+    assert expand_link_refs(ctx, response) is None
+    result = response.content.parts[0].text
+    if schema_bound:
+        assert json.loads(result)["quote"] == f"Use {URL} as the data source."
+    else:
+        assert result == f"Use [fig3_tsne_f6ca9105.png]({URL})."

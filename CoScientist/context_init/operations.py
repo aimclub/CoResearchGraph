@@ -270,9 +270,17 @@ def fill_operations_if_missing(frame: ResearchFrame) -> ResearchFrame:
     return frame
 
 
-def operations_as_dicts(frame: ResearchFrame) -> List[dict[str, str]]:
+def operations_as_dicts(frame: ResearchFrame) -> List[dict[str, Any]]:
+    """Work slots. ``creates_obligation`` is false: the normalized statement
+    is the only source of user obligations. Regex extraction must not invent
+    a second one."""
     filled = fill_operations_if_missing(frame.model_copy(deep=True))
-    return [op.model_dump() for op in filled.operations]
+    rows = []
+    for op in filled.operations:
+        row = op.model_dump()
+        row["creates_obligation"] = False
+        rows.append(row)
+    return rows
 
 
 __all__ = [

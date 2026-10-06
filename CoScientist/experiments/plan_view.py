@@ -84,7 +84,7 @@ def _inputs(task: ExperimentTask) -> list[dict[str, Any]]:
         if not location and ref.s3_key:
             location = f"s3://{ref.bucket}/{ref.s3_key}" if ref.bucket else ref.s3_key
         if not location and ref.source_task_id:
-            location = f"{ref.source_task_id}/{ref.source_artifact_id or '*'}"
+            location = f"{ref.source_task_id}/{ref.source_artifact_id or ref.source_output_id or '*'}"
         rows.append({
             "data_id": ref.data_id,
             "kind": ref.kind,
@@ -104,6 +104,9 @@ def _criteria(task: ExperimentTask) -> list[dict[str, Any]]:
             threshold = f"{criterion.metric} {criterion.operator} {criterion.target}"
         rows.append({
             "criterion_id": criterion.criterion_id,
+            "purpose": criterion.purpose,
+            "requirement_id": criterion.requirement_id,
+            "requirement_criterion_id": criterion.requirement_criterion_id,
             "kind": criterion.kind,
             "description": _text(criterion.description),
             "threshold": threshold,
@@ -118,6 +121,9 @@ def _design(task: ExperimentTask) -> dict[str, Any]:
     return {
         "hypothesis_ref": design.hypothesis_ref,
         "also_tests": list(design.also_tests),
+        "target_refs": list(design.target_refs),
+        "target_links": [link.model_dump() for link in design.target_links],
+        "question_ref": design.question_ref,
         "operation_ref": design.operation_ref,
         "question": _text(design.experiment_question),
         "dataset": {
@@ -165,6 +171,7 @@ def task_to_view(task: ExperimentTask) -> dict[str, Any]:
             None if task.rationale == task.description else _text(task.rationale)
         ),
         "repo_url": task.repo_url,
+        "coder_fallback_method": task.coder_fallback_method,
         "post_build_route": task.post_build_route,
         "code_assessment": {
             "requirement": task.code_assessment.requirement.value,
@@ -196,6 +203,7 @@ def _matrix_row(view: dict[str, Any]) -> dict[str, Any]:
     return {
         "task_id": view["id"],
         "hypothesis": design["hypothesis_ref"],
+        "targets": list(design.get("target_refs") or []),
         "question": design["question"],
         "dataset": design["dataset"]["name"],
         "baselines": [b["name"] for b in design["baselines"]],
@@ -235,6 +243,8 @@ def plan_to_view(
     critique: Any = None,
     *,
     status: str = "proposed",
+    requirement_refs: Any = None,
+    results: Any = None,
 ) -> dict[str, Any]:
     """The whole plan as one renderable record.
 
@@ -242,7 +252,20 @@ def plan_to_view(
     ``proposed`` while the human is being asked, then ``approved`` /
     ``revision_requested`` / ``paused`` once they have answered.
     """
+    from CoScientist.requirements.coverage import catalog, project_requirements
+
     tasks = [task_to_view(t) for t in plan.tasks]
+    refs = list(requirement_refs or [])
+    known = {ref for row in refs for ref in (row.get("id"), row.get("hypothesis_id")) if ref}
+    refs.extend({"id": h.hypothesis_id, "kind": "hypothesis", "formulation": h.statement}
+                for h in plan.hypotheses if h.hypothesis_id not in known)
+    requirements = project_requirements(plan.tasks, refs, results)
+    criteria = {(rid, c.get("id")): c for rid, row in catalog(refs).items() for c in row.get("criteria") or []}
+    for task in tasks:
+        for check in task["success_criteria"]:
+            source = criteria.get((check["requirement_id"], check["requirement_criterion_id"]))
+            if source:
+                check["description"] = source["text"]
     return {
         "kind": "experiment_plan",
         "schema_version": plan.schema_version,
@@ -267,6 +290,7 @@ def plan_to_view(
         "critique": _critique_view(critique),
         "matrix": [_matrix_row(t) for t in tasks],
         "tasks": tasks,
+        "requirements": requirements,
     }
 
 

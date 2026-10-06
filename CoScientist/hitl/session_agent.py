@@ -160,6 +160,22 @@ class SessionAgent(LlmAgent):
                 return registered_plan
         return output_text
 
+    def _critic_output(self, ctx: InvocationContext, output_text) -> str:
+        """The critic's input can differ from the document shown to a human."""
+        return self._review_output(self._proposed_output(ctx, output_text))
+
+    def _critic_task(self, ctx: InvocationContext) -> str:
+        return _user_task(ctx)
+
+    def _can_run_critic(self, ctx: InvocationContext) -> bool:
+        return True
+
+    def _critic_review_limit(self) -> int:
+        return self.critic_max_rounds
+
+    def _unfinished_feedback_author(self) -> str:
+        return "user"
+
     def _unfinished_feedback(self, ctx: InvocationContext) -> Optional[str]:
         """Feedback that sends the agent back to FINISH its output — not to
         redo it — when it ended its turn before the output was complete.
@@ -318,8 +334,8 @@ class SessionAgent(LlmAgent):
         from CoScientist.logging.tool_activity import report_delegation
         from CoScientist.logging.agent_output import report_output
 
-        task = _user_task(ctx)
-        plan = self._review_output(self._proposed_output(ctx, critic_input))
+        task = self._critic_task(ctx)
+        plan = self._critic_output(ctx, critic_input)
         report = dict(
             author=self.name,
             target=self.critic_agent_name,
@@ -334,7 +350,7 @@ class SessionAgent(LlmAgent):
                 "caller": self.name,
                 "call_id": report["call_id"],
                 "content": template.format(
-                    round=round_no, max=self.critic_max_rounds,
+                    round=round_no, max=self._critic_review_limit(),
                     feedback=feedback_text,
                 ),
             })
@@ -342,7 +358,7 @@ class SessionAgent(LlmAgent):
         await report_delegation(
             ctx, phase="call",
             args={"task": task, "plan": plan, "round": round_no,
-                  "max_rounds": self.critic_max_rounds},
+                  "max_rounds": self._critic_review_limit()},
             **report,
         )
         try:
@@ -393,13 +409,22 @@ class SessionAgent(LlmAgent):
 
             async with Aclosing(self._produce(ctx)) as agen:
                 async for event in agen:
+                    # ADK puts output_key in the event delta; the Runner only
+                    # persists it after we yield. Final answers are held here
+                    # for review, so make the current draft available locally.
+                    if self.output_key and self.output_key in event.actions.state_delta:
+                        ctx.session.state[self.output_key] = event.actions.state_delta[self.output_key]
                     event_text = "".join(
                         part.text or ""
                         for part in (event.content.parts if event.content else [])
+                        if not getattr(part, "thought", False)
                     )
                     if event_text.strip():
                         last_model_text = event_text
-                    if event.is_final_response():
+                    if event.is_final_response() and (
+                        event.content is not None or event.error_code
+                        or (self.output_key and self.output_key in event.actions.state_delta)
+                    ):
                         final_event = event
                         # Earlier text events contain reasoning and tool-call
                         # narration. Prefer the final response for HITL when present.
@@ -426,6 +451,15 @@ class SessionAgent(LlmAgent):
 
             usable = (output_text or "").strip()
 
+            if final_event is not None and final_event.error_code:
+                # A provider failure is not a new draft. Never re-review the
+                # previous output_key after a rejected answer failed to rewrite.
+                if self.output_key:
+                    ctx.session.state[self.output_key] = None
+                    final_event.actions.state_delta[self.output_key] = None
+                yield final_event
+                break
+
             # ── Completeness check ───────────────────────────────────────
             # An agent that builds its output over several tool calls may end
             # its turn half way. Send it back to finish before anyone reviews
@@ -440,7 +474,9 @@ class SessionAgent(LlmAgent):
                         self.name, unfinished_rounds, self.unfinished_max_rounds,
                         unfinished,
                     )
-                    async for event in self._feed_back(ctx, unfinished):
+                    async for event in self._feed_back(
+                        ctx, unfinished, author=self._unfinished_feedback_author(),
+                    ):
                         yield event
                     continue
                 if unfinished:
@@ -457,6 +493,7 @@ class SessionAgent(LlmAgent):
             if (
                 final_event is not None
                 and self.plan_critic is not None
+                and self._can_run_critic(ctx)
                 and critic_rounds < self.critic_max_rounds
             ):
                 critic_input = output_text
@@ -600,4 +637,3 @@ class SessionAgent(LlmAgent):
                 self._rewrite_state_delta(ctx),
             ):
                 yield event
-

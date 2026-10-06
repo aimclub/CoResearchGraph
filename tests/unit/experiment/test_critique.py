@@ -325,11 +325,11 @@ def test_critique_requires_hypothesis_coverage_and_blocks_empty_inventory_mcp():
     assert ok.verdict == "approve"
 
 
-def test_render_experiment_plan_includes_design_matrix():
+def test_render_experiment_plan_puts_requirements_before_task_details():
     from CoScientist.experiments.review import render_experiment_plan
 
     text = render_experiment_plan(_plan(_task("EXP-1", route="coder")))
-    assert "Design matrix" in text
+    assert text.index("## Requirements") < text.index("## EXP-1") < text.index("<details>")
     assert "`H1`" in text
     assert "Baselines:" in text
     assert "Metrics:" in text

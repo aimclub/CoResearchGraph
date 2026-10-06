@@ -264,6 +264,23 @@ def spec_from_frame(frame: ResearchFrame,
         f"Уровень готовности технологии: {q['trl']}." if q.get("trl") else "",
     )
 
+    statement = getattr(frame, "normalized_statement", None) or {}
+    statement_lines = []
+    for part in statement.get("parts") or []:
+        if not isinstance(part, dict) or not part.get("obligation"):
+            continue
+        quote = ((part.get("provenance") or {}).get("quote") or "")
+        statement_lines.append(
+            f"{part.get('kind')}: {part.get('formulation')} "
+            f"(источник: {((part.get('provenance') or {}).get('source') or '')}; "
+            f"цитата: {quote})"
+        )
+    for cond in statement.get("conditions") or []:
+        if isinstance(cond, dict) and cond.get("text"):
+            statement_lines.append(f"условие, не факт: {cond['text']}")
+    if statement_lines:
+        purpose = text(purpose, "Нормализованная постановка: " + " ".join(statement_lines))
+
     tasks = [(t.operation_id, t.statement) for t in frame.operations if t.statement]
     work = TZSection(
         number=TASKS_NUMBER, title=SUBSECTION_TITLES[0][1],

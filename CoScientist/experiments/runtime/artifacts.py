@@ -56,6 +56,12 @@ def _artifact_suffix(name: str) -> str:
     return Path(str(name)).suffix.lower()
 
 
+def _expects_json_output(expected: Any) -> bool:
+    from CoScientist.experiments.runtime.outputs import _expects_json
+
+    return _expects_json(expected)
+
+
 def artifact_extension_compatible(captured: str, expected: str) -> bool:
     """Suffixes agree, expected has no suffix, or both look tabular."""
     c_suf, e_suf = _artifact_suffix(captured), _artifact_suffix(expected)
@@ -159,33 +165,21 @@ def find_artifact(
     artifact_ref: str,
     *,
     source_task_id: str | None = None,
+    source_output_id: str | None = None,
+    consumer_task_id: str | None = None,
+    data_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve prior-task artifact by ART-* id or expected name (latest wins)."""
-    want = str(artifact_ref or "").strip()
-    if not want:
-        raise ExperimentRuntimeError("artifact_not_found", "Required artifact ref is empty.")
+    """Resolve a prior output by logical id, ART-* id, or an unambiguous name."""
+    from CoScientist.experiments.runtime.outputs import resolve_output
 
-    matches: list[dict[str, Any]] = []
-    for result in runtime.get("results") or []:
-        if source_task_id and result.get("task_id") != source_task_id:
-            continue
-        if result.get("status") not in {"success", "partial"}:
-            continue
-        for artifact in result.get("artifacts") or []:
-            if not isinstance(artifact, dict):
-                continue
-            if artifact.get("artifact_id") == want:
-                return artifact
-            name = str(artifact.get("name") or "")
-            if name == want or Path(name).name == Path(want).name:
-                matches.append(artifact)
-            elif artifact_name_key(name) and artifact_name_key(name) == artifact_name_key(want):
-                matches.append(artifact)
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        return matches[-1]
-    raise ExperimentRuntimeError("artifact_not_found", f"Required artifact {want!r} does not exist.")
+    return resolve_output(
+        runtime,
+        source_task_id=source_task_id,
+        source_output_id=source_output_id,
+        source_artifact_id=str(artifact_ref or ""),
+        consumer_task_id=consumer_task_id,
+        data_id=data_id,
+    )
 
 
 def captured_delta(state: MutableMapping[str, Any], attempt: dict[str, Any]) -> list[dict[str, Any]]:
@@ -234,8 +228,12 @@ def normalise_artifacts(
             name, expected, role=str(role_hint), claimed_names=claimed_names
         )
         role = match.role if match else role_hint
+        output_id = getattr(match, "output_id", None) if match is not None else None
         if match is not None:
-            name = match.name
+            # Binding a logical output does not convert its bytes. Keep the
+            # actual format unless the conversion below succeeds.
+            if not _artifact_suffix(match.name) or _artifact_suffix(name) == _artifact_suffix(match.name):
+                name = match.name
             claimed_names.add(match.name)
 
         bucket = raw.get("bucket") or raw.get("bucket_name")
@@ -247,8 +245,32 @@ def normalise_artifacts(
         if s3_key and not bucket:
             bucket = get_settings().s3.bucket_name
 
-        if bucket and s3_key:
-            external_url, durability = None, "managed"
+        convertible = (
+            match is not None
+            and workspace_path
+            and Path(str(workspace_path)).is_file()
+            and _expects_json_output(match)
+            and _artifact_suffix(str(workspace_path)) == ".csv"
+        )
+        if convertible:
+            from CoScientist.experiments.runtime.outputs import convert_csv_workspace_to_json
+
+            converted = convert_csv_workspace_to_json(str(workspace_path), dest_name=match.name)
+            if converted:
+                workspace_path = converted
+                bucket, s3_key, external_url = None, None, None
+                durability = "workspace"
+                name = match.name if str(match.name).lower().endswith(".json") else Path(converted).name
+                location_key = ("workspace", workspace_path)
+            elif bucket and s3_key:
+                external_url, workspace_path, durability = None, None, "managed"
+                location_key = ("s3", bucket, s3_key)
+            else:
+                external_url, durability = None, durability or "workspace"
+                location_key = ("workspace", workspace_path)
+        elif bucket and s3_key:
+            # One canonical location. A second path is a mirror, not another source.
+            external_url, workspace_path, durability = None, None, "managed"
             location_key = ("s3", bucket, s3_key)
         elif workspace_path:
             external_url, durability = None, durability or "workspace"
@@ -271,6 +293,11 @@ def normalise_artifacts(
         if location_key in seen:
             continue
         seen.add(location_key)
+        from CoScientist.experiments.runtime.outputs import content_verified
+
+        verified = match is not None and content_verified(
+            {"workspace_path": workspace_path or raw.get("workspace_path")}, match,
+        )
 
         # Mirror first, then believe the store about the name. Its ids are
         # content-addressed and first-wins, so identical bytes already captured
@@ -303,6 +330,8 @@ def normalise_artifacts(
                 attempt_id=attempt["attempt_id"],
                 role=role,
                 name=name,
+                output_id=output_id,
+                content_verified=verified,
                 bucket=bucket if s3_key else None,
                 s3_key=s3_key,
                 workspace_path=workspace_path,
@@ -319,6 +348,48 @@ def normalise_artifacts(
             )
         )
     return artifacts, warnings
+
+
+def resolve_result_artifact_refs(
+    outputs: Mapping[str, Any], artifacts: list[ArtifactRef],
+) -> dict[str, Any]:
+    """Bind explicitly named requirement evidence within this attempt only.
+
+    A route knows filenames before record_result allocates runtime artifact IDs.
+    Accept exact identities, never infer a requirement's evidence from its text.
+    """
+    resolved = copy.deepcopy(dict(outputs))
+    requirements = resolved.get("requirements")
+    if not isinstance(requirements, dict):
+        return resolved
+    for requirement_id, outcome in requirements.items():
+        if not isinstance(outcome, dict):
+            continue
+        bound = []
+        for ref in outcome.get("artifact_ids") or []:
+            matches = [art for art in artifacts if ref == art.artifact_id]
+            if not matches:
+                matches = [art for art in artifacts if ref in {
+                    art.name, art.output_id, art.workspace_path, art.session_artifact_id,
+                }]
+            ids = {art.artifact_id for art in matches}
+            if len(ids) != 1:
+                # IDs may only have been allocated by this rejected call. Offer
+                # stable references that will still resolve on resubmission.
+                available = [{"name": a.name, "output_id": a.output_id,
+                              "workspace_path": a.workspace_path} for a in artifacts]
+                raise ExperimentRuntimeError(
+                    "requirement_artifact_reference_invalid",
+                    f"Requirement {requirement_id}: artifact reference {ref!r} resolves to "
+                    f"{len(ids)} artifacts in this attempt. Use an exact, unique reference. "
+                    f"Available artifacts: {available}. The attempt remains open.",
+                )
+            artifact_id = next(iter(ids))
+            if artifact_id not in bound:
+                bound.append(artifact_id)
+        if "artifact_ids" in outcome:
+            outcome["artifact_ids"] = bound
+    return resolved
 
 
 def _mirror_to_session(
@@ -574,7 +645,7 @@ def attest_durable_criteria(
             out.append(existing.model_copy(update={"purpose": crit.purpose}))
             seen.add(cid)
             continue
-        if crit.purpose == "execution" and kind in _ATTESTABLE_CRITERION_KINDS:
+        if crit.purpose == "execution" and kind in _ATTESTABLE_CRITERION_KINDS and kind != "schema":
             out.append(CriterionCheck.model_validate({
                 "criterion_id": cid,
                 "purpose": crit.purpose,
@@ -654,6 +725,8 @@ def required_artifacts_present(
         if route is not None
         else [item for item in task.expected_artifacts if item.required]
     )
+    from CoScientist.experiments.runtime.outputs import contract_problem
+
     for expected in expected_items:
         hit = next(
             (
@@ -662,8 +735,12 @@ def required_artifacts_present(
                 if (
                     a.artifact_id not in claimed
                     and artifact_exists(a)
-                    and artifact_matches(a, expected)
+                    and (
+                        (a.output_id and a.output_id == expected.output_id)
+                        or artifact_matches(a, expected)
+                    )
                     and artifact_basic_format_valid(a, expected)
+                    and contract_problem(a.model_dump(mode="json"), expected) is None
                 )
             ),
             None,

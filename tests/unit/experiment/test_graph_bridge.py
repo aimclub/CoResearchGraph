@@ -275,7 +275,9 @@ def test_publish_plan_swallows_store_errors():
                             {"result_id": "RES-4", "status": "success", "summary": "x"})
 
 
-def test_publish_result_links_also_tests(tmp_path):
+def test_publish_result_links_also_tests(tmp_path, monkeypatch):
+    from CoScientist.config import get_settings
+    monkeypatch.setattr(get_settings().web, "max_active_hypotheses", 2)
     from CoScientist.experiments.runtime.graph_bridge import (
         publish_plan_to_graph,
         publish_result_to_graph,
@@ -308,7 +310,9 @@ def test_publish_result_links_also_tests(tmp_path):
     assert statuses["H2"] == "under_verification"
 
 
-def test_publish_plan_postpones_uncovered_hypotheses(tmp_path):
+def test_publish_plan_postpones_uncovered_hypotheses(tmp_path, monkeypatch):
+    from CoScientist.config import get_settings
+    monkeypatch.setattr(get_settings().web, "max_active_hypotheses", 2)
     from CoScientist.experiments.runtime.graph_bridge import publish_plan_to_graph
 
     store = _seeded_store(
@@ -724,6 +728,10 @@ def test_a_finished_task_says_so_on_its_own_card(tmp_path):
     })
     assert _node_status(store)[step_id] == "done"
     assert state["_master_active_tasks"][0]["status"] == "DONE"
+    completed = next(n for n in store.full()["nodes"]
+                     if n.get("type") == "ExperimentTask"
+                     and (n.get("attrs") or {}).get("experiment_task_id") == "EXP-2")
+    assert not completed["attrs"].get("failure_reason")
 
 
 # ── what the graph is told while a task is actually running ───────────────────
@@ -836,7 +844,7 @@ def test_the_control_tools_are_the_ones_that_report_progress(tmp_path):
 
     from CoScientist.experiments.runtime import tools as control
 
-    for name in ("start_task", "retry_task", "fallback_task", "skip_task"):
+    for name in ("start_task", "retry_task", "fallback_task", "skip_task", "recover_task_outputs"):
         body = inspect.getsource(getattr(control.ExperimentControlToolset, name))
         assert "_mirror_task_state_to_graph" in body, name
 

@@ -677,7 +677,7 @@ def normalize_tool_observation(response: Any) -> Dict[str, Any]:
         # are removed so callers do not materialise protocol metadata as data.
         wrapper_keys = {
             "content", "structuredContent", "structured_content", "isError", "is_error",
-            "status", "message", "error", "error_code", "error_message", "ok",
+            "status", "message", "error", "error_code", "error_message", "failure_scope", "ok",
         }
         remainder = {k: v for k, v in response.items() if k not in wrapper_keys}
         data = remainder or None
@@ -731,6 +731,7 @@ def normalize_tool_observation(response: Any) -> Dict[str, Any]:
         "job_id": str(job_id) if job_id not in (None, "") else None,
         "message": message[:4000],
         "data": data,
+        "failure_scope": "server" if response.get("failure_scope") == "server" else "tool",
     }
 
 
@@ -757,10 +758,16 @@ def record_experiment_tool_observation(
     try:
         from CoScientist.experiments.runtime.state_machine import active_attempt
 
-        _, _, attempt = active_attempt(state)
+        runtime, _, attempt = active_attempt(state)
         if attempt.get("status") in {None, "running"}:
             attempt["family_tool_called"] = True
             attempt["last_tool_observation"] = row
+            if not observation["is_error"] and not observation["pending"]:
+                from CoScientist.experiments.runtime.inline_artifacts import capture_structured_tool_result
+                capture_structured_tool_result(state, row["tool"], observation["data"], args)
+            # ADK propagates assigned state keys across agent boundaries;
+            # changing a nested attempt alone does not enter its event delta.
+            state["experiment_runtime"] = runtime
     except Exception:  # noqa: BLE001 - observation must not alter tool delivery
         pass
     return None

@@ -49,6 +49,19 @@ def _mirror_result_to_graph(tool_context: ToolContext, task_id: str, stored: dic
         pass
 
 
+def _refresh_requirement_assessment(tool_context: ToolContext, task_id: str) -> None:
+    """After a repair, rewrite the assessment already stored for this task."""
+    try:
+        from CoScientist.experiments.runtime.graph_bridge import refresh_requirement_assessment
+        from CoScientist.graph.research.store import get_research_graph
+
+        refresh_requirement_assessment(
+            get_research_graph(tool_context), tool_context.state, task_id,
+        )
+    except Exception:  # noqa: BLE001 — the run always wins
+        pass
+
+
 def _mirror_task_state_to_graph(tool_context: ToolContext, task_id: str) -> None:
     """Best-effort: move the task's card to wherever the runtime just put it.
 
@@ -76,6 +89,7 @@ class ExperimentControlToolset(BaseToolset):
             FunctionTool(self.get_experiment_plan),
             FunctionTool(self.start_task),
             FunctionTool(self.record_result),
+            FunctionTool(self.recover_task_outputs),
             FunctionTool(self.retry_task),
             FunctionTool(self.fallback_task),
             FunctionTool(self.skip_task),
@@ -136,6 +150,17 @@ class ExperimentControlToolset(BaseToolset):
             return stored
         except Exception as exc:
             return {"status": "error", "error_code": "validation_error", "message": str(exc)}
+
+    def recover_task_outputs(self, task_id: str, tool_context: ToolContext) -> dict[str, Any]:
+        """Rebind a finished attempt's files to its logical outputs.
+
+        Does not open a new scientific attempt. One call repairs every consumer
+        of this task's outputs.
+        """
+        repaired = _call(state_machine.recover_task_outputs, tool_context.state, task_id)
+        _mirror_task_state_to_graph(tool_context, task_id)
+        _refresh_requirement_assessment(tool_context, task_id)
+        return repaired
 
     def retry_task(self, task_id: str, tool_context: ToolContext) -> dict[str, Any]:
         """Permit a retryable failure to create a new attempt on the same route."""

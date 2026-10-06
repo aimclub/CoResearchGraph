@@ -66,6 +66,16 @@ _OK_TASK_STATUSES = frozenset({"done", "done_with_warnings", "skipped", "success
 _EVIDENCE_ROUTES = frozenset({"research", "medical"})
 
 
+def _hitl_auto_approves() -> bool:
+    """True when HITL__MODE=auto should accept the exhausted plan and continue."""
+    try:
+        from CoScientist.hitl.mode import auto_approves
+
+        return auto_approves()
+    except Exception:  # noqa: BLE001 — an unreadable mode still asks
+        return False
+
+
 def _publish_approved_plan_to_graph(ctx: InvocationContext, state: Any) -> None:
     """Best-effort: mirror the approved plan into the research graph — the
     method per task (VerificationMethod + Hypothesis —tested_by→ VM), and the
@@ -232,6 +242,26 @@ def plan_review_identity(
         f"{payload.get('plan_id')}:r{payload.get('revision')}:{digest}",
         digest,
     )
+
+
+def _diagnose_plan_stop(reason: str, issues: list[dict[str, Any]]) -> dict[str, Any]:
+    """The stop reason is the last critique, not a guess that the plan was too complex."""
+    blockers = [
+        issue for issue in issues
+        if str(issue.get("severity") or "") in {"blocker", "major"}
+    ]
+    primary = str((blockers or issues or [{}])[0].get("message") or "")
+    blamed_complexity = any(
+        str(issue.get("category") or "") == "complexity"
+        and str(issue.get("severity") or "") == "blocker"
+        for issue in issues
+    )
+    return {
+        "budget_reason": reason,
+        "primary_issue": primary,
+        "blamed_complexity": blamed_complexity,
+        "issues": blockers or issues,
+    }
 
 
 def _execution_blockers(critique: Any) -> list[dict[str, Any]]:
@@ -434,6 +464,8 @@ _PLAN_WORDS = {
     "en": {
         "title": "Experiment plan", "revision": "revision", "goal": "Goal",
         "hypothesis_summary": "Hypothesis summary", "unspecified": "not specified",
+        "questions": "Questions", "deliverables": "Deliverables",
+        "unspecified_plural": "not specified",
         "methods": "Methods", "duration": "Total duration", "min": "min",
         "hypotheses": "Hypotheses",
         "matrix": "Design matrix (hypothesis → experiment → data → baseline → metrics)",
@@ -447,11 +479,13 @@ _PLAN_WORDS = {
         "tools": "MCP/tools", "params": "Launch params", "inputs": "Inputs",
         "criteria": "Success criteria", "expected": "Expected artifacts",
         "task_duration": "Duration", "warnings": "Warnings", "none": "none",
-        "risks": "Risks", "operation": "research task",
+        "risks": "Risks", "operation": "research task", "serves": "Serves",
     },
     "ru": {
         "title": "План эксперимента", "revision": "ревизия", "goal": "Цель",
         "hypothesis_summary": "Проверяемая гипотеза", "unspecified": "не задана",
+        "questions": "Вопросы", "deliverables": "Вещи",
+        "unspecified_plural": "не заданы",
         "methods": "Методы", "duration": "Общая оценка", "min": "мин",
         "hypotheses": "Гипотезы",
         "matrix": "Матрица плана (гипотеза → эксперимент → данные → базлайн → метрики)",
@@ -466,7 +500,7 @@ _PLAN_WORDS = {
         "inputs": "Входные данные", "criteria": "Критерии успеха",
         "expected": "Ожидаемые артефакты", "task_duration": "Длительность",
         "warnings": "Предупреждения", "none": "нет", "risks": "Риски",
-        "operation": "задача исследования",
+        "operation": "задача исследования", "serves": "Служит",
     },
 }
 
@@ -477,35 +511,32 @@ def _plan_words(lang) -> dict:
     return _PLAN_WORDS[normalize_report_language(lang)]
 
 
-def render_experiment_plan(plan: ExperimentPlan, lang: str = "en") -> str:
+def _requirement_rows(context: Any) -> list[dict[str, Any]]:
+    """Questions, hypotheses and deliverables the plan card and the text plan share."""
+    if not isinstance(context, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for key in ("requirement_refs", "hypothesis_refs"):
+        for row in context.get(key) or []:
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def render_experiment_plan(
+    plan: ExperimentPlan,
+    lang: str = "en",
+    requirement_refs: Any = None,
+) -> str:
+    from urllib.parse import quote
+    from CoScientist.experiments.plan_view import plan_to_view
+    from CoScientist.requirements.coverage import render_requirement_report
     w = _plan_words(lang)
-    L = [
-        f"# {w['title']} · {w['revision']} {plan.revision}", f"{w['goal']}: {plan.goal}",
-        f"{w['hypothesis_summary']}: {plan.hypothesis or w['unspecified']}",
-        f"{w['methods']}: {', '.join(plan.methods)}",
-        f"{w['duration']}: {plan.total_est_duration_min} {w['min']}",
-    ]
-    if plan.hypotheses:
-        L += ["", f"## {w['hypotheses']}"] + [f"- `{h.hypothesis_id}`: {h.statement}" for h in plan.hypotheses]
-    L += [
-        "", f"## {w['matrix']}",
-        "| " + " | ".join(w["col"]) + " |",
-        "|---|---|---|---|---|---|---|---|---|",
-    ]
-    for t in plan.tasks:
-        d = t.design
-        bl = "; ".join(f"{b.name} ({b.kind})" for b in d.baselines) if d.baselines else ""
-        mt = "; ".join(f"{m.name}/{m.direction}" + (f" [{m.test}]" if m.test else "") for m in d.metrics) if d.metrics else ""
-        ar = "; ".join(f"{a.name} ({a.role}/{a.prepare_via})" for a in d.analysis_artifacts) if d.analysis_artifacts else ""
-        tools_summary = "; ".join(
-            f"{s.name}:{','.join(x.name for x in s.tools)}" for s in t.mcp_servers
-        ) if t.mcp_servers else ""
-        L.append(
-            f"| {t.id} | `{d.hypothesis_ref}` | {_design_cell(d.experiment_question, 120)} "
-            f"| {_design_cell(d.dataset.name)} | {_design_cell(bl, 100)} "
-            f"| {_design_cell(mt, 100)} | {_design_cell(tools_summary, 80)} "
-            f"| {_design_cell(ar, 100)} | `{t.route.value}` |"
-        )
+    ru = str(lang).startswith("ru")
+    view = plan_to_view(plan, requirement_refs=requirement_refs)
+    task_views = {task["id"]: task for task in view["tasks"]}
+    L = [f"# {w['title']} · {w['revision']} {plan.revision}", f"{w['goal']}: {plan.goal}",
+         "", render_requirement_report(view["requirements"], lang, planned=True)]
     for t in plan.tasks:
         d = t.design
         tools = [
@@ -514,8 +545,10 @@ def render_experiment_plan(plan: ExperimentPlan, lang: str = "en") -> str:
             for s in t.mcp_servers
         ]
         criteria_parts = []
+        canonical = {c["criterion_id"]: c["description"] for c in task_views[t.id]["success_criteria"]}
         for c in t.success_criteria:
-            crit_text = f"{c.criterion_id}: {c.description}"
+            reference = f" → {c.requirement_id}/{c.requirement_criterion_id}" if c.requirement_id else ""
+            crit_text = f"{c.criterion_id} [{c.purpose}{reference}]: {canonical[c.criterion_id]}"
             if c.metric and c.operator is not None and c.target is not None:
                 crit_text += f" [{c.metric} {c.operator} {c.target}]"
             criteria_parts.append(crit_text)
@@ -535,14 +568,23 @@ def render_experiment_plan(plan: ExperimentPlan, lang: str = "en") -> str:
                 inputs_list.append(f"{inp.data_id} [{inp.kind}]")
         inputs_str = "; ".join(inputs_list) if inputs_list else w["none"]
 
-        also = f" (+{', '.join(d.also_tests)})" if d.also_tests else ""
-        # Named, not coded. The operator reads this card beside the research
-        # frame, and «OP-1» told them nothing there either.
-        op_no = str(d.operation_ref or "").rsplit("-", 1)[-1]
-        op_str = (f" [{w['operation']} {op_no} · `{d.operation_ref}`]"
-                  if d.operation_ref else "")
+        L += ["", f"## {t.id} · {t.name}", t.description]
+        if d.target_refs:
+            roles = {link.requirement_id: link.role for link in d.target_links}
+            L.append(f"{w['serves']}: " + ", ".join(
+                f"[`{ref}`](#requirement-{quote(ref, safe='')})" + (f" ({roles[ref]})" if ref in roles else "") for ref in d.target_refs))
+        if d.question_ref:
+            L.append(f"{'Вопрос' if ru else 'Question'}: [`{d.question_ref}`](#requirement-{quote(d.question_ref, safe='')})")
+        if d.experiment_question:
+            L.append(f"{'Вопрос шага' if ru else 'Step question'}: {d.experiment_question}")
+        L.append(f"{w['expected']}: {arts}")
+        if t.depends_on:
+            L.append(f"{'После' if ru else 'After'}: {', '.join(t.depends_on)}")
+        L += ["", "<details>", f"<summary>{'Подробности' if ru else 'Details'}</summary>", "",
+              f"{w['route']}: `{t.route.value}`"]
         notes = f" — {d.dataset.notes}" if d.dataset.notes else ""
-        L += ["", f"## {t.id} · {t.name}", f"{w['route']}: `{t.route.value}`"]
+        if t.coder_fallback_method:
+            L.append(f"Coder fallback: {t.coder_fallback_method}")
         if t.code_assessment.requirement != CodeRequirement.UNKNOWN or t.repo_url:
             assessment = t.code_assessment
             detail = assessment.evidence or w["unspecified"]
@@ -555,13 +597,10 @@ def render_experiment_plan(plan: ExperimentPlan, lang: str = "en") -> str:
         if t.route.value == "alembic_build":
             L += [f"{w['repo']}: {t.repo_url}", f"{w['post_build']}: `{t.post_build_route}`"]
         L += [
-            f"{w['hypothesis']}: `{d.hypothesis_ref}`{also}{op_str}",
-            f"{w['question']}: {_design_cell(d.experiment_question)}",
             f"{w['dataset']}: {_design_cell(d.dataset.name)}{notes if d.dataset.name else ''}",
             f"{w['baselines']}: {_design_cell('; '.join(f'{b.name} ({b.kind})' for b in d.baselines))}",
             f"{w['metrics']}: {_design_cell('; '.join(f'{m.name} ({m.direction})' for m in d.metrics))}",
             f"{w['analysis']}: {_design_cell('; '.join(f'{a.name} [{a.role}]' for a in d.analysis_artifacts))}",
-            f"{w['task']}: {t.description}",
         ]
         if t.rationale and t.rationale != t.description:
             L.append(f"{w['rationale']}: {t.rationale}")
@@ -572,10 +611,10 @@ def render_experiment_plan(plan: ExperimentPlan, lang: str = "en") -> str:
         L += [
             f"{w['inputs']}: {inputs_str}",
             f"{w['criteria']}: {criteria}",
-            f"{w['expected']}: {arts}",
             f"{w['task_duration']}: {t.est_duration_min} {w['min']}",
             f"{w['warnings']}: {'; '.join(t.warnings) if t.warnings else w['none']}",
         ]
+        L += ["", "</details>"]
     if plan.risks:
         L += ["", f"## {w['risks']}"] + [f"- {r}" for r in plan.risks]
     return "\n".join(L)
@@ -688,12 +727,19 @@ def render_experiment_results(state: Any) -> str:
     manifest = build_experiment_artifacts_manifest(state)
     if isinstance(state, dict):
         state["experiment_artifacts_manifest"] = manifest
-    L = [
-        f"# {w['title']}",
-        f"{w['count']}: {len(results)}",
-        "",
-        f"## {w['locations']}",
-    ]
+    runtime = state.get("experiment_runtime") if isinstance(state, dict) else None
+    plan_payload = (runtime or {}).get("plan") if isinstance(runtime, dict) else None
+    if not isinstance(plan_payload, dict):
+        plan_payload = state.get("experiment_plan") if isinstance(state, dict) else None
+    context = state.get("experiment_context") if isinstance(state, dict) else None
+    from CoScientist.requirements.coverage import project_requirements, projection_from_state, render_requirement_report
+    rows = projection_from_state(state)
+    if not rows and isinstance(plan_payload, dict):
+        rows = project_requirements(plan_payload.get("tasks") or [], _requirement_rows(context or {}), results)
+    section = render_requirement_report(rows, normalize_report_language(session_report_language(state)))
+    L = [f"# {w['title']}", "", section, "", "<details>",
+         "<summary>" + ("Подробности выполнения" if session_report_language(state).startswith("ru") else "Execution details") + "</summary>",
+         "", f"{w['count']}: {len(results)}", "", f"## {w['locations']}"]
     if manifest:
         for m in manifest:
             L.append(
@@ -730,6 +776,20 @@ def render_experiment_results(state: Any) -> str:
             )
     if summary := state.get("experiment_summary"):
         L += ["", f"## {w['summary']}", str(summary)]
+    substitutions = []
+    runtime = state.get("experiment_runtime") if isinstance(state, dict) else None
+    for task_id, task_runtime in ((runtime or {}).get("tasks") or {}).items():
+        if not isinstance(task_runtime, dict):
+            continue
+        substitution = task_runtime.get("route_substitution")
+        if isinstance(substitution, dict):
+            substitutions.append(
+                f"- `{task_id}`: `{substitution.get('from_route')}` → `{substitution.get('route')}`"
+                + (f" — {substitution.get('limits')}" if substitution.get("limits") else "")
+            )
+    if substitutions:
+        L += ["", "## Route", *substitutions]
+    L += ["", "</details>"]
     return "\n".join(L)
 
 
@@ -965,6 +1025,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
             preferred_tools=current_context.get("preferred_mcp_capabilities"),
             previous_plan=previous,
             hypothesis_refs=current_context.get("hypothesis_refs") or [],
+            requirement_refs=current_context.get("requirement_refs") or [],
             repo_candidates=current_context.get("repo_candidates") or [],
             operations=[*(current_context.get("operations") or []),
                         *(current_context.get("external_literature_operations") or [])],
@@ -1038,6 +1099,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
         context: dict[str, Any] | None = None,
         previous: ExperimentPlan | None = None,
         route_agents: set[str] | None = None,
+        draft: Any = None,
         **_kwargs: Any,
     ) -> HITLResponse:
         state = ctx.session.state
@@ -1082,12 +1144,28 @@ class ExperimentReviewSessionAgent(SessionAgent):
             revisions >= max_rev
             or hits >= self.max_inventory_blocker_hits
         ):
-            return HITLResponse(action=HITLAction.EDIT, approved=False, instructions=f"{edit_prefix} {detail}")
+            # The base HITL loop holds the final event until approval: the next
+            # model turn otherwise sees errors without the plan it must repair.
+            rejected = plan.model_dump(mode="json") if plan is not None else draft
+            instructions = f"{edit_prefix} {detail}"
+            if rejected is not None:
+                instructions += "\nRejected draft:\n" + json.dumps(rejected, ensure_ascii=False)
+            return HITLResponse(action=HITLAction.EDIT, approved=False, instructions=instructions)
         reason = (
             "inventory_blocker_repeated"
             if hits >= self.max_inventory_blocker_hits
             else "max_plan_revisions"
         )
+        issues: list[dict[str, Any]] = []
+        if critique is not None:
+            raw_critique = (
+                critique.model_dump(mode="json")
+                if hasattr(critique, "model_dump") else critique
+            )
+            if isinstance(raw_critique, dict):
+                issues = list(raw_critique.get("issues") or [])
+        state["experiment_plan_last_critique_issues"] = issues
+        state["experiment_plan_stop_diagnosis"] = _diagnose_plan_stop(reason, issues)
 
         # Prefer the current draft when it is executable. A schema-invalid or
         # hard-blocked final answer cannot erase the previous same-run recovery
@@ -1132,6 +1210,8 @@ class ExperimentReviewSessionAgent(SessionAgent):
             "status": "blocked",
             "stage": "plan_review",
             "reason": reason,
+            "unresolved_issues": state.get("experiment_plan_last_critique_issues") or [],
+            "stop_diagnosis": state.get("experiment_plan_stop_diagnosis") or {},
         }
         _audit(f"EXPERIMENT_PLAN_REVIEW_PAUSED reason={reason}")
         return HITLResponse(
@@ -1194,6 +1274,8 @@ class ExperimentReviewSessionAgent(SessionAgent):
             "status": "awaiting_human",
             "stage": "plan_review",
             "reason": reason,
+            "unresolved_issues": state.get("experiment_plan_last_critique_issues") or [],
+            "stop_diagnosis": state.get("experiment_plan_stop_diagnosis") or {},
             "plan_id": plan.plan_id,
             "revision": plan.revision,
             "digest": digest,
@@ -1213,7 +1295,10 @@ class ExperimentReviewSessionAgent(SessionAgent):
         candidate["review_id"] = review_id
         state["experiment_plan_candidate"] = candidate
         runtime = initialize_runtime(state, plan, critique=critique_json)
-        view = plan_to_view(plan, critique_json, status="awaiting_human")
+        requirement_rows = _requirement_rows(context)
+        view = plan_to_view(
+            plan, critique_json, status="awaiting_human", requirement_refs=requirement_rows,
+        )
         view["review_exhausted"] = True
         view["review_exhausted_reason"] = reason
         view["recovered_previous_candidate"] = recovered_previous
@@ -1235,7 +1320,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
         state["experiment_plan_record_id"] = record_id
 
         lang = session_report_language(state)
-        response = await self.hitl_handler.handle_request(self._hitl(
+        request = self._hitl(
             message=(
                 "Automatic plan revisions are exhausted. Review the last schema-valid "
                 "executable plan and either approve it with the listed issues or reject it."
@@ -1245,18 +1330,24 @@ class ExperimentReviewSessionAgent(SessionAgent):
             ),
             kind="plan",
             plan_id=plan.plan_id,
-            output=render_experiment_plan(plan, lang),
+            output=render_experiment_plan(plan, lang, requirement_rows),
             user_id=user_id,
             session_id=session_id,
             timeout_seconds=cfg.plan_review_timeout_s,
             plan_view=view,
-            requires_human=True,
+            requires_human=not _hitl_auto_approves(),
             review_exhausted=True,
             review_id=review_id,
-        ))
+        )
+        response = (
+            resolve_auto(request) if _hitl_auto_approves()
+            else await self.hitl_handler.handle_request(request)
+        )
 
         source = getattr(response.decision_source, "value", response.decision_source)
-        if response.approved and source == HITLDecisionSource.HUMAN.value:
+        if response.approved and source in {
+            HITLDecisionSource.HUMAN.value, HITLDecisionSource.MODE_AUTO.value,
+        }:
             # Re-evaluate the exact candidate after the wait. Settings and the
             # attached route tree may have changed while the card was open.
             try:
@@ -1778,6 +1869,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
                 ),
                 preferred_tools=context.get("preferred_mcp_capabilities"), previous_plan=previous,
                 hypothesis_refs=context.get("hypothesis_refs") or [],
+                requirement_refs=context.get("requirement_refs") or [],
                 repo_candidates=context.get("repo_candidates") or [],
                 operations=[*(context.get("operations") or []),
                             *(context.get("external_literature_operations") or [])],
@@ -1792,7 +1884,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
             state["experiment_plan_validation_errors"] = errors
             _audit("EXPERIMENT_PLAN_REVISE reason=schema errors=" + json.dumps(errors, default=str, ensure_ascii=True))
             return await self._revise(
-                ctx=ctx, detail=errors,
+                ctx=ctx, detail=errors, draft=output_text,
                 pause_prefix="Plan validation failed repeatedly; experiment remains paused. Last errors:",
                 edit_prefix="Deterministic schema validation failed. Return a complete corrected ExperimentPlan JSON. Errors:",
                 context=context,
@@ -1857,6 +1949,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
                     preferred_tools=context.get("preferred_mcp_capabilities"),
                     previous_plan=previous,
                     hypothesis_refs=context.get("hypothesis_refs") or [],
+                requirement_refs=context.get("requirement_refs") or [],
                     repo_candidates=context.get("repo_candidates") or [],
                     operations=[*(context.get("operations") or []),
                                 *(context.get("external_literature_operations") or [])],
@@ -1953,7 +2046,8 @@ class ExperimentReviewSessionAgent(SessionAgent):
         # graph's record of this round, and anything later that wants the plan
         # without re-deriving it from the runtime.
         lang = session_report_language(state)
-        view = plan_to_view(plan, critique_json)
+        requirement_rows = _requirement_rows(context)
+        view = plan_to_view(plan, critique_json, requirement_refs=requirement_rows)
         state["experiment_plan_view"] = view
         record_id = record_plan_proposed(ctx, self.name, view)
         state["experiment_plan_record_id"] = record_id
@@ -1963,12 +2057,12 @@ class ExperimentReviewSessionAgent(SessionAgent):
             _publish_approved_plan_to_graph(ctx, state)
             close_plan_record(ctx, record_id, "approved", reason="headless auto-approve")
             _audit(f"EXPERIMENT_REVIEW_APPROVED kind=plan mode={_approval_mode()} plan_id={plan.plan_id} phase=execution")
-            _audit("EXPERIMENT_DESIGN_MATRIX\n" + render_experiment_plan(plan, "en"))
+            _audit("EXPERIMENT_DESIGN_MATRIX\n" + render_experiment_plan(plan, "en", requirement_rows))
             return _auto_approve_response()
 
         response = await self.hitl_handler.handle_request(self._hitl(
             message="Review and explicitly approve the experiment plan.", kind="plan",
-            plan_id=plan.plan_id, output=render_experiment_plan(plan, lang),
+            plan_id=plan.plan_id, output=render_experiment_plan(plan, lang, requirement_rows),
             user_id=user_id, session_id=session_id, timeout_seconds=window,
             plan_view=view,
             review_id=review_id,
@@ -1985,7 +2079,7 @@ class ExperimentReviewSessionAgent(SessionAgent):
             }
             _publish_approved_plan_to_graph(ctx, state)
             _audit(f"EXPERIMENT_REVIEW_APPROVED kind=plan mode=human plan_id={plan.plan_id} phase=execution")
-            _audit("EXPERIMENT_DESIGN_MATRIX\n" + render_experiment_plan(plan, "en"))
+            _audit("EXPERIMENT_DESIGN_MATRIX\n" + render_experiment_plan(plan, "en", requirement_rows))
         elif _is_refusal(response):
             # «Отклонить» and «Доработать» were the same thing: neither set
             # `stop_review_loop`, so `SessionAgent` fed the note back and the

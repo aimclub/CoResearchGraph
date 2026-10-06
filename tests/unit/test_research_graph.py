@@ -401,6 +401,21 @@ def test_search_limiter_ignores_research_tools():
     lim2.reset_search_budget(ctx2)
     assert lim2.limit_searches(_Tool("search_papers"), {}, ctx2) is None
 
+    # A failed Tavily call must not disable later calls or extraction.
+    lim3, ctx3 = SearchLimiter(max_searches=5), _Ctx()
+    lim3.record_search_result(
+        _Tool("tavily_search"), {}, ctx3,
+        {"error": "Search failed", "detail": "Invalid Tavily API key"},
+    )
+    assert lim3.limit_searches(_Tool("tavily_extract"), {}, ctx3) is None
+    assert lim3.limit_searches(_Tool("tavily_search"), {}, ctx3) is None
+    fresh, fresh_ctx = SearchLimiter(max_searches=5), _Ctx()
+    fresh.record_search_result(
+        _Tool("tavily_search"), {}, fresh_ctx,
+        '{"results":[{"url":"https://example.test","content":"ok"}]}',
+    )
+    assert fresh.limit_searches(_Tool("tavily_search"), {}, fresh_ctx) is None
+
 
 # ── triggers ────────────────────────────────────────────────────────────────────
 
@@ -757,7 +772,9 @@ def test_postponed_backlog_surfaces_only_when_nothing_is_active(store, monkeypat
     assert "BACKLOG" in backlog["rendered"]
 
 
-def test_blocked_trigger(store):
+def test_blocked_trigger(store, monkeypatch):
+    from CoScientist.config import get_settings
+    monkeypatch.setattr(get_settings().web, "max_active_hypotheses", 2)
     _build_verifiable(store)
     # a hypothesis requiring a tool that is still being created is blocked, not ready
     store.commit(source="CoderAgent", nodes=[{"type": "Tool", "ref": "t2",
@@ -2595,43 +2612,39 @@ def test_a_metabolomics_method_is_not_mistaken_for_a_meta_analysis(store):
 # something a unit test can answer.
 
 
-def test_a_study_with_no_hypothesis_says_so_as_an_instruction(store):
-    """`open_questions` already computed this and rendered it as the aside
-    "no hypotheses yet (branch)", which no line of the orchestrator's action
-    table consumed. An unconsumed observation changed nothing."""
+def test_a_study_with_no_hypothesis_is_not_a_defect(store):
+    """A question with no hypothesis is a normal study. The trigger speaks
+    only when the statement asked for a claim and none was formulated."""
     _init(store)
     from CoScientist.graph.research import queries as q
 
     fired = q.study_without_hypothesis(store)
-    assert fired["items"], "a study with a question and no hypothesis"
-    assert "NO HYPOTHESIS" in fired["rendered"]
-    assert "HypothesesAgent" in fired["rendered"]
-    # It has to be in the digest the orchestrator actually reads.
+    assert not fired["items"]
+    assert "NO HYPOTHESIS" not in fired["rendered"]
     assert "study_without_hypothesis" in q.TRIGGERS
-    assert q.trigger_report(store)["rendered"].startswith("NO HYPOTHESIS")
+    assert not q.trigger_report(store)["rendered"].startswith("NO HYPOTHESIS")
 
-    # Methods already standing under the question is the aggravating case and is
-    # named — with their STATUS. A method is only ever created `proposed`, so
-    # calling them "running" was false on every graph that had just been
-    # planned and contradicted the PROGRESS line of the same digest.
     store.commit(source="ResearchAgent", nodes=[
         {"type": "VerificationMethod", "ref": "vm", "attrs": {
             "method_type": "literature_review", "procedure": "run it"}}],
         edges=[{"type": "tested_by", "from": store.root_id(), "to": "#vm"}])
-    rendered = q.study_without_hypothesis(store)["rendered"]
-    assert "nothing to test" in rendered
-    assert "VM1 (proposed)" in rendered
-    assert "are already running" not in rendered,         "do not assert a status the graph itself contradicts"
+    assert not q.study_without_hypothesis(store)["rendered"]
+
+    store.commit(
+        source="OrchestratorAgent",
+        nodes=[{"id": store.root_id(), "attrs": {"requires_hypothesis": True}}],
+    )
+    fired = q.study_without_hypothesis(store)
+    assert fired["items"]
+    assert "NO HYPOTHESIS" in fired["rendered"]
+    assert "HypothesesAgent" in fired["rendered"]
+    assert "VM1 (proposed)" in fired["rendered"]
+    assert "are already running" not in fired["rendered"]
 
 
-def test_the_trigger_speaks_again_when_every_branch_is_settled(store):
-    """The prompt promises "more come later, and only if the first ones fail",
-    and nothing delivered it. Keyed on whether any Hypothesis EXISTS, the
-    trigger went silent the moment the first one was written and never spoke
-    again — so a study whose sole hypothesis was refuted, with no backlog to
-    revive, sat on an open question with every branch dead and nothing
-    re-invoking the generator.
-    """
+def test_a_refuted_check_does_not_demand_the_next_hypothesis(store):
+    """A requested check that comes back refuted is a result. It does not
+    open an automatic H1 → refuted → H2 chain."""
     from CoScientist.graph.research import queries as q
 
     _build_verifiable(store)                       # H1 formulated
@@ -2645,18 +2658,9 @@ def test_the_trigger_speaks_again_when_every_branch_is_settled(store):
                  status_updates=[{"id": "H1", "status": "refuted",
                                   "reason": "the assay came back clean"}])
     fired = q.study_without_hypothesis(store)
-    assert fired["items"], "nothing live is left under an open question"
-    assert "NO LIVE HYPOTHESIS" in fired["rendered"]
-    assert "H1 (refuted)" in fired["rendered"]
-    assert "HypothesesAgent" in fired["rendered"]
-
-    # A backlog IS something to revive, so the generator is not needed.
-    store.commit(source="HypothesesAgent", nodes=[
-        {"type": "Hypothesis", "ref": "h2", "status": "postponed",
-         "attrs": {"formulation": "the other cluster is the toxic one"}}],
-        edges=[{"type": "motivates", "from": store.root_id(), "to": "#h2"}])
-    assert not q.study_without_hypothesis(store)["items"], \
-        "a postponed branch is work in hand, not a gap"
+    assert not fired["items"]
+    assert "NO LIVE HYPOTHESIS" not in fired["rendered"]
+    assert "HypothesesAgent" not in fired["rendered"]
 
 
 def test_the_trigger_goes_quiet_once_a_hypothesis_exists(store):
@@ -2679,7 +2683,7 @@ def test_the_orchestrator_is_told_to_get_a_hypothesis_before_running_methods():
                         tool_entries=[ToolEntry(key="research_graph_orchestrator",
                                                 factory=lambda: None)])
     prompt = REGISTRY.prompt("orchestrator")(ctx)
-    assert "NO HYPOTHESIS" in prompt, "the trigger needs a line that consumes it"
+    assert "NO HYPOTHESIS is a normal state" in prompt
     # The escape hatch read as an exemption for exactly the tasks that need the
     # graph most: "for a simple one-shot computation or question you may skip
     # the graph" is how a procedural request looks from the inside.
@@ -3033,6 +3037,7 @@ def test_the_two_plans_get_a_lane_each_and_a_colour_each():
     assert "const PLAN_LANE_TITLE = ['graph.plan.title', 'graph.plan.experiments'];" in page
     # And a colour of its own, not a shade of the step's.
     assert 'experimenttask:       "#e879f9",' in page
+    assert "deliverable:" in page
     # The link to the step is drawn like `realises` — both point at a coarser
     # intention — and it is NOT realises, which would mean "a record of".
     assert 'e.type === "realises" || e.type === "elaborates"' in page
@@ -3336,7 +3341,7 @@ def test_the_medical_route_is_withdrawn_with_the_medical_agent(monkeypatch):
     monkeypatch.setattr(get_settings().web, "medical_agent_enabled", False)
     assert not _route_enabled(ExecutionRoute.MEDICAL.value, settings)
     # The routes that do not depend on it are untouched.
-    assert _route_enabled(ExecutionRoute.RESEARCH.value, settings)
+    assert _route_enabled(ExecutionRoute.CODER.value, settings)
     assert _route_enabled(ExecutionRoute.REACT_TOOLS.value, settings)
 
     monkeypatch.setattr(get_settings().web, "medical_agent_enabled", True)

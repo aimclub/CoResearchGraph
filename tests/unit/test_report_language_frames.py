@@ -171,12 +171,16 @@ def test_a_russian_experiment_plan_has_no_english_frame(plan):
 
     text = render_experiment_plan(plan, "ru")
     assert text.startswith("# План эксперимента · ревизия 2")
-    assert "## Матрица плана" in text and "## Риски" in text
-    assert "| Задача | Гипотеза |" in text
+    assert "## Требования" in text and "## Риски" in text
+    assert "### Гипотеза" in text
     for english in ("# Experiment plan", "Goal:", "Methods:", "Total duration:",
+                    "Hypothesis summary:", "Questions:", "Deliverables:",
                     "## Design matrix", "| Task | Hypothesis |", "## Risks",
                     "Success criteria:", "Expected artifacts:", "Warnings:"):
         assert english not in text, english
+    assert "Вопрос шага:" in text
+    assert "Вещи:" not in text
+    assert "Какие кластеры образуют метаболиты?" in text
 
 
 def test_the_plan_keeps_its_identifiers_and_its_own_words(plan):
@@ -192,7 +196,7 @@ def test_the_plan_still_renders_in_english(plan):
 
     text = render_experiment_plan(plan, "en")
     assert text.startswith("# Experiment plan · revision 2")
-    assert "## Design matrix" in text and "## Risks" in text
+    assert "## Requirements" in text and "## Risks" in text
     assert "План" not in text
 
 

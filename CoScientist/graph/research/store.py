@@ -127,6 +127,7 @@ def _short(value: Any, n: int = 200) -> str:
 #: its own. Both tables are display-only — nothing matches on these strings.
 _KIND_WORDS = {
     "ResearchQuestion": "Вопрос", "Hypothesis": "Гипотеза",
+    "Deliverable": "Результат",
     "VerificationMethod": "Метод проверки",
     "ConfirmationCriteria": "Критерий подтверждения",
     "Evidence": "Свидетельство", "Conclusion": "Вывод", "Constraint": "Ограничение",
@@ -168,6 +169,8 @@ _STATUS_WORDS = {
     # way: the reader is looking for what is happening NOW, and two words for
     # one fact made them hunt for a difference that is not there.
     "todo": "не начат", "in_progress": "выполняется", "blocked": "заблокирован",
+    "specified": "задано", "delivered": "передано", "partial": "частично",
+    "cancelled": "отменено",
 }
 
 _FIELD_WORDS = {

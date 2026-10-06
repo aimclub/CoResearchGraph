@@ -14,6 +14,7 @@ def test_experiments_settings_defaults_and_nested_env(monkeypatch):
     # FEDOT.MAS is off unless asked for: not reliable enough to be a default.
     assert defaults.route_fedot is False
     assert defaults.route_coder_mcp is False
+    assert defaults.allow_coder_fallback is True
     assert defaults.route_alembic is False
     assert defaults.fallback_research == ["research"]
     assert defaults.fallback_medical == ["medical"]
@@ -213,6 +214,7 @@ def test_the_modules_own_methods_survive_the_overlay():
     assert "pin_fedot_alembic_task" in fedot.callbacks.before_tool
     assert "refuse_when_fedot_deliverable" not in fedot.callbacks.before_agent
     assert config.agent("ExperimentAgent").prompt == "experiment_react_route"
+    assert "task_tracker" not in config.agent("ExperimentAgent").tools
     assert "force_schema_s3_upload" in config.agent("ExperimentAgent").callbacks.before_tool
 
     mcp_builder = config.agent("McpBuilderAgent")

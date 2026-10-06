@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -64,6 +65,18 @@ from CoScientist.assembly.schema import (
 
 _logger = logging.getLogger(__name__)
 
+
+class ResearchPipeline(SequentialAgent):
+    """Do not start subsequent stages after a persisted initialization failure."""
+
+    async def _run_async_impl(self, ctx):
+        async with aclosing(super()._run_async_impl(ctx)) as events:
+            async for event in events:
+                yield event
+                if event.actions and event.actions.state_delta.get("research_frame_initialization_error"):
+                    return
+
+
 _PLACEHOLDER_RE = re.compile(r"<<[A-Z_]+>>")
 
 _COMPOSITE_AGENT_CLASSES = {
@@ -100,9 +113,7 @@ class AgentSystem:
             if self.config.agent(n).is_enabled()
         ]
         if pipeline_pre or pipeline_post:
-            from google.adk.agents.sequential_agent import SequentialAgent
-
-            self._run_root = SequentialAgent(
+            self._run_root = ResearchPipeline(
                 name=PIPELINE_ROOT_NAME,
                 description=(
                     "Full research lifecycle: orchestrator run then report"

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -137,6 +138,30 @@ def test_a_plan_that_validates_resets_the_revision_budget(monkeypatch):
     assert state["experiment_inventory_blocker_hits"] == 0
 
 
+@pytest.mark.parametrize("schema_invalid", [True, False])
+def test_repair_feedback_contains_the_held_rejected_plan(schema_invalid):
+    plan = _plan(_task("EXP-1"))
+    context = _context(plan)
+    payload = plan.model_dump(mode="json")
+    if schema_invalid:
+        payload["tasks"][0]["success_criteria"][0]["kind"] = "not_a_kind"
+    else:
+        context["requirement_refs"] = [
+            {"id": "DL-uncovered", "kind": "deliverable", "obligation": True},
+        ]
+    state = {"experiment_context": context}
+    agent = ExperimentReviewSessionAgent(name="Reviewer", review_kind="plan")
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-1")
+    response = asyncio.run(agent._review_plan(ctx, payload))
+
+    assert response.action == HITLAction.EDIT
+    rejected = json.loads(response.instructions.split("\nRejected draft:\n", 1)[1])
+    assert rejected["tasks"] == payload["tasks"]
+    assert rejected["plan_id"] == payload["plan_id"]
+    assert state.get("experiment_runtime") is None
+    assert state["experiment_plan_revision_count"] == 1
+
+
 def test_quality_feedback_does_not_open_or_reset_a_planning_round():
     """Assessment feedback is terminal until explicit task selection."""
     from CoScientist.experiments.runtime import mark_result_review
@@ -227,6 +252,26 @@ def _stub_plan_records(monkeypatch) -> None:
     monkeypatch.setattr(review_mod, "record_plan_proposed", lambda *_a, **_k: "PR-1")
     monkeypatch.setattr(review_mod, "close_plan_record", lambda *_a, **_k: None)
     monkeypatch.setattr(review_mod, "_publish_approved_plan_to_graph", lambda *_a, **_k: None)
+
+
+def test_exhausted_executable_candidate_respects_auto_without_a_reviewer(monkeypatch):
+    monkeypatch.setenv("HITL__MODE", "auto")
+    _stub_plan_records(monkeypatch)
+    plan = _operation_plan(["OP-1"])
+    state = {
+        "experiment_context": {**_context(plan), "operations": _operations(2)},
+        "experiment_plan_revision_count": ExperimentsSettings().max_plan_revisions - 1,
+    }
+    agent = ExperimentReviewSessionAgent(name="Reviewer", review_kind="plan")
+    ctx = SimpleNamespace(session=SimpleNamespace(state=state), invocation_id="inv-auto")
+
+    response = asyncio.run(agent._review_plan(ctx, plan.model_dump_json()))
+
+    assert response.approved
+    assert response.decision_source == HITLDecisionSource.MODE_AUTO
+    assert state["experiment_runtime"]["phase"] == "execution"
+    assert state["experiment_plan_candidate"]["partial"] is True
+    assert state["experiment_plan_candidate"]["uncovered_operations"] == ["OP-2"]
 
 
 def test_exhausted_revisions_do_not_offer_human_override_for_a_dead_route(monkeypatch):
@@ -345,6 +390,8 @@ def test_exhausted_plan_is_revalidated_after_the_human_wait(monkeypatch):
 
 def test_test1_blocked_nine_task_final_draft_offers_penultimate_partial_plan(monkeypatch):
     """9 required OPs/cap 8: blocked final draft cannot erase executable rev 3."""
+    from CoScientist.config import get_settings
+    monkeypatch.setattr(get_settings().experiments, "max_plan_tasks", 8)
     partial = _operation_plan(["OP-1", "OP-3", "OP-4", "OP-6", "OP-7", "OP-8", "OP-9"])
     over_limit = _operation_plan([f"OP-{index}" for index in range(1, 10)])
     state = {

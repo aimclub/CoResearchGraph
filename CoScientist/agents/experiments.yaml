@@ -130,7 +130,7 @@ agents:
   # ── Routes: they read the graph, the bridge writes it ──────────────────────
   ExperimentAgent:
     prompt: experiment_react_route
-    tools: [dynamic_tools, sleep, task_tracker, graph, research_graph_readonly]
+    tools: [dynamic_tools, sleep, graph, research_graph_readonly]
     callbacks:
       before_agent: [redirect_when_no_tools, before_get_task, inject_research_context, user_links]
       before_model: [redact_link_urls]

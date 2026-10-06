@@ -327,7 +327,7 @@ def _compose(names: List[str], searched: bool = True,
     )
 
 
-def brief_hypotheses_regime(callback_context) -> None:
+def brief_hypotheses_regime(callback_context):
     """before_agent: положить вводную о режиме туда, откуда её читает промпт.
 
     Промпт рендерится один раз при сборке дерева, а инвентарь свой у каждой
@@ -336,6 +336,17 @@ def brief_hypotheses_regime(callback_context) -> None:
     """
     try:
         state = callback_context.state
+        statement = state.get("normalized_statement")
+        if isinstance(statement, dict) and statement.get("parts") and not any(
+            part.get("kind") == "hypothesis" and not part.get("retired")
+            for part in statement["parts"]
+        ):
+            from google.genai import types
+
+            return types.Content(role="model", parts=[types.Part(text=(
+                "The accepted request contains questions or deliverables, not hypotheses. "
+                "Continue the existing requirement plan; do not invent a mandatory hypothesis."
+            ))])
         tools = [] if _rejected_all(state) else _tools(_rows(state))
         names = [t["name"] for t in tools]
         plan = _plan(state)

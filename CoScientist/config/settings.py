@@ -501,6 +501,9 @@ class ExperimentsSettings(BaseModel):
     # reranker fallback.
     route_fedot: bool = False
     route_coder_mcp: bool = False
+    # Automatic MCP → Coder when the MCP route is technically down.
+    # `route_coder_mcp` is a different switch: it lets a Coder task call MCP.
+    allow_coder_fallback: bool = True
     route_alembic: bool = False
     task_max_attempts: int = Field(default=2, ge=1, le=2)
     # Cumulative across routes and automatic replans of the same operation.

@@ -34,3 +34,14 @@ def test_all_schema_constrained_rerankers_wire_json_sanitizer():
 
     for name in ("ToolReranker", "FullSetToolReranker"):
         assert "sanitize_json_output" in config.agent(name).callbacks.after_model
+
+
+def test_json_extraction_preserves_outer_document_with_braces_in_strings():
+    from CoScientist.agents.callbacks.json_output import _extract_json
+    payload = {"tasks": [{"description": "Literal { in an instruction", "id": "EXP-1"}]}
+    assert _extract_json("Plan follows: " + json.dumps(payload) + "\nEnd.") == payload
+
+
+def test_truncated_plan_does_not_become_its_first_valid_task():
+    from CoScientist.agents.callbacks.json_output import _extract_json
+    assert _extract_json('{"tasks": [{"id": "EXP-1"}, {"id":') is None

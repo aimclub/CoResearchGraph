@@ -359,20 +359,19 @@ agents:
       allowed to hold at once (HYPOTHESES__MAX_ACTIVE, default 1) and no more.
       Everything it commits gets verified; it leaves no backlog behind.
     routing: >-
-      when the study has no hypothesis yet — BEFORE any verification method
-      runs, including when the route to an answer already looks obvious. An
-      obvious route is still a claim that it will produce the result, and that
-      claim is what the run is about to spend its budget on. It comes back with
-      the hypotheses to verify — verify all of them; it does not hand over work
-      that is not meant to be started.
+      when the normalized statement contains a claim to check, or the user
+      asked for hypotheses to be formulated and not yet checked. Do not call
+      it because the graph has zero hypotheses. A calculation, a file, a
+      candidate set or a literature summary does not need a hypothesis.
     planning: |-
-      Use this FIRST on any study that has no hypothesis yet, procedural tasks included:
-      formulate one hypothesis about the study object, mechanism, effect, or relationship
-      that the research must test. Treat the available pipeline as a means of measurement,
-      not as the subject of the claim and not as a source of an assumed outcome. State the
-      method of verification and numerical acceptance criteria only when those methods can
-      measure them. It returns only what is to be verified now — usually one hypothesis —
-      so plan a verification branch for each one it returns.
+      Use this only when a claim has to be formulated or checked. Do not
+      formulate a hypothesis for a procedural task, a file, or a property of
+      a requested result. If the user asked only for formulations, stop after
+      writing them — do not start verification. Treat the available pipeline
+      as a means of measurement, not as the subject of the claim. State the
+      method of verification and numerical acceptance criteria only when the
+      user supplied them or the method truly needs them. It returns only what
+      was asked for — usually one hypothesis when a check was requested.
       Decision-making and compatibility assessment based on gathered facts.
     # Ideation plus choosing what to test first: the most reasoning-bound job
     # in the system — so `high`, unless a run turns it down with

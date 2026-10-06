@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field, field_validator
 
 from CoScientist.hitl.field_status import FieldStatus, OPEN_STATUSES
+from CoScientist.requirements.models import StatementDraft
 
 
 # ── the canonical frame ───────────────────────────────────────────────────────
@@ -489,6 +490,13 @@ class ResearchFrame(BaseModel):
         description="Executable slots: one non-optional plan task each",
     )
     blocks: List[FrameBlock] = Field(default_factory=list)
+    # Model draft of the ask, and the code-checked statement. Operations are
+    # work slots; they do not by themselves create user obligations.
+    statement_draft: Optional[StatementDraft] = Field(
+        default=None,
+        description="Required for new frames: semantic catalog of the user's requirements",
+    )
+    normalized_statement: Optional[Dict[str, Any]] = None
 
     @field_validator("operations", mode="before")
     @classmethod
@@ -570,6 +578,8 @@ class ResearchFrame(BaseModel):
         ]
         return ResearchFrame(
             original_request=self.original_request, operations=ops, blocks=blocks,
+            statement_draft=self.statement_draft,
+            normalized_statement=self.normalized_statement,
         )
 
 

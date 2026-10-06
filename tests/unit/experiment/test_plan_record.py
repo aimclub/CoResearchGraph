@@ -194,7 +194,7 @@ def test_the_review_request_carries_the_structured_plan(monkeypatch):
     # it is now written in the session's language, which defaults to Russian.
     # (This copy becomes the document the chat panel opens, so an English frame
     # around Russian content was what a reader actually met.)
-    assert "Матрица плана" in context["output"]
+    assert context["output"].index("## Требования") < context["output"].index("## EXP-1")
     assert "Design matrix" not in context["output"]
     # And the view is on the state the module publishes to its caller.
     assert state["experiment_plan_view"]["plan_id"] == plan_view["plan_id"]

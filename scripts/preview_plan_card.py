@@ -76,6 +76,9 @@ load('CoScientist/web/static/js/state.js');
 load('CoScientist/web/static/js/i18n.js');
 // chat.js drags in the whole app; the card uses two of its helpers.
 vm.runInContext(`
+  function mdInline(text) { return escHtml(String(text || '')); }
+  function documentBlock() { return ''; }
+  function foldable(html) { return html; }
   function scrollChat() {}
   function appendMsgToFeed(html) { document.getElementById('chat-feed').insertAdjacentHTML('x', html); }
   function addSystemMsg() {} function respondHITL() {} function respondHITLEdit() {}

@@ -75,7 +75,7 @@ def run_web(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> 
         pass
 
 
-def run_repl() -> None:
+def run_repl() -> int:
     """Interactive terminal REPL against the in-process agent system."""
     _configure_utf8_stdio()
     import asyncio
@@ -87,8 +87,9 @@ def run_repl() -> None:
     # nothing while it sits in the blocking input() — Ctrl+C looked ignored.
     install_sigint_exit()
 
-    async def _loop() -> None:
+    async def _loop() -> int:
         manager = await create_manager()
+        exit_code = 0
         print("CoScientist (ADK) initialized — type 'exit' to quit.")
         print("(The web UI is also available: python -m CoScientist web)\n")
         try:
@@ -97,16 +98,23 @@ def run_repl() -> None:
                 if query.lower() in {"exit", "quit"}:
                     break
                 result = await manager.run(query)
+                session = await manager.session_service.get_session(
+                    app_name=manager.app_name, user_id=manager.user_id,
+                    session_id=manager.session_id,
+                )
+                if session and session.state.get("research_frame_initialization_error"):
+                    exit_code = 1
                 print("\n=== Final Response ===")
                 print(result)
                 print()
         finally:
             await manager.close()
+        return exit_code
 
     try:
-        asyncio.run(_loop())
+        return asyncio.run(_loop())
     except KeyboardInterrupt:
-        pass
+        return 0
 
 
 def _run_a2a(a2a_cmd: str, rest: list) -> None:
@@ -238,7 +246,7 @@ def main(argv=None) -> int:
     if args.cmd == "web":
         run_web(args.host, args.port, args.reload)
     elif args.cmd == "cli":
-        run_repl()
+        return run_repl()
     elif args.cmd == "a2a":
         _run_a2a(args.a2a_cmd, rest)
     elif args.cmd == "graph":

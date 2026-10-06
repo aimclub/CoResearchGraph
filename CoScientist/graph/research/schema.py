@@ -75,6 +75,27 @@ NODE_TYPES: Dict[str, NodeTypeSpec] = {s.name: s for s in [
                                  "obtained makes the test unnecessary",
         },
     ),
+    # What the user asked to receive. Not a file in the artifact registry and
+    # not a hypothesis. Zero hypotheses beside it is a normal study.
+    NodeTypeSpec(
+        "Deliverable", "DL", 1,
+        statuses=("specified", "in_progress", "delivered", "partial", "blocked",
+                  "cancelled"),
+        creatable=("specified",),
+        attr_docs={
+            "formulation": "what must be handed over",
+            "stable_id": "id kept across rephrasing and re-commits",
+            "obligation": "true only for an accepted user obligation",
+            "role": "user_obligation or supporting",
+            "provenance_source": "user_request / clarification / frame_field / agent_proposal",
+            "provenance_quote": "the fragment this obligation was checked against",
+            "requested_volume": "amount the user asked for, when they named one",
+            "produced_volume": "amount actually produced",
+            "limitation": "why the hand-over is partial or blocked",
+            "physical_sample": "true when the user asked for a physical sample",
+            "protocol_only": "true when the ordered result is a protocol document",
+        },
+    ),
     NodeTypeSpec(
         "Evidence", "E", 1,
         statuses=("obtained", "validated", "rejected"), creatable=("obtained",),
@@ -360,6 +381,19 @@ STATUS_TRANSITIONS: Dict[str, FrozenSet[Tuple[str, str]]] = {
                              ("under_verification", "postponed"),
                              ("inconclusive", "under_verification"),
                              ("postponed", "formulated")}),
+    "Deliverable": frozenset({("specified", "in_progress"),
+                              ("specified", "delivered"),
+                              ("specified", "partial"),
+                              ("specified", "blocked"),
+                              ("specified", "cancelled"),
+                              ("in_progress", "delivered"),
+                              ("in_progress", "partial"),
+                              ("in_progress", "blocked"),
+                              ("in_progress", "cancelled"),
+                              ("partial", "delivered"),
+                              ("partial", "in_progress"),
+                              ("blocked", "in_progress"),
+                              ("cancelled", "specified")}),
     "Evidence": frozenset({("obtained", "validated"), ("obtained", "rejected")}),
     "Conclusion": frozenset({("draft", "approved")}),
     # Offered → leaned on, or left aside. `not_used → used` is the retry: a
@@ -400,6 +434,23 @@ _ARTIFACT_TYPES = ("CodeArtifact", "GeneratedData", "Report", "Publication",
 
 EDGE_TYPES: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "motivates": (("ResearchQuestion", "Hypothesis"),),
+    # The root question may hold child questions when the ask is mixed. The
+    # root itself is then a container, not an extra obligation.
+    "contains": (("ResearchQuestion", "ResearchQuestion"),),
+    "asks_for": (("ResearchQuestion", "Deliverable"),),
+    "satisfies": (("GeneratedData", "Deliverable"),
+                  ("Report", "Deliverable"),
+                  ("CodeArtifact", "Deliverable"),
+                  ("Spec", "Deliverable"),
+                  ("Evidence", "Deliverable")),
+    "serves": (("ExperimentTask", "ResearchQuestion"),
+               ("ExperimentTask", "Hypothesis"),
+               ("ExperimentTask", "Deliverable"),
+               ("PlanStep", "ResearchQuestion"),
+               ("PlanStep", "Hypothesis"),
+               ("PlanStep", "Deliverable")),
+    "answers": (("Evidence", "ResearchQuestion"),
+                ("Conclusion", "ResearchQuestion")),
     # A plan arrives before the hypotheses do: the deterministic plan mirror
     # writes one method per registered task, and at that moment there may be
     # nothing to hang it on but the question itself. A method floating with no
@@ -429,7 +480,9 @@ EDGE_TYPES: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "determines_sufficiency": (("ConfirmationCriteria", "Conclusion"),),
     # Not in the spec's edge table, but the docx says criteria are "formulated
     # for a hypothesis" and the closable-path trigger needs the linkage.
-    "formulated_for": (("ConfirmationCriteria", "Hypothesis"),),
+    "formulated_for": (("ConfirmationCriteria", "Hypothesis"),
+                       ("ConfirmationCriteria", "ResearchQuestion"),
+                       ("ConfirmationCriteria", "Deliverable")),
     # What a plan step turned into. The arrow runs from the RECORD to the
     # INTENTION — "this method realises that step" — so a reader following the
     # research forward never walks into the plan by accident, and a step with
@@ -477,6 +530,8 @@ RU_ALIASES: Dict[str, str] = {
     # node types
     "исследовательский_вопрос": "ResearchQuestion", "вопрос": "ResearchQuestion",
     "гипотеза": "Hypothesis",
+    "результат": "Deliverable", "передаваемый_результат": "Deliverable",
+    "вещь": "Deliverable",
     "свидетельство": "Evidence",
     "заключение": "Conclusion",
     "метод_проверки": "VerificationMethod", "методы_проверки": "VerificationMethod",
@@ -496,6 +551,11 @@ RU_ALIASES: Dict[str, str] = {
     "метрика_эффективности": "EfficiencyMetric",
     # edge types
     "мотивирует": "motivates",
+    "содержит": "contains",
+    "запрашивает": "asks_for",
+    "удовлетворяет": "satisfies",
+    "служит": "serves",
+    "отвечает": "answers",
     "проверяется_через": "tested_by",
     "требует": "requires",
     "использует": "uses",
@@ -535,6 +595,8 @@ RU_ALIASES: Dict[str, str] = {
     "исчерпан": "exhausted",
     "активен": "active",
     "создан": "created",
+    "задано": "specified", "передано": "delivered",
+    "частично": "partial", "отменён": "cancelled", "отменен": "cancelled",
     # subtypes
     "литературное": "literature", "экспериментальное": "experimental",
     "вычислительное": "computational", "экспертное": "expert", "мета": "meta",
@@ -661,10 +723,11 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
         # VERDICT (under_verification→confirmed/refuted) and the Conclusion belong
         # to the ValidatorAgent, so they are absent here.
         create=frozenset({"ResearchQuestion", "Evidence", "Report", "Publication", "Spec",
-                          "EfficiencyJustification", "CostModel", "EfficiencyMetric"}),
+                          "EfficiencyJustification", "CostModel", "EfficiencyMetric",
+                          "Deliverable"}),
         update_attrs=frozenset({"Resource", "ResearchQuestion", "EmpiricalBase", "Tool"}),
         transitions=_transitions(
-            "ResearchQuestion", "Resource",
+            "ResearchQuestion", "Deliverable", "Resource",
             ("Tool", "needs_adaptation", "available"),
             ("Tool", "needs_adaptation", "being_created"),
             ("Tool", "being_created", "available"),
@@ -683,7 +746,8 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
         edges=_edges("contextualizes", "defines_scope", "derived_from", "applies_to",
                      "motivates", "regulates", "constrains",
                      "relates_to", "supports", "refutes", "refines", "supersedes",
-                     ("produces", "Conclusion", "ResearchQuestion")),
+                     ("produces", "Conclusion", "ResearchQuestion"),
+                     "asks_for", "contains", "answers"),
         # It decides what gets tested, so it is the one that can say why a
         # branch was not. Only that: the formulation and the verdict stay with
         # the agents that own them.
@@ -831,13 +895,13 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
     # refused silently, because the bridge swallows the error by contract.
     "ExperimentModule": AgentPerm(
         create=frozenset({"VerificationMethod", "Tool", "Evidence",
-                          "GeneratedData"}),
-        update_attrs=frozenset({"VerificationMethod"}),
-        transitions=_transitions("VerificationMethod", "Tool",
+                          "GeneratedData", "Deliverable"}),
+        update_attrs=frozenset({"VerificationMethod", "Deliverable"}),
+        transitions=_transitions("VerificationMethod", "Tool", "Deliverable",
                                  ("Hypothesis", "formulated", "postponed"),
                                  ("Hypothesis", "postponed", "formulated")),
         edges=_edges("tested_by", "uses", "produces", "relates_to",
-                     "derived_from"),
+                     "derived_from", "satisfies", "serves", "answers"),
     ),
     # The final write-up, published by code rather than by a model. The
     # aggregator that produces the text holds the READ-ONLY research surface,
@@ -901,11 +965,13 @@ AGENT_PERMISSIONS: Dict[str, AgentPerm] = {
         # seeded into. So this grant is load-bearing, not decorative.
         create=frozenset({"ResearchQuestion", "Constraint", "Tool", "Resource",
                           "EmpiricalBase", "ConfirmationCriteria", "CostModel",
-                          "Spec"}),
-        update_attrs=frozenset({"ResearchQuestion", "Spec"}),
+                          "Spec", "Deliverable", "Hypothesis"}),
+        update_attrs=frozenset({"ResearchQuestion", "Spec", "Deliverable", "Hypothesis"}),
         transitions=frozenset(),
         edges=_edges("contextualizes", "defines_scope", "applies_to",
-                     "derived_from"),
+                     "derived_from", "asks_for", "contains", "motivates",
+                     ("formulated_for", "ConfirmationCriteria", "Deliverable"),
+                     ("formulated_for", "ConfirmationCriteria", "ResearchQuestion")),
     ),
     # The human writes through the HITL bridge (web endpoint / approval flow),
     # never through an LLM toolset. Expert evidence is the human's own layer-1

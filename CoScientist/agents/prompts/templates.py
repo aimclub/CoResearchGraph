@@ -1122,6 +1122,11 @@ improvise from unrelated tools. Respond with EXACTLY one line and nothing else:
 3. Inspect each result; if a call errors or returns nothing useful, adjust the
    arguments or try a better-suited tool. Do not loop pointlessly.
 4. Return the final answer, INCLUDING the concrete results and any artifact URLs.
+   When the task requests a JSON/CSV file and no file-writing tool is attached,
+   return its complete actual data with the expected filename (JSON object/list
+   or literal CSV). The experiment runtime can persist this payload; missing a
+   file-writing tool is not a failure of the scientific operation. Never replace
+   the data with a description of the file or invent values to fill missing rows.
 
 ### LONG-RUNNING JOBS (status/log checks)
 Some tasks run for hours. If a status/log/poll-check tool reports the job is
@@ -2300,13 +2305,13 @@ def orchestrator(ctx: PromptContext) -> str:
         )
         research_graph_section += (
             "- Consult `research_triggers` before each step and act on them:\n"
-            "  • NO HYPOTHESIS ⇒ delegate to the HypothesesAgent BEFORE you start "
-            "any verification method. This holds even when the route to the answer "
-            "is obvious: running a known pipeline is still a claim that it returns "
-            "the result, and that claim is what the evidence is weighed against. "
-            "Without it the run delivers output nobody can call right or wrong. It "
-            "holds for a reading-only ask too: what such a run skips is the "
-            "EXPERIMENTS, not the claim the reading is weighed against.\n"
+            "  • NO HYPOTHESIS is a normal state when the request asks for an object, "
+            "a calculation, a measurement, a file, or a literature summary. Do NOT "
+            "delegate to the HypothesesAgent only to fill the graph, and do not "
+            "invent a claim so a pipeline can start. Delegate only when the "
+            "normalized statement contains a claim to check or the user asked for "
+            "hypotheses to be formulated. A refuted hypothesis the user asked to "
+            "check is a completed check, not a reason to invent the next one.\n"
             "  • READY hypothesis (tools available), once verification is asked "
             "for ⇒ verify it in this ORDER: "
             "call `research_set_focus(<hypothesis id>)` FIRST, THEN delegate the "
@@ -3117,6 +3122,7 @@ def tz_spec(ctx: PromptContext) -> str:
 def context_init(ctx: PromptContext) -> str:
     """Draft the ResearchFrame — the framing entities of the meta-model."""
     from CoScientist.context_init.models import FRAME_SPEC
+    from CoScientist.requirements.prompt import STATEMENT_PROMPT
 
     block_lines = []
     for i, (title, kind, subtype, usage, field_names) in enumerate(FRAME_SPEC, 1):
@@ -3173,6 +3179,11 @@ def context_init(ctx: PromptContext) -> str:
   Если запрос — одно действие, operations может содержать один элемент.
 - Отвечай ТОЛЬКО валидным JSON без пояснений и без обрамления ```.
 
+КАТАЛОГ ТРЕБОВАНИЙ — обязательное поле statement_draft внутри JSON рамки.
+Operations описывает работу; statement_draft описывает, что заказал пользователь.
+Следующие правила относятся к содержимому statement_draft:
+<<STATEMENT_PROMPT>>
+
 ОБРАБОТКА ОТВЕТОВ ОПЕРАТОРА (при перегенерации после ревью):
 Если фидбек содержит правки — примени их к полям, статус «уточнено оператором».
 Всегда возвращай ПОЛНЫЙ обновлённый JSON рамки (все блоки).
@@ -3184,6 +3195,7 @@ def context_init(ctx: PromptContext) -> str:
 обязательные блоки и их поля):
 {
   "original_request": "<исходный запрос пользователя дословно>",
+  "statement_draft": {"parts": [], "conditions": [], "volume": {}, "clarification": null, "planning_notes": []},
   "operations": [
     {"operation_id": "OP-1", "statement": "<первый исполнимый шаг из запроса>"}
   ],
@@ -3200,4 +3212,4 @@ def context_init(ctx: PromptContext) -> str:
     }
   ]
 }
-''', BLOCKS_DESC=blocks_desc)
+''', BLOCKS_DESC=blocks_desc, STATEMENT_PROMPT=STATEMENT_PROMPT)

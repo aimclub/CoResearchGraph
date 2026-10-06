@@ -279,6 +279,7 @@ def critique_plan(
     hypothesis_refs: Iterable[Any] = (),
     repo_candidates: Iterable[Any] = (),
     operations: Iterable[Any] = (),
+    requirement_refs: Iterable[Any] = (),
     pipeline_scope: dict[str, Any] | None = None,
     fedot_on: bool | None = None,
     medical_on: bool | None = None,
@@ -290,6 +291,8 @@ def critique_plan(
     switches as they are now.
     """
     issues: list[CritiqueIssue] = []
+    requirement_refs = list(requirement_refs or [])
+    hypothesis_refs = list(hypothesis_refs or [])
     all_operations = operation_rows(list(operations or []))
     ops, _external_literature = partition_operations(all_operations)
     ops_index = {
@@ -388,7 +391,7 @@ def critique_plan(
         plan_h = _normalize_hypothesis_ids([{"hypothesis_id": h.hypothesis_id} for h in plan.hypotheses])
         req, any_c = set(), set()
         for task in plan.tasks:
-            ids = task.design.covered_hypothesis_ids()
+            ids = task.design.covered_hypothesis_ids([*requirement_refs, *hypothesis_refs])
             any_c |= ids
             if not task.optional:
                 req |= ids
@@ -404,13 +407,105 @@ def critique_plan(
             if plan_h and (extra := [h for h in plan_h if h not in ctx]):
                 co("major", f"plan.hypotheses invents ids absent from hypothesis_refs: {', '.join(extra)}.",
                    "Copy only hypothesis_refs; do not invent additional hypothesis ids.")
-        elif not plan.hypotheses:
-            co("major", "No hypothesis_refs in context and plan.hypotheses is empty.",
-               "HypothesesAgent should populate hypothesis_refs; copy them "
-               "into plan.hypotheses (or one H1 from source_request) and link tasks.")
+        # An empty hypothesis list is a valid plan. Do not invent H1.
         if plan_h and (orphan := [h for h in plan_h if h not in any_c]):
             co("major", f"plan.hypotheses ids not linked from tasks: {', '.join(orphan)}.",
                "Each plan hypothesis must appear as design.hypothesis_ref (or also_tests) on ≥1 task.")
+
+        required_ids: list[str] = []
+        for row in requirement_refs or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("obligation") is False:
+                continue
+            rid = str(row.get("id") or "").strip()
+            if rid:
+                required_ids.append(rid)
+        if required_ids:
+            covered_targets: set[str] = set()
+            for task in plan.tasks:
+                if task.optional:
+                    continue
+                covered_targets |= task.design.covered_target_ids()
+            if missing_req := [rid for rid in required_ids if rid not in covered_targets]:
+                co("major",
+                   "Obligations uncovered by non-optional tasks: " + ", ".join(missing_req) + ".",
+                   "Point at least one task at each obligation via design.target_refs. "
+                   "Preparatory steps do not each have to emit the final deliverable, "
+                   "but the obligation itself must be on the chain.")
+
+        known_requirements: dict[str, Any] = {}
+        for row in list(requirement_refs or []) + list(hypothesis_refs or []):
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("id") or row.get("hypothesis_id") or row.get("stable_id") or "").strip()
+            if rid:
+                prior = known_requirements.get(rid) or {}
+                if isinstance(prior.get("provenance"), dict) and not isinstance(row.get("provenance"), dict):
+                    row = {**prior, "hypothesis_id": row.get("hypothesis_id") or prior.get("hypothesis_id")}
+                known_requirements[rid] = row
+                if row.get("hypothesis_id"):
+                    known_requirements.setdefault(str(row["hypothesis_id"]), {**row, "obligation": False})
+        if known_requirements:
+            from CoScientist.requirements.coverage import unknown_targets
+            for task_id, ref in unknown_targets(plan.tasks, known_requirements):
+                co("major",
+                   f"{task_id}: design.target_refs names an unknown requirement {ref}.",
+                   "Use a question, hypothesis, or deliverable id from the brief.",
+                   task_id)
+
+        for task in plan.tasks:
+            roles = {link.requirement_id: link.role for link in task.design.target_links}
+            for rid in task.design.covered_target_ids():
+                row = known_requirements.get(rid) or {}
+                if isinstance(row.get("provenance"), dict) and rid not in roles:
+                    co("major", f"{task.id}: requirement {rid} needs an explicit supports/delivers role.",
+                       "Declare target_links; task dependencies do not establish delivery.", task.id)
+            question_ref = task.design.question_ref
+            if question_ref and known_requirements:
+                row = known_requirements.get(question_ref) or {}
+                if row.get("kind") != "question" or question_ref not in task.design.covered_target_ids():
+                    co("major", f"{task.id}: question_ref must name a covered question.",
+                       "Use a covered requirement of kind question, or leave question_ref empty. "
+                       "For a deliverable or hypothesis, keep its target_links instead.", task.id)
+            for criterion in task.success_criteria:
+                rid, cid = criterion.requirement_id, criterion.requirement_criterion_id
+                if not rid and not cid:
+                    continue  # Saved plans need not carry the new optional references.
+                row = known_requirements.get(rid) or {}
+                ids = {c.get("id") for c in row.get("criteria") or []}
+                if not rid or not cid or (known_requirements and (cid not in ids or rid not in task.design.covered_target_ids())):
+                    co("major", f"{task.id}: invalid requirement criterion reference {rid}/{cid}.",
+                       "Copy the requirement id and criterion id from the catalog.", task.id)
+                source = next((c for c in row.get("criteria") or [] if c.get("id") == cid), None)
+                if source and source.get("threshold") is not None and criterion.kind == "threshold":
+                    # Parse only a formal numeric expression, never natural language.
+                    numeric = re.fullmatch(r"\s*(<=|>=|==|<|>)?\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*", str(source["threshold"]))
+                    if numeric:
+                        from decimal import Decimal, InvalidOperation
+                        try:
+                            same = Decimal(str(criterion.target)) == Decimal(numeric[2])
+                        except InvalidOperation:
+                            same = False
+                        if not same or (numeric[1] and criterion.operator != numeric[1]):
+                            co("major", f"{task.id}: task threshold changes catalog criterion {rid}/{cid}.",
+                               "Preserve the catalog threshold and comparison; do not weaken the user criterion.", task.id)
+
+        from CoScientist.requirements.coverage import closing_task_ids
+        for rid, row in known_requirements.items():
+            if row.get("obligation") is False:
+                continue
+            explicit = [link for task in plan.tasks for link in task.design.target_links if link.requirement_id == rid]
+            if explicit and not closing_task_ids(plan.tasks, rid):
+                co("major", f"{rid}: requirement has supporting tasks but no closing task.",
+                   "Mark the task that produces the requested result as delivers.")
+            mapped = {c.requirement_criterion_id for task in plan.tasks for c in task.success_criteria
+                      if c.requirement_id == rid}
+            missing = [c.get("id") for c in row.get("criteria") or []
+                       if c.get("obligation") and c.get("id") and c["id"] not in mapped]
+            if explicit and missing:
+                co("major", f"{rid}: requirement criteria have no task checks: {', '.join(missing)}.",
+                   "Link existing task checks to catalog criteria by their ids.")
 
         if ops:
             ops_ids = [str(op["operation_id"]).strip().upper() for op in ops]
@@ -689,6 +784,7 @@ def validate_and_critique_plan(
     hypothesis_refs: Iterable[Any] = (),
     repo_candidates: Iterable[Any] = (),
     operations: Iterable[Any] = (),
+    requirement_refs: Iterable[Any] = (),
     pipeline_scope: dict[str, Any] | None = None,
     fedot_on: bool | None = None,
     medical_on: bool | None = None,
@@ -699,6 +795,17 @@ def validate_and_critique_plan(
 
     inventory = list(available_tools)
     repo_list = list(repo_candidates)
+    requirement_refs = list(requirement_refs or [])
+    if settings.allow_coder_fallback and isinstance(payload, dict):
+        missing = [
+            {"type": "missing", "loc": ["tasks", i, "coder_fallback_method"],
+             "msg": "Explicitly choose an equivalent Coder implementation, or null with a reason in rationale."}
+            for i, task in enumerate(payload.get("tasks") or [])
+            if isinstance(task, dict) and task.get("route") in {"react_tools", "fedot_mas"}
+            and "coder_fallback_method" not in task
+        ]
+        if missing:
+            raise PlanValidationError("Fallback decision is missing", errors=missing)
     token = set_lenient_planner(settings.lenient_planner)
     try:
         plan = ExperimentPlan.model_validate(payload)
@@ -713,11 +820,22 @@ def validate_and_critique_plan(
         ) from exc
     finally:
         reset_lenient_planner(token)
+    from CoScientist.requirements.coverage import catalog
+
+    known = catalog(requirement_refs)
+    for task in plan.tasks:
+        for criterion in task.success_criteria:
+            row = known.get(criterion.requirement_id) or {}
+            source = next((c for c in row.get("criteria") or []
+                           if c.get("id") == criterion.requirement_criterion_id), None)
+            if source:
+                criterion.description = source["text"]
     return plan, critique_plan(
         plan, settings=settings, available_tools=inventory,
         preferred_tools=None if preferred_tools is None else list(preferred_tools),
         previous_plan=previous_plan, hypothesis_refs=hypothesis_refs, repo_candidates=repo_list,
         operations=operations,
+        requirement_refs=requirement_refs,
         pipeline_scope=pipeline_scope,
         fedot_on=fedot_on,
         medical_on=medical_on,

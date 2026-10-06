@@ -68,7 +68,7 @@ def test_discovered_capabilities_survive_filtered_tools_clear_and_revise():
     # Prompt projection must not triple-dump preferred/critique inventories.
     assert prompt_ctx.count("available_mcp_capabilities") == 1
     assert "critique_mcp_capabilities" not in prompt_ctx
-    assert '"input_schema"' not in prompt_ctx
+    assert '"input_schema"' in prompt_ctx
 
     # Simulate post-attempt clear used by the runtime.
     state["filtered_tools"] = []
@@ -450,6 +450,21 @@ def test_build_experiment_context_falls_back_without_graph(monkeypatch):
     assert refs[0]["statement"] == "Prose one works."
 
 
+def test_agent_prose_is_not_split_into_character_hypotheses(monkeypatch):
+    from CoScientist.experiments.context.builder import build_experiment_context
+
+    ctx = _snapshot_ctx(monkeypatch, _FakeSnapshotGraph([]))
+    ctx.state.update({"filtered_tools": [], "experiment_source_request": "Compare two methods.",
+                      "hypotheses": "No hypotheses were requested."})
+    build_experiment_context(ctx)
+    assert ctx.state["experiment_context"]["hypothesis_refs"] == []
+    ctx.state["hypotheses"] = [{"hypothesis_id": "H1", "statement": "Method A is faster."}]
+    build_experiment_context(ctx)
+    assert ctx.state["experiment_context"]["hypothesis_refs"] == [
+        {"hypothesis_id": "H1", "statement": "Method A is faster."},
+    ]
+
+
 def test_the_planner_context_carries_the_effective_fedot_answer(monkeypatch):
     """experiment_context.route_fedot is the answer start_task gets - switch AND
     FedotAgent attached - where it used to be the bare switch. The planner's own
@@ -528,3 +543,50 @@ def test_the_planner_context_asks_the_sessions_executor(monkeypatch):
     assert state["experiment_context"]["route_medical"] is False
     assert state["experiment_context"]["route_fedot"] is False
     assert "medical" not in state["experiment_planner_context"]
+
+
+def test_planning_notes_reach_planner_without_becoming_requirements():
+    from CoScientist.experiments.context import build_experiment_context
+    note = "Choose and document a ranking method after obtaining the measurements."
+    state = {"experiment_source_request": "Compare the groups.",
+             "normalized_statement": {"planning_notes": [note]}}
+    build_experiment_context(SimpleNamespace(state=state, user_content=None))
+    assert state["experiment_context"]["planning_notes"] == [note]
+    assert note in state["experiment_planner_context"]
+    assert not state["experiment_context"]["requirement_refs"]
+
+
+def test_planner_receives_complete_tool_contracts():
+    from CoScientist.experiments.context.builder import _normalize_capabilities, _cap_for_prompt
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "case": {"type": "string", "enum": ["registered_case"],
+                     "description": "Use a registered model, never a target protein name."},
+            "count": {"type": "integer", "minimum": 1, "maximum": 30},
+        },
+        "required": ["case"],
+        "additionalProperties": False,
+    }
+    output = {"type": "object", "properties": {"rows": {"type": "array", "items": schema}}}
+    description = "Tool documentation. " * 30 + "Only pretrained cases are supported."
+    capability = {"tool": "generate", "server_id": "srv", "description": description,
+                  "input_schema": schema, "output_schema": output}
+    projected = _cap_for_prompt(_normalize_capabilities([capability])[0])
+    assert projected["input_schema"] == schema
+    assert projected["output_schema"] == output
+    assert projected["description"] == description
+
+
+def test_planner_keeps_user_method_restrictions_separate_from_delegation():
+    from CoScientist.experiments.context import build_experiment_context
+    state = {
+        'experiment_source_request': 'Use tool_a to estimate binding.',
+        'normalized_statement': {'source_request': 'Estimate binding using an appropriate method.'},
+    }
+    build_experiment_context(SimpleNamespace(state=state, user_content=None))
+    import json
+    context = json.loads(state['experiment_planner_context'])
+    assert context['source_request'] == 'Use tool_a to estimate binding.'
+    assert context['user_request'] == 'Estimate binding using an appropriate method.'

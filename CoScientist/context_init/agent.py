@@ -23,6 +23,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.genai import types
 
 from CoScientist.context_init.commit import seed_frame
 from CoScientist.context_init.models import (
@@ -226,6 +227,63 @@ def frame_is_initialized(state: Dict[str, Any]) -> bool:
 class ContextInitSessionAgent(SessionAgent):
     """SessionAgent that confirms the frame via a web form and seeds the graph."""
 
+    unfinished_max_rounds: int = 1
+
+    def _frame(self, ctx: InvocationContext, output_text=None) -> ResearchFrame:
+        frame = coerce_frame(ctx.session.state.get(self.output_key) or output_text)
+        content = getattr(ctx, "user_content", None)
+        source = "".join(part.text or "" for part in (getattr(content, "parts", None) or []))
+        # The source belongs to the caller. The model must not rewrite the
+        # text against which its own provenance and counts are checked.
+        return frame.model_copy(update={"original_request": source}) if source else frame
+
+    @staticmethod
+    def _statement(frame: ResearchFrame):
+        from CoScientist.requirements.routing import normalize_statement
+
+        accepted_fields = {
+            f"{block.title}.{field.name}": {
+                "value": field.value,
+                "accepted": field.status in {"задано заказчиком", OPERATOR_STATUS},
+            }
+            for block in frame.blocks for field in block.fields
+        }
+        return normalize_statement(
+            frame.original_request, frame.statement_draft, frame_fields=accepted_fields,
+        )
+
+    def _unfinished_feedback_author(self) -> str:
+        return self.name
+
+    def _unfinished_feedback(self, ctx: InvocationContext) -> str | None:
+        repair_input = {}
+        try:
+            frame = self._frame(ctx)
+            repair_input = {"original_request": frame.original_request,
+                            "statement_draft": frame.statement_draft.model_dump() if frame.statement_draft else None}
+            statement = self._statement(frame)
+            if frame.statement_draft is not None and not statement.rejected:
+                # A real clarification is for the user, not another model pass.
+                if statement.parts or frame.statement_draft.clarification is not None:
+                    return None
+            diagnostics = statement.rejected or [{"reason": "statement_draft needs requested parts or a sourced clarification"}]
+        except (ValueError, TypeError) as exc:
+            diagnostics = [{"reason": str(exc)}]
+        return (
+            "The statement schema/provenance validation failed. Correct the full ResearchFrame JSON once; "
+            "this is internal validation, not a new user request. Preserve original_request and all user "
+            "requirements and conditional clauses. Do not invent missing counts: unspecified values are null, "
+            "and numeric volume fields require literal digits in their source quotes. Keep quantities written "
+            "in words verbatim in criteria and leave the corresponding volume field null. "
+            "For every reported volume error, set that named volume field to null and retain its exact source "
+            "quantity in the relevant part's criteria; never rewrite the source quote with invented digits. "
+            "Quotes must preserve the source exactly, including URLs without adding Markdown. hypothesis_mode is null for questions "
+            "and deliverables. Keep open method "
+            "choices in planning_notes; clarification is only a question about an unidentifiable requested outcome. "
+            "Validation errors: " + json.dumps(diagnostics, ensure_ascii=False)
+            + "\nDraft to repair against its trusted source: " + json.dumps(repair_input, ensure_ascii=False)
+        )
+
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
@@ -254,7 +312,7 @@ class ContextInitSessionAgent(SessionAgent):
 
     async def _review_decision(self, ctx: InvocationContext, output_text) -> HITLResponse:
         try:
-            frame = coerce_frame(ctx.session.state.get(self.output_key) or output_text)
+            frame = self._frame(ctx, output_text)
         except Exception as exc:  # noqa: BLE001 — fall back to plain approval
             logger.warning("frame form skipped (parse failed): %s", exc)
             return HITLResponse(action=HITLAction.APPROVE, approved=True)
@@ -285,18 +343,31 @@ class ContextInitSessionAgent(SessionAgent):
 
     def _post_final_events(self, ctx: InvocationContext, output_text):
         try:
-            frame = coerce_frame(ctx.session.state.get(self.output_key) or output_text)
+            frame = self._frame(ctx, output_text)
         except Exception as exc:  # noqa: BLE001 — seeding must not kill the run
             logger.warning("frame not seeded (parse failed): %s", exc)
+            yield Event(invocation_id=ctx.invocation_id, author=self.name, branch=ctx.branch,
+                actions=EventActions(state_delta={FRAME_COMPLETED_STATE_KEY: False,
+                    "research_frame_initialization_error": str(exc)}))
             return
+        statement = self._statement(frame)
+        frame = frame.model_copy(update={"normalized_statement": statement.model_dump()})
+        catalog_result = {"ok": False, "reason": statement.uncertainty}
+        result = {"ok": False}
         try:
             store = get_research_graph(ctx)
             result = seed_frame(store, frame)
+            if result.get("ok"):
+                from CoScientist.requirements.graph_io import commit_statement
+
+                catalog_result = commit_statement(store, statement)
+                if catalog_result.get("ok") and hasattr(store, "set_framing_snapshot"):
+                    store.set_framing_snapshot(frame.model_dump())
         except Exception as exc:  # noqa: BLE001
             logger.warning("frame graph seeding failed: %s", exc)
-            return
+            catalog_result = {"ok": False, "reason": str(exc)}
 
-        ok = bool(result.get("ok"))
+        ok = bool(result.get("ok") and catalog_result.get("ok") and not statement.uncertain)
         stats = result.get("graph_stats") or {}
         if ok:
             logger.info(
@@ -304,22 +375,31 @@ class ContextInitSessionAgent(SessionAgent):
                 stats.get("nodes", 0), stats.get("edges", 0),
             )
         else:
-            logger.warning("frame graph seeding did not succeed: %s", result)
+            logger.warning("frame initialization incomplete: frame=%s catalog=%s", result, catalog_result)
 
         state_delta = {FRAME_STATE_KEY: frame.model_dump()}
         if ask := (frame.original_request or "").strip():
             state_delta["orchestrator_root_goal"] = ask
         if frame.operations:
             state_delta["experiment_operations"] = [op.model_dump() for op in frame.operations]
-        if ok:
-            # Leave the stage eligible for a retry if graph initialization did
-            # not complete successfully.
-            state_delta[FRAME_COMPLETED_STATE_KEY] = True
+        state_delta["normalized_statement"] = statement.model_dump()
+        state_delta["requirement_refs"] = [
+            {**part.model_dump(), "volume": statement.volume.model_dump()}
+            for part in statement.parts if not part.retired
+        ]
+        state_delta[FRAME_COMPLETED_STATE_KEY] = ok
+        state_delta["research_frame_initialization_error"] = "" if ok else (
+            statement.uncertainty or catalog_result.get("reason")
+            or result.get("reason") or "The research frame or requirement catalog could not be saved."
+        )
+        # Leave the stage eligible for retry until both frame and catalog succeed.
         yield Event(
             invocation_id=ctx.invocation_id,
             author=self.name,
             branch=ctx.branch,
             actions=EventActions(state_delta=state_delta),
+            content=None if ok else types.Content(role="model", parts=[types.Part(
+                text="Research initialization incomplete: " + state_delta["research_frame_initialization_error"])]),
         )
 
 

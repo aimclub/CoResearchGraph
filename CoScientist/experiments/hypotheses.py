@@ -992,14 +992,10 @@ def commit_experiment_hypotheses(callback_context: CallbackContext) -> None:
         [],
     )
     if not refs:
-        ask = (
-            _resolve_em_ask(callback_context)
-            or str(state.get("experiment_source_request") or "").strip()
-            or "Computational experiment request."
-        )
-        ask = re.sub(r"\s+", " ", ask).strip()[:800]
-        refs = [{"hypothesis_id": "H1", "statement": ask}]
-        logger.info("EXPERIMENT_HYPOTHESES_FALLBACK count=1")
+        # No hypothesis was formulated. Do not invent H1 from the ask.
+        _publish_refs(state, [])
+        logger.info("EXPERIMENT_HYPOTHESES_EMPTY")
+        return
     # Normalize ids (unlike _merge_refs, keep pre-existing valid H\d+ ids).
     for i, ref in enumerate(refs, start=1):
         hid = str(ref.get("hypothesis_id") or "").strip().upper()

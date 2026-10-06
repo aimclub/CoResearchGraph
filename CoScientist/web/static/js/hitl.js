@@ -1859,6 +1859,7 @@ function planCriteria(task) {
   return rows.map(c => `<div class="mb-1.5">
     <span class="font-mono text-[11px] text-primary">${escHtml(c.criterion_id || '')}</span>
     <span class="text-[11px] uppercase tracking-wider text-outline-variant ml-1">${escHtml(c.kind || '')}</span>
+    <span class="text-[10px] text-outline-variant ml-1">${escHtml(c.purpose || '')}${c.requirement_id ? ' → ' + escHtml(c.requirement_id + '/' + c.requirement_criterion_id) : ''}</span>
     ${c.threshold ? `<span class="ml-1 font-mono text-[10px] text-tertiary">${escHtml(c.threshold)}</span>` : ''}
     <div class="text-[11px]">${planText(c.description)}</div>
     ${c.verification ? `<div class="text-[10px] text-outline-variant">${mdInline(c.verification)}</div>` : ''}
@@ -1883,6 +1884,12 @@ function planDatasetCell(dataset) {
   return escHtml(dataset.name) + ref + notes;
 }
 
+function planRequirementLink(rid, ref, role) {
+  const href = '#requirement-' + encodeURIComponent(rid) + '-' + encodeURIComponent(ref);
+  const label = role ? ' · ' + t('plan.role.' + role) : '';
+  return `<a href="${escHtml(href)}" class="text-primary hover:underline font-mono text-[11px]">${escHtml(ref)}${escHtml(label)}</a>`;
+}
+
 function planTaskCard(rid, task, index) {
   const open = planOpenTasks.has(rid + ':' + task.id);
   const design = task.design || {};
@@ -1890,14 +1897,13 @@ function planTaskCard(rid, task, index) {
   const codeAssessment = task.code_assessment || {};
   const body = !open ? '' : `
     <div class="px-3 pb-3">
-      ${planField(t('plan.task.question'), planText(design.question))}
       ${planField(t('plan.task.dataset'), planDatasetCell(design.dataset))}
       ${planField(t('plan.task.baselines'), planItems((design.baselines || []).map(b => b.name + ' (' + b.kind + ')')))}
       ${planField(t('plan.task.metrics'), planItems((design.metrics || []).map(m =>
         m.name + ' ' + m.direction + (m.threshold ? ' ' + m.threshold : '') + (m.test ? ' [' + m.test + ']' : ''))))}
       ${planField(t('plan.task.analysis'), planItems((design.analysis_artifacts || []).map(a => a.name + ' [' + a.role + '/' + a.prepare_via + ']')))}
-      ${planField(t('plan.task.description'), planText(task.description))}
       ${task.rationale ? planField(t('plan.task.rationale'), planText(task.rationale)) : ''}
+      ${task.coder_fallback_method ? planField('Coder fallback', planText(task.coder_fallback_method)) : ''}
       ${planField(t('plan.task.tools'), planTools(task))}
       ${task.repo_url ? planField(t('plan.task.repo'), `<span class="font-mono text-[10px] break-all">${escHtml(task.repo_url)}</span>`) : ''}
       ${(codeAssessment.requirement && codeAssessment.requirement !== 'unknown') ? planField(
@@ -1909,7 +1915,6 @@ function planTaskCard(rid, task, index) {
       ${params.length ? planField(t('plan.task.params'), planItems(params.map(p => p[0] + '=' + p[1]))) : ''}
       ${planField(t('plan.task.inputs'), planInputs(task))}
       ${planField(t('plan.task.criteria'), planCriteria(task))}
-      ${planField(t('plan.task.expected'), planItems((task.expected_artifacts || []).map(a => a.name + ' [' + a.role + ']')))}
       ${(task.warnings || []).length ? planField(t('plan.task.warnings'),
         `<span class="text-tertiary">${escHtml(task.warnings.join(' · '))}</span>`) : ''}
     </div>`;
@@ -1924,6 +1929,14 @@ function planTaskCard(rid, task, index) {
       ${planChip('', (task.est_duration_min || 0) + ' ' + t('plan.min'))}
       ${planRouteChip(task.route)}
     </button>
+    <div class="px-3 pb-3 text-[12px] space-y-1">
+      ${task.description ? `<div>${planText(task.description)}</div>` : ''}
+      <div>${(design.target_refs || []).map(ref => planRequirementLink(rid, ref,
+        ((design.target_links || []).find(link => link.requirement_id === ref) || {}).role)).join(' · ')}</div>
+      ${design.question_ref ? planField(t('plan.task.questionRef'), planRequirementLink(rid, design.question_ref)) : ''}
+      ${design.question ? planField(t('plan.task.stepQuestion'), planText(design.question)) : ''}
+      ${(task.expected_artifacts || []).length ? planField(t('plan.task.expected'), planItems(task.expected_artifacts.map(a => a.description || a.name))) : ''}
+    </div>
     ${body}</div>`;
 }
 
@@ -1956,6 +1969,27 @@ function togglePlanAllTasks(rid) {
   repaintPlanTasks(rid);
 }
 
+function planRequirements(plan, rid) {
+  const rows = plan.requirements || [];
+  if (!rows.length) return '';
+  const body = rows.map(row => {
+    const assessed = (row.chain || []).some(item => item.result_id);
+    const criteria = (row.criteria || []).filter(c => !c.technical).map(c =>
+      `<li>${assessed ? (c.passed === true ? '✓ ' : c.passed === false ? '✗ ' : '? ') : ''}${planText(c.text)}</li>`).join('');
+    return `<div id="requirement-${escHtml(encodeURIComponent(rid))}-${escHtml(encodeURIComponent(row.id))}" class="mb-3 scroll-mt-4">
+      <div class="mb-1"><span class="font-mono text-[11px] text-primary">${escHtml(row.id || '')}</span>
+        <span class="text-[11px] text-outline-variant ml-1">${escHtml(t('plan.kind.' + row.kind))}</span>
+        <span class="text-[12px] ml-1">${planText(row.formulation)}</span></div>
+      ${criteria ? `<ul class="list-disc ml-4 text-[11px]">${criteria}</ul>` : ''}
+      ${assessed ? planField(t('plan.requirements.status'), planText(t('plan.status.' + row.status))) : ''}
+      ${row.actual ? planField(t('plan.requirements.actual'), planText(row.actual)) : ''}
+      ${row.grounds ? planField(t('plan.requirements.grounds'), planText(row.grounds)) : ''}
+      ${assessed && row.debt ? planField(t('plan.requirements.debt'), planText(row.debt)) : ''}
+    </div>`;
+  }).join('');
+  return planSection(t('plan.requirements'), body);
+}
+
 function planCritiqueBlock(plan) {
   const critique = plan.critique;
   if (!critique) return '';
@@ -1984,25 +2018,22 @@ function renderExperimentPlanReview(live, data) {
   planByRequest.set(rid, plan);
 
 
-  const hypotheses = (plan.hypotheses || []).map(h =>
-    `<div class="mb-1"><span class="font-mono text-[11px] text-primary">${escHtml(h.id || '')}</span>
-      <span class="text-[11px] ml-1">${planText(h.statement)}</span></div>`).join('');
-
   // Everything that is read rather than glanced at. The goal stays above the
   // fold with the chips: between them they say what this plan is, which is
   // what someone scrolling past needs.
   const detail = `
-    ${plan.hypothesis ? planField(t('plan.hypothesis'), planText(plan.hypothesis)) : ''}
-    ${planField(t('plan.methods'), planItems(plan.methods))}
-    ${hypotheses ? planSection(t('plan.hypotheses'), hypotheses) : ''}
-    ${planCritiqueBlock(plan)}
-    ${planMatrix(plan)}
+    ${planRequirements(plan, rid)}
     <div class="mt-3 flex items-center justify-between">
       <p class="text-[13px] font-bold text-on-surface-variant uppercase tracking-wider">${escHtml(t('plan.tasksTitle'))}</p>
       <button type="button" id="plan-toggle-all-${escHtml(rid)}" onclick="togglePlanAllTasks('${escJs(rid)}')"
         class="text-[13px] uppercase tracking-wider text-primary hover:underline">${escHtml(t('plan.expandAll'))}</button>
     </div>
     <div id="plan-tasks-${escHtml(rid)}" class="mt-1">${plan.tasks.map((task, i) => planTaskCard(rid, task, i)).join('')}</div>
+    <details class="mt-3"><summary class="text-[12px] cursor-pointer">${escHtml(t('plan.details'))}</summary>
+      ${planField(t('plan.methods'), planItems(plan.methods))}
+      ${planCritiqueBlock(plan)}
+      ${planMatrix(plan)}
+    </details>
     ${planSection(t('plan.risks'), planBullets(plan.risks))}
     ${planSection(t('plan.assumptions'), planBullets(plan.assumptions))}`;
 
@@ -2031,7 +2062,8 @@ function renderExperimentPlanReview(live, data) {
       ${plan.plan_id ? planChip('id', plan.plan_id) : ''}
     </div>
     ${planField(t('plan.goal'), planText(plan.goal))}
-    ${documentBlock(data) || foldable(detail, JSON.stringify(plan), { bg: 'rgb(var(--c-surface-container-low))' })}
+    ${detail}
+    ${documentBlock(data) || ''}
     <!-- Only the answer is disabled once this review is over (timeout, or
          the operator has answered): the plan stays readable and its task
          cards stay foldable, which is the whole point of drawing it. -->
