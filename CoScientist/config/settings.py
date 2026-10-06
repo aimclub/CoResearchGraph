@@ -210,6 +210,7 @@ class OpikSettings(BaseModel):
 class MCPSettings(BaseModel):
     paper_analysis_url: Optional[str] = None
     papers_search_url: Optional[str] = None
+    moosechem_url: Optional[str] = None
     result_formatter_url: Optional[str] = None
     # The file vault (mcp-servers/vault-mcp-server). Two consumers read it:
     # worker agents get the upload/download pair as an ADK toolset, and

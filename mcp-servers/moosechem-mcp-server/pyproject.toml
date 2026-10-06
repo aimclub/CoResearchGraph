@@ -1,0 +1,20 @@
+[project]
+name = "moosechem-mcp-server"
+version = "2.0.0"
+description = "MCP server for hypothesis generation using CoScientist hypothesis_subsystem"
+authors = [
+    {name = "David Kurbanov", email = "david.kurbanov2003@mail.ru"}
+]
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "fastmcp>=3.1.0,<4.0.0",
+    "aiohttp>=3.9.0",
+    "litellm>=1.40.0",
+    "pydantic>=2.0.0",
+    "requests>=2.32.0",
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

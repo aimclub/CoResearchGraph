@@ -29,6 +29,28 @@ def _websearch():
     from CoScientist.tools import websearch_toolset_instance
     return websearch_toolset_instance
 
+def _hypothesis_subsystem():
+    """The MooseChem generator + critic loop, as ONE tool the agent may call.
+
+    #326 attached this subsystem by replacing HypothesesAgent with it, and the
+    research graph went empty: the agent that is the only role allowed to create
+    Hypothesis, VerificationMethod and ConfirmationCriteria nodes lost both its
+    graph tools and the prompt that tells it to write them. Here the subsystem
+    is a tool instead — the agent keeps its prompt, its graph access and its
+    permissions, and calls this to source candidates rather than to replace
+    itself.
+
+    Optional: with no MooseChem MCP server configured there is nothing to call,
+    and the agent falls back to generating hypotheses the way it does today.
+    """
+    from CoScientist.config import get_settings
+
+    if not get_settings().mcp.moosechem_url:
+        return None
+    from CoScientist.hypothesis_subsystem import build_hypothesis_subsystem
+    return [build_hypothesis_subsystem()]
+
+
 def _paper_analysis():
     from CoScientist.tools import paper_analysis_toolset_instance
     return paper_analysis_toolset_instance
@@ -526,6 +548,26 @@ REGISTRY.register_tool(ToolEntry(
     optional=True,
     runtime_resolved=True,
     docs=_RESEARCH_WORKER_DOCS,
+))
+
+REGISTRY.register_tool(ToolEntry(
+    key="hypothesis_subsystem",
+    factory=_hypothesis_subsystem,
+    # Needs the MooseChem MCP server; without it the entry drops and the agent
+    # is unchanged from today.
+    optional=True,
+    docs=(
+        ToolDoc(
+            name="HypothesisGenerator",
+            signature="HypothesisGenerator(request)",
+            purpose=(
+                "Source candidate hypotheses from the MooseChem pipeline "
+                "(PubMed+OpenAlex corpus → generation → scoring → critic "
+                "refinement). Returns candidates for you to judge and commit; "
+                "it does not touch the research graph itself."
+            ),
+        ),
+    ),
 ))
 
 REGISTRY.register_tool(ToolEntry(

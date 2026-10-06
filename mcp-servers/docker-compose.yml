@@ -110,5 +110,15 @@ services:
       exit 0;
       "
 
+  moosechem-mcp-server:
+    build:
+      context: ..
+      dockerfile: mcp-servers/moosechem-mcp-server/Dockerfile
+    ports:
+      - "7335:7331"
+    env_file:
+      - ./moosechem-mcp-server/.env
+    restart: unless-stopped
+
 volumes:
   minio_data:

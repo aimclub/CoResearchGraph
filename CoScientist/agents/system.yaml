@@ -380,7 +380,12 @@ agents:
     prompt: hypotheses
     output_key: hypotheses
     report_output: true
-    tools: [task_tracker, graph, research_graph]
+    # The MooseChem subsystem joins the three it already had, rather than
+    # replacing them: #326 swapped the toolset wholesale and the graph
+    # stopped receiving hypotheses, because this agent is the only role
+    # allowed to create them. It drops out on its own when no MooseChem
+    # MCP server is configured.
+    tools: [task_tracker, graph, research_graph, hypothesis_subsystem]
     # HITL so it can co-build the graph with the human: validate proposed
     # hypotheses and ask for acceptance criteria when the human didn't add any.
     hitl: true
