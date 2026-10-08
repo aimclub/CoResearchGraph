@@ -1,6 +1,6 @@
 # CoScientist
 
-A multi-agent system for solving scientific tasks, built on Google Agent Development Kit (ADK), FEDOT.MAS, and RAG-based tool retrieval. If your are interested in the old version of CoScientist (including ChemCoScientist) see branch *CoScientist_old*.
+A multi-agent system for solving scientific tasks, built on Google Agent Development Kit (ADK), FEDOT.MAS, and RAG-based tool retrieval.
 
 ## Overview
 
