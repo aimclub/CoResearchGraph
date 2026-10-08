@@ -1,0 +1,5 @@
+from alembic.instructions.explorer import explorer_instruction
+from alembic.instructions.environment import environment_instruction
+from alembic.instructions.coder import coder_instruction
+from alembic.instructions.debugger import debugger_instruction
+from alembic.instructions.wrapper import wrapper_instruction

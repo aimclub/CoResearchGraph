@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CoScientist — Session Trace</title>
+  <style>
+    :root {
+      --bg:#14161a; --surface:#1c1f26; --surface2:#23272f; --line:#2c313a;
+      --ink:#e8eaed; --ink2:#9aa3af; --ink3:#6b7280;
+      --good:#22c55e; --warn:#f59e0b; --crit:#ef4444; --accent:#38bdf8; --slate:#64748b;
+    }
+    * { box-sizing:border-box; }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+      font-family:-apple-system,"Segoe UI",Roboto,Inter,sans-serif; font-size:13px; }
+    #bar { position:fixed; top:0; left:0; right:0; height:46px; display:flex; align-items:center;
+      gap:16px; padding:0 16px; background:var(--surface); border-bottom:1px solid var(--line); z-index:20; }
+    .brand { font-weight:700; } .brand .dot { color:var(--accent); }
+    #bar select,#bar a { background:var(--surface2); color:var(--ink); border:1px solid var(--line);
+      border-radius:7px; padding:5px 9px; font-size:12px; text-decoration:none; }
+    .spacer { margin-left:auto; }
+    #wrap { position:fixed; top:46px; left:0; right:0; bottom:0; display:flex; }
+
+    /* sessions, newest first */
+    #sessions { width:290px; border-right:1px solid var(--line); overflow:auto; background:var(--surface); }
+    #sessions h2 { margin:0; padding:12px 14px 8px; font-size:11px; letter-spacing:.6px;
+      text-transform:uppercase; color:var(--ink3); }
+    .sess { padding:9px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
+    .sess:hover { background:var(--surface2); }
+    .sess.on { background:var(--surface2); border-left:3px solid var(--accent); padding-left:11px; }
+    .sess .t { font-weight:600; }
+    .sess .m { color:var(--ink3); font-size:11px; margin-top:2px; font-variant-numeric:tabular-nums; }
+
+    /* timeline */
+    #trace { flex:1; overflow:auto; padding:16px 20px 60px; }
+    .empty { color:var(--ink3); padding:40px 4px; }
+    .turn { margin-bottom:22px; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+    .turn > header { padding:11px 14px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; }
+    .turn .n { color:var(--accent); font-weight:700; font-variant-numeric:tabular-nums; }
+    .turn .p { font-weight:600; flex:1; }
+    .turn .d { color:var(--ink3); font-variant-numeric:tabular-nums; font-size:12px; }
+    .turn .g { color:var(--ink3); font-size:12px; text-decoration:none;
+      border:1px solid var(--line); border-radius:6px; padding:2px 7px; }
+    .turn .g:hover { color:var(--ink); border-color:var(--accent); }
+    .calls { padding:6px 0; }
+    .call { display:grid; grid-template-columns:74px 150px 1fr 200px 62px; gap:10px;
+      align-items:center; padding:5px 14px; cursor:pointer; }
+    .call:hover { background:var(--surface2); }
+    .call .at { color:var(--ink3); font-variant-numeric:tabular-nums; font-size:11px; }
+    .call .ag { color:var(--ink2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .call .tl { font-family:ui-monospace,Menlo,monospace; font-size:12px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bar { height:7px; border-radius:4px; background:var(--slate); min-width:2px; }
+    .call .du { color:var(--ink3); text-align:right; font-variant-numeric:tabular-nums; font-size:11px; }
+    .io { display:none; grid-column:1/-1; padding:8px 0 4px; }
+    .call.open .io { display:block; }
+    .io pre { margin:4px 0; padding:8px 10px; background:var(--bg); border:1px solid var(--line);
+      border-radius:7px; max-height:460px; overflow:auto; white-space:pre-wrap;
+      word-break:break-word; font-size:11.5px; color:var(--ink2); }
+    .io b { color:var(--ink3); font-size:10.5px; letter-spacing:.5px; text-transform:uppercase; }
+    .ans { padding:10px 14px; border-top:1px solid var(--line); color:var(--ink2); }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <span class="brand">CoScientist<span class="dot">.</span> trace</span>
+    <select id="user"></select>
+    <span id="meta" style="color:var(--ink3)"></span>
+    <span class="spacer"></span>
+    <a id="tograph" href="/graph">graph view →</a>
+  </div>
+
+  <div id="wrap">
+    <div id="sessions"><h2>Sessions — newest first</h2><div id="slist"></div></div>
+    <div id="trace"><div class="empty">Pick a session on the left.</div></div>
+  </div>
+
+<script>
+const STATUS = { running:"#f59e0b", success:"#22c55e", failed:"#ef4444",
+                 interrupted:"#f97316", pruned:"#64748b" };
+const qs = new URLSearchParams(location.search);
+let userId = qs.get("user_id") || "", sessionId = qs.get("session_id") || "", sessions = [];
+
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const clock = t => t ? new Date(t * 1000).toLocaleTimeString() : "";
+const secs = d => (d === null || d === undefined) ? "" : (d < 1 ? d.toFixed(2) : d.toFixed(1)) + "s";
+
+async function json(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function loadUsers() {
+  const data = await json("/api/users");
+  const sel = document.getElementById("user");
+  sel.innerHTML = (data.users || [])
+    .map(u => `<option value="${esc(u.id)}">${esc(u.nickname || u.id)}</option>`).join("");
+  if (!userId && data.users && data.users.length) userId = data.users[0].id;
+  sel.value = userId;
+  sel.onchange = () => { userId = sel.value; sessionId = ""; loadSessions(); };
+}
+
+async function loadSessions() {
+  const data = await json(`/api/users/${encodeURIComponent(userId)}/sessions`);
+  sessions = data.sessions || [];               // the API already sorts newest first
+  document.getElementById("slist").innerHTML = sessions.length
+    ? sessions.map(s => `
+      <div class="sess${s.id === sessionId ? " on" : ""}" data-id="${esc(s.id)}">
+        <div class="t">${esc(s.title || "untitled")}</div>
+        <div class="m">${esc(new Date(s.updated_at).toLocaleString())}</div>
+      </div>`).join("")
+    : `<div class="empty" style="padding:20px 14px">No sessions yet.</div>`;
+  document.querySelectorAll(".sess").forEach(el =>
+    el.onclick = () => { sessionId = el.dataset.id; loadSessions(); loadTrace(); });
+  if (!sessionId && sessions.length) { sessionId = sessions[0].id; loadSessions(); loadTrace(); }
+}
+
+function renderCall(c, t0, span) {
+  // Width is the share of the turn a call occupied, so a long step is visibly long.
+  const w = (span > 0 && c.duration) ? Math.max(2, Math.round(c.duration / span * 100)) : 2;
+  const off = (span > 0 && c.t_start) ? Math.max(0, Math.round((c.t_start - t0) / span * 100)) : 0;
+  return `
+    <div class="call">
+      <span class="at">${clock(c.t_start)}</span>
+      <span class="ag">${esc(c.agent || "")}</span>
+      <span class="tl">${esc(c.tool || "")}</span>
+      <span><span class="bar" style="width:${w}%;margin-left:${off}%;
+        background:${STATUS[c.status] || "#64748b"}"></span></span>
+      <span class="du">${secs(c.duration)}</span>
+      <div class="io">
+        <b>input</b><pre>${esc(c.input || "—")}</pre>
+        <b>output</b><pre>${esc(c.output || "—")}</pre>
+      </div>
+    </div>`;
+}
+
+function renderTurn(t, n) {
+  const span = (t.t_end && t.t_start) ? (t.t_end - t.t_start) : 0;
+  return `
+    <div class="turn">
+      <header>
+        <span class="n">#${n}</span>
+        <span class="p">${esc(t.prompt || "(no prompt recorded)")}</span>
+        <span class="d">${clock(t.t_start)} · ${secs(t.duration)} · ${t.calls.length} calls</span>
+        <a class="g" href="/graph?user_id=${encodeURIComponent(userId)}`
+          + `&session_id=${encodeURIComponent(sessionId)}&view=execution`
+          + `&turn=${encodeURIComponent(t.turn_id)}" title="this request as a graph">graph →</a>
+      </header>
+      <div class="calls">${t.calls.map(c => renderCall(c, t.t_start, span)).join("")
+        || '<div class="empty" style="padding:10px 14px">No tool calls in this turn.</div>'}</div>
+      ${t.answer ? `<div class="ans">${esc(t.answer)}</div>` : ""}
+    </div>`;
+}
+
+async function loadTrace() {
+  const box = document.getElementById("trace");
+  box.innerHTML = `<div class="empty">Loading…</div>`;
+  try {
+    const data = await json(`/api/users/${encodeURIComponent(userId)}`
+      + `/sessions/${encodeURIComponent(sessionId)}/graph?view=trace`);
+    const turns = data.turns || [];
+    document.getElementById("meta").textContent =
+      turns.length ? `${turns.length} request${turns.length > 1 ? "s" : ""}` : "";
+    document.getElementById("tograph").href =
+      `/graph?user_id=${encodeURIComponent(userId)}`
+      + `&session_id=${encodeURIComponent(sessionId)}&view=execution`;
+    // Newest request first, to match the session list.
+    box.innerHTML = turns.length
+      ? turns.map((t, i) => [t, turns.length - i]).reverse()
+             .map(([t, n]) => renderTurn(t, n)).join("")
+      : `<div class="empty">This session recorded no activity.</div>`;
+    box.querySelectorAll(".call").forEach(el =>
+      el.onclick = () => el.classList.toggle("open"));
+  } catch (e) {
+    box.innerHTML = `<div class="empty">Could not load the trace (${esc(e.message)}).</div>`;
+  }
+}
+
+(async () => {
+  try { await loadUsers(); await loadSessions(); if (sessionId) await loadTrace(); }
+  catch (e) { document.getElementById("slist").innerHTML =
+    `<div class="empty" style="padding:20px 14px">${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>

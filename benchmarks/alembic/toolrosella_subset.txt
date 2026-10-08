@@ -1,0 +1,12 @@
+https://github.com/deepchem/deepchem
+https://github.com/biopython/biopython
+https://github.com/root-11/graph-theory
+https://github.com/Jacobe2169/GMatch4py
+https://github.com/GeoStat-Framework/GStools
+https://github.com/climlab/climlab
+https://github.com/scientisst/BioSPPy
+https://github.com/Project-MONAI/MONAI
+https://github.com/scikit-hep/scikit-hep
+https://github.com/duartegroup/autodE
+https://github.com/snap-stanford/snap-python
+https://github.com/pymc-labs/pymc-marketing

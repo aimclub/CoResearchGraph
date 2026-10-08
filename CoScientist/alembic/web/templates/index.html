@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>Alembic Pipeline</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+    rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            /* CoScientist brand tokens — single accent (primary) + semantic states */
+            "primary": "#00daf3", "on-primary": "#00363d", "primary-container": "#007e8c",
+            "secondary": "#40e56c",                 /* done / pass */
+            "error": "#ffb4ab", "error-strong": "#93000a",  /* fail / timeout */
+            "background": "#101319",
+            "surface-low": "#191c22", "surface": "#1d2026", "surface-lowest": "#0b0e14",
+            "surface-high": "#272a31",
+            "on-surface": "#e1e2eb", "on-surface-dim": "#c2c6d8",
+            "outline": "#cbd5e1", "outline-variant": "#94a3b8",
+          },
+          borderRadius: { /* Shape Lock: cards=xl, controls=lg, pills=full */
+            "card": "0.75rem", "control": "0.5rem",
+          },
+          fontFamily: {
+            head: ["Space Grotesk", "sans-serif"],
+            mono: ["JetBrains Mono", "monospace"],
+            body: ["Inter", "sans-serif"],
+          }
+        },
+      },
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+    /* scrollbars */
+    .scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scroll::-webkit-scrollbar-thumb { background: #32353c; border-radius: 999px; }
+    .scroll::-webkit-scrollbar-track { background: transparent; }
+
+    /* faint topology grid — tinted to the one accent */
+    .grid-bg { background-image: radial-gradient(rgba(0,218,243,.045) 1px, transparent 1px); background-size: 26px 26px; }
+
+    /* motion — every animation is semantic (feedback / running-state) */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: translateY(0) } }
+    .enter { animation: fadeIn .28s cubic-bezier(.16,1,.3,1) both; }
+    @keyframes ring { 0% { box-shadow: 0 0 0 0 rgba(0,218,243,.45) } 70% { box-shadow: 0 0 0 7px rgba(0,218,243,0) } 100% { box-shadow: 0 0 0 0 rgba(0,218,243,0) } }
+    .ring { animation: ring 1.7s ease-out infinite; }
+    @keyframes spin { to { transform: rotate(360deg) } }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .enter, .ring, .spin { animation: none !important; }
+    }
+
+    /* lightweight markdown */
+    .md h4 { font-family: 'Space Grotesk'; font-weight: 600; color: #e1e2eb; margin: .5rem 0 .15rem; font-size: .82rem; }
+    .md code { font-family: 'JetBrains Mono'; font-size: .76rem; background: #0b0e14; padding: 1px 5px; border-radius: 5px; color: #00daf3; }
+    .md strong { color: #e1e2eb; font-weight: 600; }
+    .md .li { padding-left: 14px; position: relative; margin: 3px 0; color: #c2c6d8; font-size: .81rem; line-height: 1.5; }
+    .md .li::before { content: ""; position: absolute; left: 2px; top: .55em; width: 4px; height: 4px; border-radius: 999px; background: #00daf3; }
+    .md p { color: #c2c6d8; font-size: .81rem; line-height: 1.55; margin: 3px 0; }
+
+    /* body-level floating tooltip (never clipped by panel overflow) */
+    #floating-tip {
+      position: fixed; z-index: 200; display: none; pointer-events: none;
+      width: 360px; max-height: 260px; overflow: auto;
+      background: #0b0e14; border: 1px solid #93000a; color: #ffb4ab;
+      font-family: 'JetBrains Mono'; font-size: .69rem; line-height: 1.5;
+      padding: 9px 11px; border-radius: 12px; white-space: pre-wrap;
+      box-shadow: 0 14px 40px rgba(0,0,0,.55);
+    }
+    /* footer resize grabber */
+    #feed-resizer { height: 6px; cursor: ns-resize; }
+    #feed-resizer::after {
+      content: ""; display: block; width: 40px; height: 3px; margin: 1.5px auto 0;
+      border-radius: 999px; background: #64748b; transition: background .15s;
+    }
+    #feed-resizer:hover::after { background: #00daf3; }
+
+    /* tool invocation panel (expand a tool card) */
+    .lbl { font-family: 'Space Grotesk'; font-size: .62rem; font-weight: 600; letter-spacing: .1em;
+      text-transform: uppercase; color: #a1a7b8; margin-bottom: 4px; }
+    .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; align-items: start; }
+    .kvk { font-family: 'JetBrains Mono'; font-size: .72rem; color: #00daf3; white-space: nowrap; }
+    .kvv { font-family: 'JetBrains Mono'; font-size: .72rem; color: #c2c6d8; word-break: break-word; }
+    .out { font-family: 'JetBrains Mono'; font-size: .7rem; line-height: 1.5; color: #c2c6d8;
+      background: #0b0e14; border: 1px solid #475569; border-radius: 8px; padding: 8px 10px;
+      max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .err { font-family: 'JetBrains Mono'; font-size: .69rem; line-height: 1.5; color: #ffb4ab;
+      background: #0b0e14; border: 1px solid #93000a; border-radius: 8px; padding: 8px 10px;
+      max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .stat { font-family: 'JetBrains Mono'; font-size: 1.4rem; font-weight: 600; color: #e1e2eb; }
+    .chip { display: inline-block; font-family: 'JetBrains Mono'; font-size: .7rem; color: #c2c6d8;
+      background: #0b0e14; border: 1px solid #475569; border-radius: 999px; padding: 2px 9px; margin: 2px 3px 2px 0; }
+    .bars { display: flex; align-items: flex-end; gap: 2px; height: 44px; padding: 2px 0; }
+    .bar { flex: 1; min-width: 2px; max-width: 14px; background: #00daf3; border-radius: 2px 2px 0 0; opacity: .8; }
+    .svgbox { background: #fff; border-radius: 8px; padding: 8px; max-height: 300px; overflow: auto; }
+    .svgbox svg { max-width: 100%; height: auto; }
+    .filechip { display: inline-flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono';
+      font-size: .72rem; color: #eac400; background: #0b0e14; border: 1px solid #475569;
+      border-radius: 8px; padding: 5px 9px; }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+
+    /* result image viewer: zoom with the wheel, pan by dragging */
+    #right-panel .tool-runs img, #right-panel .tool-runs .svgbox { cursor: zoom-in; }
+    #viewer { position: fixed; inset: 0; z-index: 300; background: rgba(5, 7, 10, .92); }
+    #viewer-stage { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; }
+    #viewer-stage.dragging { cursor: grabbing; }
+    #viewer-content { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    #viewer-content img { max-width: none; max-height: none; display: block; }
+    #viewer-content .viewer-svg { background: #fff; border-radius: 8px; padding: 8px; }
+    #viewer-content .viewer-svg svg { display: block; }
+    /* the bar and hint sit over the image, which is often white when zoomed in */
+    #viewer-bar { position: absolute; top: 12px; right: 16px; display: flex; gap: 8px; align-items: center;
+      background: rgba(11, 14, 20, .88); padding: 4px 6px 4px 10px; border-radius: 10px; }
+    #viewer-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); pointer-events: none;
+      background: rgba(11, 14, 20, .88); padding: 4px 10px; border-radius: 8px; white-space: nowrap; }
+  </style>
+</head>
+
+<body class="bg-background text-on-surface overflow-hidden h-screen flex flex-col antialiased">
+
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header class="flex items-center gap-5 px-6 min-h-16 py-2 border-b border-outline-variant/20 bg-surface-lowest shrink-0">
+    <a id="home-link" href="#" class="flex items-center gap-2.5 shrink-0 hover:opacity-80 transition"
+       title="New build (paste a repo)">
+      <span class="material-symbols-outlined text-primary text-[26px]">experiment</span>
+      <div class="leading-none">
+        <div class="font-head text-lg font-bold tracking-[0.2em] text-primary uppercase">Alembic</div>
+        <div class="text-[9px] font-mono text-outline tracking-[0.25em] uppercase mt-1">repo → mcp</div>
+      </div>
+    </a>
+
+    <div class="flex-1 flex flex-col gap-1.5 max-w-3xl">
+      <div class="flex items-center gap-2">
+        <div class="flex-1 flex items-center gap-2 bg-surface rounded-control border border-outline-variant/30 px-3 h-10 focus-within:border-primary/60 transition-colors">
+          <span class="material-symbols-outlined text-outline text-[19px]">link</span>
+          <input id="repo-input" type="text" spellcheck="false" placeholder="https://github.com/Roestlab/massformer"
+            class="flex-1 bg-transparent border-0 focus:ring-0 p-0 text-sm font-mono text-on-surface placeholder:text-outline/70" />
+        </div>
+        <button id="run-btn"
+          class="flex items-center gap-1.5 bg-primary text-on-primary font-head font-semibold text-sm px-4 h-10 rounded-control hover:brightness-110 active:scale-[.98] transition disabled:opacity-40">
+          <span class="material-symbols-outlined text-[19px]">play_arrow</span> Run
+        </button>
+        <button id="stop-btn"
+          class="hidden items-center gap-1.5 bg-error/15 text-error font-head font-semibold text-sm px-4 h-10 rounded-control hover:bg-error/25 active:scale-[.98] transition">
+          <span class="material-symbols-outlined text-[19px]">stop</span> Stop
+        </button>
+        <a id="builds-link" href="#"
+          class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
+          <span class="material-symbols-outlined text-[19px]">history</span> Builds
+        </a>
+        <a id="chat-link" href="/"
+          class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition"
+          title="Back to CoScientist chat">
+          <span class="material-symbols-outlined text-[19px]">chat</span> Chat
+        </a>
+        <a id="new-build-link" href="#"
+          class="hidden items-center gap-1.5 bg-primary text-on-primary font-head font-semibold text-sm px-4 h-10 rounded-control hover:brightness-110 active:scale-[.98] transition">
+          <span class="material-symbols-outlined text-[19px]">add</span> New MCP from repo
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Stage rail ─────────────────────────────────────────────────── -->
+  <div id="stage-rail" class="flex items-center gap-0 px-6 h-[68px] border-b border-outline-variant/20 bg-background shrink-0"></div>
+
+  <!-- ── Split body ─────────────────────────────────────────────────── -->
+  <main class="flex-1 grid grid-cols-2 overflow-hidden min-h-0">
+
+    <!-- LEFT: exploration → output files → how to run → invocation examples -->
+    <section class="flex flex-col border-r border-outline-variant/20 overflow-hidden min-h-0">
+      <div class="flex items-center gap-2 px-5 h-11 border-b border-outline-variant/10 bg-surface-low shrink-0">
+        <span class="material-symbols-outlined text-outline text-[18px]">account_tree</span>
+        <h2 class="font-head text-sm font-semibold text-on-surface-dim">Exploration &amp; artefacts</h2>
+        <span class="text-[10px] text-outline font-mono ml-auto">source → files → run</span>
+      </div>
+      <div id="left-panel" class="flex-1 overflow-y-auto scroll grid-bg p-4 min-h-0"></div>
+    </section>
+
+    <!-- RIGHT: generated tools -->
+    <section class="flex flex-col overflow-hidden min-h-0">
+      <div class="flex items-center gap-2 px-5 h-11 border-b border-outline-variant/10 bg-surface-low shrink-0">
+        <span class="material-symbols-outlined text-primary text-[18px]">build</span>
+        <h2 class="font-head text-sm font-semibold text-on-surface-dim">Generated tools</h2>
+        <div id="check-badges" class="ml-auto flex items-center gap-1.5"></div>
+        <a id="serve-status" href="#" target="_blank" class="hidden text-[11px] font-mono px-2 h-6 rounded-full border items-center gap-1"></a>
+        <button id="download-btn" title="Download build artefacts (zip)"
+          class="flex items-center gap-1 text-[11px] font-mono text-outline px-2 h-6 rounded-full border border-outline-variant/25 hover:border-primary/40 hover:text-on-surface transition disabled:opacity-40"
+          disabled>
+          <span class="material-symbols-outlined text-[14px]">download</span>
+        </button>
+      </div>
+      <div id="right-panel" class="flex-1 overflow-y-auto scroll grid-bg p-4 min-h-0"></div>
+    </section>
+  </main>
+
+  <!-- ── Activity ───────────────────────────────────────────────────── -->
+  <footer class="border-t border-outline-variant/20 bg-surface-lowest shrink-0">
+    <div id="feed-resizer" title="Drag to resize"></div>
+    <button id="feed-toggle" class="w-full flex items-center gap-2.5 px-6 h-10 text-left hover:bg-surface/40 transition-colors">
+      <span class="material-symbols-outlined text-primary text-[18px]" id="feed-chevron">expand_more</span>
+      <span class="font-head text-xs font-semibold text-on-surface-dim">Activity</span>
+      <span id="now-tool" class="text-xs font-mono text-outline truncate ml-2 flex-1"></span>
+      <span id="feed-count" class="text-[10px] font-mono text-outline-dim bg-surface rounded-full px-2 py-0.5 tabular-nums">0</span>
+    </button>
+    <div id="feed" class="overflow-y-auto scroll px-6 pb-3 space-y-0.5" style="height:190px"></div>
+  </footer>
+
+  <div id="floating-tip"></div>
+
+  <script>
+    // ─── stages ─────────────────────────────────────────────────────
+    const STAGES = [
+      { key: "explorer",    label: "Explorer",    icon: "search" },
+      { key: "environment", label: "Environment", icon: "deployed_code" },
+      { key: "coder",       label: "Coder",       icon: "code" },
+      { key: "validator",   label: "Validator",   icon: "verified" },
+      { key: "wrapper",     label: "Wrapper",     icon: "conversion_path" },
+    ];
+    // Color Lock: idle=outline, running=accent, done=green, failed/timeout=error.
+    const C = { idle: "#8c90a1", running: "#00daf3", done: "#40e56c", failed: "#ffb4ab", timeout: "#ffb4ab" };
+
+    // ─── mode + mount base ──────────────────────────────────────────
+    // Two mount points:
+    //   (a) Standalone alembic app at root: "/" (live) + "/builds[/{jid}]" (history).
+    //   (b) Common web UI mounts the same alembic app under "/alembic": paths
+    //       become "/alembic/", "/alembic/builds[/{jid}]" — everything the
+    //       template fetches must be prefixed with BASE.
+    const _p = location.pathname;
+    const IS_MOUNTED_ALEMBIC = _p === "/alembic" || _p.startsWith("/alembic/");
+    const BASE = IS_MOUNTED_ALEMBIC ? "/alembic" : "";
+    // Path within the mount ("/", "/builds", "/builds/{jid}").
+    const SUB = IS_MOUNTED_ALEMBIC ? _p.slice(BASE.length) || "/" : _p;
+    const BUILD_MATCH = SUB.match(/^\/builds\/([^/]+)\/?$/);
+    const JOB_ID = BUILD_MATCH ? decodeURIComponent(BUILD_MATCH[1]) : null;
+    // Live mode: only the mount root drives a fresh pipeline over /ws.
+    const MODE = (SUB === "/" || SUB === "") ? "live" : "history";
+
+    // ─── state ──────────────────────────────────────────────────────
+    let ws;
+    let currentJobId = JOB_ID;       // refreshed from the snapshot event
+    const stageState = {};
+    // left panel = an accumulating column, filled as the run progresses
+    const left = { exploration: null, files: null, setup: null, examples: null };
+    // right panel
+    let serverTools = [];            // [{name, sig, ret, desc, status, verdict, exec_ok, invoc_passed, invoc_total, perfect, error}]
+    const toolCards = {};            // name -> card element
+    const toolRuns = {};             // name -> [{passed, input, output, error, traceback}]
+    const expandedTools = new Set();
+    const callState = {};            // name -> {status, output, error, traceback, argsText}
+    let callSeq = 0;                 // id matching invoke -> invoke_result
+    const mcpTools = {};             // name -> inputSchema, as the served MCP server lists them
+    let feedOpen = true, feedN = 0;
+
+    // ─── markdown ───────────────────────────────────────────────────
+    const esc = s => (s || "").replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const inline = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    function renderMd(md) {
+      const out = [];
+      for (const raw of (md || "").split("\n")) {
+        const t = raw.trim();
+        if (!t) continue;
+        if (t.startsWith("### ")) out.push(`<h4>${inline(t.slice(4))}</h4>`);
+        else if (t.startsWith("#### ")) out.push(`<h4>${inline(t.slice(5))}</h4>`);
+        else if (/^[-*]\s+/.test(t)) out.push(`<div class="li">${inline(t.replace(/^[-*]\s+/, ''))}</div>`);
+        else out.push(`<p>${inline(t)}</p>`);
+      }
+      return `<div class="md">${out.join("")}</div>`;
+    }
+
+    // ─── empty-state helper ─────────────────────────────────────────
+    function emptyState(panel, icon, text) {
+      panel.innerHTML = `<div class="placeholder h-full flex flex-col items-center justify-center gap-3 text-outline">
+        <span class="material-symbols-outlined text-4xl opacity-40">${icon}</span>
+        <span class="text-sm font-mono">${esc(text)}</span></div>`;
+    }
+
+    // ─── stage rail ─────────────────────────────────────────────────
+    function buildRail() {
+      const rail = document.getElementById("stage-rail");
+      rail.innerHTML = "";
+      STAGES.forEach((s, i) => {
+        const st = stageState[s.key] || (stageState[s.key] = "idle");
+        const col = C[st] || C.idle;
+        const glyph = st === "done" ? "check" : (st === "failed" || st === "timeout") ? "error" : s.icon;
+
+        const item = document.createElement("div");
+        item.className = "flex items-center flex-1 gap-3";
+        const tab = document.createElement("div");
+        tab.className = "group flex items-center gap-2.5 rounded-control pl-1 pr-3 py-1";
+        tab.innerHTML = `
+          <div class="w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${st === 'running' ? 'ring' : ''}"
+               style="border:1.5px solid ${col};color:${col};background:${st === 'done' ? 'rgba(64,229,108,.08)' : st === 'running' ? 'rgba(0,218,243,.08)' : 'transparent'}">
+            <span class="material-symbols-outlined text-[19px] ${st === 'running' ? 'spin' : ''}">${glyph}</span>
+          </div>
+          <div class="leading-tight text-left">
+            <div class="font-head text-sm font-semibold" style="color:${st === 'idle' ? '#8c90a1' : '#e1e2eb'}">${s.label}</div>
+            <div class="text-[10px] font-mono uppercase tracking-wider" style="color:${col}">${st}</div>
+          </div>`;
+        item.appendChild(tab);
+        if (i < STAGES.length - 1) {
+          const line = document.createElement("div");
+          line.className = "flex-1 h-px rounded-full";
+          const lit = (stageState[STAGES[i + 1].key] && stageState[STAGES[i + 1].key] !== "idle") || st === "done";
+          line.style.background = lit ? "#40e56c" : "#64748b";
+          item.appendChild(line);
+        }
+        rail.appendChild(item);
+      });
+    }
+    const setStage = (k, s) => { stageState[k] = s; buildRail(); };
+
+    // ─── left panel: accumulating column ────────────────────────────
+    const SECTION_ICON = {
+      "Description": "description", "List of key files": "folder_open",
+      "List of main workflows": "lan", "Environment Setup": "deployed_code",
+      "External Assets": "database", "Suggested MCP Usage Scenarios": "bolt",
+    };
+    function groupLabel(icon, title) {
+      return `<div class="flex items-center gap-2 mt-2 mb-2 first:mt-0">
+        <span class="material-symbols-outlined text-primary text-[18px]">${icon}</span>
+        <h3 class="font-head text-sm font-semibold text-on-surface">${esc(title)}</h3></div>`;
+    }
+    function sectionsCardsHtml(sections, accent) {
+      let html = "";
+      const title = sections["_title"] || "";
+      if (title) html += `<div class="text-primary font-head font-bold text-base mb-2">${esc(title)}</div>`;
+      for (const [name, body] of Object.entries(sections)) {
+        if (name.startsWith("_")) continue;
+        const icon = SECTION_ICON[name] || "chevron_right";
+        html += `
+          <div class="enter bg-surface border border-outline-variant/20 rounded-card overflow-hidden mb-2">
+            <div class="flex items-center gap-2 px-3.5 h-9 border-b border-outline-variant/10 bg-surface-low">
+              <span class="material-symbols-outlined text-[17px]" style="color:${accent}">${icon}</span>
+              <span class="font-head text-xs font-semibold text-on-surface-dim">${esc(name)}</span>
+            </div>
+            <div class="px-3.5 py-2.5">${renderMd(body)}</div>
+          </div>`;
+      }
+      return html;
+    }
+    function fileCardHtml(f) {
+      return `
+        <details class="enter bg-surface border border-outline-variant/20 rounded-card overflow-hidden mb-2">
+          <summary class="flex items-center gap-2 px-3.5 h-9 cursor-pointer select-none hover:bg-surface-low/50">
+            <span class="material-symbols-outlined text-[16px] text-primary">description</span>
+            <span class="font-mono text-xs text-on-surface-dim flex-1 truncate">${esc(f.path)}</span>
+            <span class="material-symbols-outlined text-outline text-[16px]">unfold_more</span>
+          </summary>
+          <pre class="out" style="max-height:320px;border-radius:0;border-width:1px 0 0 0">${esc(f.content)}</pre>
+        </details>`;
+    }
+    function exampleCardHtml(e) {
+      const call = `invoke_tool_function(${JSON.stringify(e.name)}, ${JSON.stringify(e.args || {})})`;
+      return `
+        <div class="enter bg-surface border border-outline-variant/20 rounded-card overflow-hidden mb-2">
+          <div class="flex items-center gap-2 px-3.5 h-9 border-b border-outline-variant/10 bg-surface-low">
+            <span class="material-symbols-outlined text-[16px] text-primary">bolt</span>
+            <span class="font-mono text-xs font-semibold text-on-surface">${esc(e.name)}</span>
+          </div>
+          <pre class="out" style="border-radius:0;border-width:0">${esc(call)}</pre>
+          ${e.evidence ? `<div class="px-3.5 pb-2.5 text-[11px] text-outline font-mono">evidence: ${esc(e.evidence)}</div>` : ''}
+        </div>`;
+    }
+    function renderLeft() {
+      const panel = document.getElementById("left-panel");
+      const blocks = [];
+      if (left.exploration) blocks.push(groupLabel("search", "Exploration") + sectionsCardsHtml(left.exploration, "#00daf3"));
+      if (left.files && left.files.length) blocks.push(groupLabel("folder_code", "Output files") + left.files.map(fileCardHtml).join(""));
+      if (left.setup != null) blocks.push(groupLabel("terminal", "How to run") +
+        `<div class="text-[11px] text-on-surface-dim mb-2 px-0.5">Recorded environment setup (<code class="font-mono text-primary">setup.sh</code>). Serve the MCP with <code class="font-mono text-primary">python server.py</code>.</div>` +
+        `<pre class="out mb-2">${esc(left.setup)}</pre>`);
+      if (left.examples && left.examples.length) blocks.push(groupLabel("integration_instructions", "Invocation examples") + left.examples.map(exampleCardHtml).join(""));
+      if (!blocks.length) { emptyState(panel, "account_tree", "awaiting explorer"); return; }
+      panel.querySelector(".placeholder")?.remove();
+      panel.innerHTML = `<div>${blocks.join("")}</div>`;
+    }
+
+    // ─── right panel: generated tool cards ──────────────────────────
+    function metaChip(text, col) {
+      return `<span class="inline-block font-mono text-[10px] px-2 py-0.5 rounded-full border mr-1" style="color:${col};border-color:${col}55">${esc(text)}</span>`;
+    }
+    function toolMetaHtml(t) {
+      const bits = [];
+      if (t.exec_ok === true) bits.push(metaChip("exec ok", "#40e56c"));
+      else if (t.exec_ok === false) bits.push(metaChip("exec crash", "#ffb4ab"));
+      if (t.invoc_total) bits.push(metaChip(`invoc ${t.invoc_passed || 0}/${t.invoc_total}`,
+        (t.invoc_passed || 0) === t.invoc_total ? "#40e56c" : "#ffb4ab"));
+      if (t.perfect) bits.push(metaChip("★ perfect", "#00daf3"));
+      if (mcpTools[t.name]) bits.push(metaChip("served via MCP", "#40e56c"));
+      return bits.length ? `<div class="px-3.5 pb-2 -mt-0.5">${bits.join("")}</div>` : "";
+    }
+    function renderServer() {
+      const panel = document.getElementById("right-panel");
+      if (!serverTools.length) { emptyState(panel, "build", "awaiting explorer"); return; }
+      panel.querySelector(".placeholder")?.remove();
+      Object.keys(toolCards).forEach(k => delete toolCards[k]);
+      panel.innerHTML = "";
+      const wrap = document.createElement("div");
+      wrap.className = "space-y-2.5";
+      panel.appendChild(wrap);
+
+      serverTools.forEach(t => {
+        const status = t.status || "pending";     // pass | fail | running | pending
+        const card = document.createElement("div");
+        card.className = "enter bg-surface border border-outline-variant/20 rounded-card overflow-hidden transition-colors";
+        card.setAttribute("data-status", status);
+        card.innerHTML = `
+          <button class="tool-head w-full flex items-center gap-2 px-3.5 h-11 text-left hover:bg-surface-low/50 transition-colors">
+            <span class="material-symbols-outlined text-primary text-[18px] shrink-0">handyman</span>
+            <span class="font-mono text-sm font-semibold text-on-surface shrink-0">${esc(t.name)}</span>
+            <span class="font-mono text-[11px] text-outline truncate min-w-0 flex-1">(${esc(t.sig || '')})${t.ret ? ` → ${esc(t.ret)}` : ''}</span>
+            <span class="badge shrink-0"></span>
+            <span class="chev material-symbols-outlined text-outline text-[18px] shrink-0 transition-transform">expand_more</span>
+          </button>
+          ${t.desc ? `<div class="px-3.5 pb-1.5 -mt-1 text-xs text-on-surface-dim leading-relaxed">${inline(t.desc)}</div>` : ''}
+          ${toolMetaHtml(t)}
+          <div class="tool-runs hidden border-t border-outline-variant/10 bg-surface-lowest/40"></div>`;
+        card.querySelector(".tool-head").onclick = () => toggleTool(t.name);
+        wrap.appendChild(card);
+        toolCards[t.name] = card;
+        applyBadge(t.name, status, t.error);
+        if (expandedTools.has(t.name)) renderRuns(t.name);
+      });
+    }
+
+    function applyBadge(tool, status, error) {
+      const card = toolCards[tool];
+      if (!card) return;
+      card.setAttribute("data-status", status);
+      const badge = card.querySelector(".badge");
+      card.style.borderColor = { pending: "rgba(66,70,86,.4)", running: "#00daf3", pass: "#40e56c", fail: "#93000a" }[status] || "rgba(66,70,86,.4)";
+      if (status === "pending")
+        badge.innerHTML = `<span class="text-[10px] font-mono text-outline uppercase tracking-wide">pending</span>`;
+      else if (status === "running")
+        badge.innerHTML = `<span class="material-symbols-outlined text-primary text-[18px] spin">progress_activity</span>`;
+      else if (status === "pass")
+        badge.innerHTML = `<span class="flex items-center gap-1 text-secondary text-xs font-mono"><span class="material-symbols-outlined text-[16px]">check_circle</span>pass</span>`;
+      else if (status === "fail") {
+        badge.innerHTML = `<span class="flex items-center gap-1 text-error text-xs font-mono cursor-help"><span class="material-symbols-outlined text-[16px]">error</span>fail</span>`;
+        attachTip(badge.firstElementChild, error || "failed");
+      }
+    }
+
+    // ─── tool invocations + live Call form (expand a tool card) ─────
+    function toggleTool(name) {
+      if (expandedTools.has(name)) expandedTools.delete(name);
+      else expandedTools.add(name);
+      renderRuns(name);
+    }
+    function renderRuns(name) {
+      const card = toolCards[name];
+      if (!card) return;
+      const box = card.querySelector(".tool-runs");
+      const chev = card.querySelector(".chev");
+      const open = expandedTools.has(name);
+      box.classList.toggle("hidden", !open);
+      if (chev) chev.style.transform = open ? "rotate(180deg)" : "";
+      if (!open) return;
+
+      const runs = toolRuns[name] || [];
+      let html = runs.length
+        ? runs.map((r, i) => runHtml(r, i, runs.length)).join("")
+        : `<div class="px-3.5 py-3 text-xs font-mono text-outline">No invocation yet — the validator calls each tool during the Validator stage, or call it live below.</div>`;
+      html += callFormHtml(name);           // always callable (the tool-function exists)
+      box.innerHTML = html;
+      wireCallForm(name);
+    }
+
+    // Default Call args: the last recorded invocation, else the defaults from
+    // the served tool's input schema.
+    function defaultArgs(name) {
+      const runs = toolRuns[name] || [];
+      const last = runs.length ? runs[runs.length - 1].input : null;
+      if (last && Object.keys(last).length) return last;
+      const props = (mcpTools[name] || {}).properties || {};
+      const out = {};
+      for (const [k, p] of Object.entries(props)) out[k] = p.default !== undefined ? p.default : "";
+      return out;
+    }
+    function callFormHtml(name) {
+      const cs = callState[name] || {};
+      const def = cs.argsText != null ? cs.argsText : JSON.stringify(defaultArgs(name), null, 2);
+      const busy = cs.status === "calling";
+      const via = cs.via === "container" ? "container (debug)" : "MCP";
+      let result = "";
+      if (cs.status === "done")
+        result = `<div class="lbl mt-2">Result · via ${via}</div>${vizOutput(cs.output)}${cs.reason ? `<div class="text-[11px] text-outline font-mono mt-1">${esc(cs.reason)}</div>` : ""}`;
+      else if (cs.status === "error")
+        result = `<div class="lbl mt-2">Error · via ${via}</div><pre class="err">${esc(cs.error || 'call failed')}${cs.traceback ? "\n\n" + esc(cs.traceback) : ""}</pre>`;
+      return `
+        <div class="px-3.5 py-3 space-y-2 border-t border-outline-variant/10 bg-surface-lowest/60">
+          <div class="lbl">Call this tool <span class="text-primary">· live via MCP</span></div>
+          <textarea class="call-args w-full bg-surface-lowest border border-outline-variant/40 rounded-control font-mono text-[11px] text-on-surface p-2 focus:ring-0 focus:border-primary/60 resize-y" rows="4" spellcheck="false" ${busy ? "disabled" : ""}>${esc(def)}</textarea>
+          <div class="flex items-center gap-2">
+            <button class="call-btn flex items-center gap-1.5 bg-primary text-on-primary font-head font-semibold text-xs px-3 h-8 rounded-control hover:brightness-110 active:scale-[.98] transition disabled:opacity-50" ${busy ? "disabled" : ""}>
+              ${busy ? `<span class="material-symbols-outlined text-[16px] spin">progress_activity</span> calling…`
+            : `<span class="material-symbols-outlined text-[16px]">bolt</span> Call`}
+            </button>
+            <button class="debug-btn flex items-center gap-1 text-[11px] font-mono text-outline px-2 h-8 rounded-control border border-outline-variant/30 hover:border-primary/40 hover:text-on-surface transition disabled:opacity-50"
+              title="Debug: run the tool function inside the build's container, bypassing the MCP server" ${busy ? "disabled" : ""}>
+              <span class="material-symbols-outlined text-[15px]">terminal</span> Run in container
+            </button>
+            <span class="call-msg text-[11px] font-mono text-outline"></span>
+          </div>
+          <div class="call-result">${result}</div>
+        </div>`;
+    }
+    function wireCallForm(name) {
+      const box = toolCards[name].querySelector(".tool-runs");
+      const ta = box.querySelector(".call-args");
+      const btn = box.querySelector(".call-btn");
+      const dbg = box.querySelector(".debug-btn");
+      if (ta) ta.oninput = () => { callState[name] = { ...(callState[name] || {}), argsText: ta.value }; };
+      if (btn) btn.onclick = () => doCall(name, "mcp");
+      if (dbg) dbg.onclick = () => doCall(name, "container");
+    }
+    function doCall(name, mode) {
+      const box = toolCards[name].querySelector(".tool-runs");
+      const ta = box.querySelector(".call-args");
+      const msg = box.querySelector(".call-msg");
+      let args;
+      try {
+        args = ta.value.trim() ? JSON.parse(ta.value) : {};
+      } catch (e) {
+        msg.textContent = "invalid JSON: " + e.message; msg.style.color = "#ffb4ab"; return;
+      }
+      if (typeof args !== "object" || Array.isArray(args)) {
+        msg.textContent = "args must be a JSON object"; msg.style.color = "#ffb4ab"; return;
+      }
+      if (!ws || ws.readyState !== 1) { msg.textContent = "not connected"; msg.style.color = "#ffb4ab"; return; }
+      const id = ++callSeq;
+      callState[name] = { status: "calling", argsText: ta.value, callId: id, via: mode };
+      renderRuns(name);
+      ws.send(JSON.stringify({ type: "invoke", tool: name, args, call_id: id, mode }));
+    }
+    function runHtml(r, i, total) {
+      const s = r.passed ? { c: "#40e56c", t: "pass", ic: "check_circle" }
+        : { c: "#ffb4ab", t: "fail", ic: "error" };
+      const hasIn = r.input && typeof r.input === "object" && Object.keys(r.input).length;
+      const input = hasIn ? kvTable(r.input)
+        : `<span class="text-outline text-xs font-mono">no arguments</span>`;
+      const output = r.passed ? (r.output != null ? vizOutput(r.output) : `<span class="text-outline text-xs font-mono">no crash · correctness via tests</span>`)
+        : `<pre class="err">${esc(r.error || 'failed')}${r.traceback ? "\n\n" + esc(r.traceback) : ""}</pre>`;
+      return `
+        <div class="px-3.5 py-3 border-b border-outline-variant/5 space-y-2.5">
+          <div class="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wide" style="color:${s.c}">
+            <span class="material-symbols-outlined text-[15px]">${s.ic}</span>${s.t}
+            ${total > 1 ? `<span class="text-outline ml-1">run ${i + 1}/${total}</span>` : ""}
+          </div>
+          <div><div class="lbl">Input parameters</div>${input}</div>
+          <div><div class="lbl">Output</div>${output}</div>
+        </div>`;
+    }
+    const fmtVal = v => typeof v === "string" ? v : JSON.stringify(v);
+    function kvTable(obj) {
+      return `<div class="kv">` + Object.entries(obj)
+        .map(([k, v]) => {
+          const cell = (typeof v === "string" && (/^data:image\//.test(v) || /<svg[\s>]/i.test(v)))
+            ? vizOutput(v) : esc(fmtVal(v));
+          return `<div class="kvk">${esc(k)}</div><div class="kvv">${cell}</div>`;
+        })
+        .join("") + `</div>`;
+    }
+    const prettyJson = v => {
+      let s = JSON.stringify(v, null, 2);
+      return s.length > 6000 ? s.slice(0, 6000) + "\n… (truncated)" : s;
+    };
+    const stripScripts = s => String(s).replace(/<script[\s\S]*?<\/script>/gi, "");
+    const IMG_RE = /\.(svg|png|jpe?g|gif|webp)$/i;
+    function vizOutput(v) {
+      if (v === null || v === undefined)
+        return `<span class="text-outline text-xs font-mono">null</span>`;
+      if (typeof v === "string") {
+        const t = v.trim();
+        if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
+          try { return vizOutput(JSON.parse(t)); } catch (e) { /* not JSON */ }
+        }
+        if (/^data:image\//.test(t))
+          return `<img src="${t}" class="max-h-64 rounded-card border border-outline-variant/20"/>`;
+        if (/<svg[\s>]/i.test(t))
+          return `<div class="svgbox">${stripScripts(t)}</div>`;
+        if (IMG_RE.test(t))
+          return `<div class="filechip"><span class="material-symbols-outlined text-[15px]">image</span>${esc(t)}</div>`;
+        return `<pre class="out">${esc(v)}</pre>`;
+      }
+      if (typeof v === "number" || typeof v === "boolean")
+        return `<div class="stat">${esc(String(v))}</div>`;
+      if (Array.isArray(v)) {
+        if (v.some(x => typeof x === "string" && /^data:image\//.test(x)))
+          return v.map(x => vizOutput(x)).join("");
+        if (v.length && v.every(x => typeof x === "number")) return bars(v);
+        if (v.length && v.length <= 60 && v.every(x => typeof x === "string" && x.length <= 48))
+          return v.map(x => `<span class="chip">${esc(x)}</span>`).join("");
+        return `<pre class="out">${esc(prettyJson(v))}</pre>`;
+      }
+      for (const k of ["svg", "image", "img", "plot", "figure"]) {
+        const val = v[k];
+        if (typeof val === "string" && (/<svg[\s>]/i.test(val) || /^data:image\//.test(val)))
+          return vizOutput(val) + kvTable(omit(v, k));
+      }
+      // any other key holding an inlined image (e.g. a converted output_path)
+      const anyImg = Object.keys(v).find(k => typeof v[k] === "string" && /^data:image\//.test(v[k]));
+      if (anyImg) return vizOutput(v[anyImg]) + kvTable(omit(v, anyImg));
+      for (const k of ["path", "file", "output_path", "image_path", "svg_path"]) {
+        const val = v[k];
+        if (typeof val === "string" && IMG_RE.test(val))
+          return `<div class="filechip"><span class="material-symbols-outlined text-[15px]">image</span>${esc(val)}</div>` + kvTable(omit(v, k));
+      }
+      const flat = Object.values(v).every(x => x === null || typeof x !== "object");
+      return flat ? kvTable(v) : `<pre class="out">${esc(prettyJson(v))}</pre>`;
+    }
+    function omit(obj, key) {
+      const o = {}; for (const k in obj) if (k !== key) o[k] = obj[k]; return o;
+    }
+    function bars(nums) {
+      const max = Math.max(...nums.map(Math.abs), 1);
+      return `<div class="bars">` + nums.slice(0, 40)
+        .map(n => `<div class="bar" style="height:${Math.max(2, Math.abs(n) / max * 40)}px" title="${esc(String(n))}"></div>`)
+        .join("") + `</div>`;
+    }
+
+    // ─── check badges (syntax / tests) ──────────────────────────────
+    function setCheck(name, passed, detail) {
+      const box = document.getElementById("check-badges");
+      let el = document.getElementById("chk-" + name);
+      if (!el) { el = document.createElement("span"); el.id = "chk-" + name; box.appendChild(el); }
+      const col = passed ? "#40e56c" : "#ffb4ab";
+      el.className = "flex items-center gap-1 text-[11px] font-mono cursor-help px-2 h-6 rounded-full border";
+      el.style.borderColor = passed ? "rgba(64,229,108,.35)" : "rgba(147,0,10,.6)";
+      el.style.color = col;
+      el.innerHTML = `<span class="material-symbols-outlined text-[15px]">${passed ? 'check_circle' : 'cancel'}</span>${esc(name)}`;
+      attachTip(el, detail ? String(detail).slice(0, 2000) : "");
+    }
+
+    // ─── activity feed ──────────────────────────────────────────────
+    // Whitelist for the raw-log stream: keep only lines that clearly carry
+    // pipeline / user-visible signal. Everything else (docker layer chatter,
+    // per-write DEBUG dumps, ANSI-coded log-level noise) is silent — the raw
+    // .log file on disk is still authoritative.
+    function isImportantLog(line) {
+      if (!line) return false;
+      // Strip ANSI escapes for the match.
+      const s = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
+      if (!s) return false;
+      if (/^\[start-chain\]/.test(s)) return true;
+      if (/^\[alembic\]/.test(s)) return true;
+      if (/pipeline failed/i.test(s)) return true;
+      if (/^Traceback/.test(s)) return true;
+      if (/^ERROR/i.test(s)) return true;
+      if (s.startsWith("url:") || s.startsWith("image:") || s.startsWith("container:")) return true;
+      return false;
+    }
+
+    // pending=false for rows that never get a tool_result (log lines, summaries):
+    // they are drawn finished, so no spinner is left running.
+    function pushFeed(stage, name, args, pending = true) {
+      const feed = document.getElementById("feed");
+      const argStr = args && Object.keys(args).length ? JSON.stringify(args) : "";
+      const row = document.createElement("div");
+      row.className = "enter flex items-center gap-2.5 text-xs py-1.5 border-b border-outline-variant/5";
+      row.setAttribute("data-tool", name);
+      if (!pending) row.dataset.done = "1";
+      const ico = pending
+        ? `<span class="ico material-symbols-outlined text-[16px] spin shrink-0 text-primary">progress_activity</span>`
+        : `<span class="ico material-symbols-outlined text-[16px] shrink-0 text-outline">notes</span>`;
+      row.innerHTML = `
+        ${ico}
+        <span class="font-mono text-[9.5px] uppercase tracking-wide text-outline bg-surface rounded px-1.5 py-0.5 shrink-0 w-[84px] text-center">${esc(stage || 'sys')}</span>
+        <span class="font-mono text-primary shrink-0">${esc(name)}</span>
+        <span class="font-mono text-outline truncate flex-1" title="${esc(argStr)}">${esc(argStr.slice(0, 160))}</span>`;
+      feed.appendChild(row);
+      feed.scrollTop = feed.scrollHeight;
+      feedN++; document.getElementById("feed-count").textContent = feedN;
+      document.getElementById("now-tool").textContent = name;
+    }
+    function markFeedDone(name) {
+      const rows = document.querySelectorAll(`#feed > div[data-tool="${CSS.escape(name)}"]`);
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].dataset.done) continue;
+        rows[i].dataset.done = "1";
+        const ico = rows[i].querySelector(".ico");
+        ico.classList.remove("spin");
+        ico.textContent = "check_small";
+        ico.style.color = "#40e56c";
+        return;
+      }
+    }
+
+    // ─── websocket ──────────────────────────────────────────────────
+    function connect() {
+      // Live entry page has no WS: click "New MCP from repo" POSTs and
+      // redirects to the per-job page. Only per-job history mode connects.
+      if (MODE !== "history" || !JOB_ID) return;
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const path = `${BASE}/builds/ws/${encodeURIComponent(JOB_ID)}`;
+      ws = new WebSocket(`${proto}://${location.host}${path}`);
+      ws.onopen = () => { };
+      ws.onclose = () => setRunning(false);
+      ws.onmessage = e => handle(JSON.parse(e.data));
+    }
+
+    function handle(m) {
+      switch (m.type) {
+        case "pipeline":
+          if (m.status === "start") resetRun(m);
+          else if (m.status === "complete") { setRunning(false); setNow("pipeline complete", "#40e56c"); }
+          else if (m.status === "error") { setRunning(false); setNow("error: " + (m.message || ""), "#ffb4ab"); }
+          else if (m.status === "cancelled") { setRunning(false); setNow("cancelled", "#8c90a1"); }
+          break;
+        case "stage":
+          setStage(m.stage, m.status);
+          // The wrapper writes server.py without tool calls; this list is its result.
+          if (m.stage === "wrapper" && m.status === "done" && m.tools_wrapped)
+            pushFeed("wrapper", "server.py", { tools: m.tools_wrapped }, false);
+          break;
+        case "tool_call": pushFeed(m.stage, m.name, m.args); break;
+        case "tool_result": markFeedDone(m.name); break;
+        case "report":
+          if (m.report === "exploration") { left.exploration = m.sections; renderLeft(); }
+          break;
+        case "files": left.files = m.files || []; renderLeft(); break;
+        case "setup": left.setup = m.content || ""; renderLeft(); break;
+        case "examples": left.examples = m.examples || []; renderLeft(); break;
+        case "server":
+          serverTools = m.tools || []; renderServer();
+          document.getElementById("download-btn").disabled = !serverTools.length;
+          break;
+        case "validation": patchValidation(m); break;
+        case "check": setCheck(m.name, m.passed, m.detail); break;
+        case "invoke_result": {
+          const nm = m.tool, cs = callState[nm] || {};
+          callState[nm] = {
+            status: m.ok ? "done" : "error",
+            output: m.output, reason: m.reason, error: m.error, traceback: m.traceback,
+            argsText: cs.argsText, callId: m.call_id, via: m.via,
+          };
+          if (expandedTools.has(nm)) renderRuns(nm);
+          break;
+        }
+        // per-job WS: initial snapshot + terminal status + raw log lines
+        case "snapshot":
+          if (m.repo_url) document.getElementById("repo-input").value = m.repo_url;
+          if (m.job_id) currentJobId = m.job_id;
+          if (m.status === "running") setRunning(true);
+          break;
+        case "status":
+          setRunning(false);
+          if (m.status === "done") {
+            setNow("build complete", "#40e56c");
+            STAGES.forEach(s => { if (stageState[s.key] === "running") stageState[s.key] = "done"; });
+            if (m.mcp_url) { setServeStatus("ready", "MCP ▸ " + m.mcp_url, m.mcp_url); loadMcpTools(); }
+            if (m.registration_error) {
+              pushFeed("catalogue", "not registered", { reason: m.registration_error }, false);
+              attachTip(document.getElementById("serve-status"),
+                "Not in the shared catalogue: " + m.registration_error);
+            }
+          } else {
+            setNow(m.error ? ("failed: " + m.error.split("\n")[0]) : "failed", "#ffb4ab");
+            STAGES.forEach(s => { if (stageState[s.key] === "running") stageState[s.key] = "failed"; });
+          }
+          buildRail();
+          break;
+        case "log":
+          // Raw pipeline log is high-volume and duplicates the structured
+          // tool_call/tool_result events. Kept server-side in the .log file;
+          // silent in the feed unless it is clearly a pipeline / docker /
+          // error signal worth surfacing.
+          if (isImportantLog(m.line)) pushFeed("log", "log", { line: m.line }, false);
+          break;
+        case "error":
+          setNow("error: " + (m.message || ""), "#ffb4ab");
+          break;
+      }
+    }
+    function patchValidation(m) {
+      const t = serverTools.find(x => x.name === m.tool);
+      if (t) {
+        t.status = m.passed ? "pass" : "fail";
+        t.error = m.error;
+        t.exec_ok = m.exec_ok;
+        t.verdict = m.status;
+      }
+      (toolRuns[m.tool] || (toolRuns[m.tool] = [])).push({
+        passed: m.passed, input: m.input, output: null, error: m.error,
+      });
+      renderServer();
+    }
+    function setNow(text, col) {
+      const el = document.getElementById("now-tool");
+      el.textContent = text;
+      el.style.color = col || "";
+    }
+
+    function resetRun(m) {
+      left.exploration = left.files = left.setup = left.examples = null;
+      serverTools = [];
+      STAGES.forEach(s => stageState[s.key] = "idle");
+      buildRail();
+      Object.keys(toolCards).forEach(k => delete toolCards[k]);
+      Object.keys(toolRuns).forEach(k => delete toolRuns[k]);
+      Object.keys(callState).forEach(k => delete callState[k]);
+      expandedTools.clear();
+      emptyState(document.getElementById("left-panel"), "search", `analysing ${m.repo || 'repo'}`);
+      emptyState(document.getElementById("right-panel"), "build", "awaiting explorer");
+      document.getElementById("check-badges").innerHTML = "";
+      document.getElementById("download-btn").disabled = true;
+      document.getElementById("serve-status").classList.add("hidden");
+      document.getElementById("feed").innerHTML = "";
+      feedN = 0; document.getElementById("feed-count").textContent = 0;
+      setNow("", "");
+      setRunning(true);
+    }
+
+    // ─── controls ───────────────────────────────────────────────────
+    function setRunning(on) {
+      document.getElementById("run-btn").classList.toggle("hidden", on);
+      document.getElementById("stop-btn").classList.toggle("hidden", !on);
+      document.getElementById("stop-btn").classList.toggle("flex", on);
+    }
+    document.getElementById("run-btn").onclick = async () => {
+      const url = document.getElementById("repo-input").value.trim();
+      if (!url) return;
+      const btn = document.getElementById("run-btn");
+      btn.disabled = true;
+      try {
+        const r = await fetch(`${BASE}/api/builds`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo_url: url }),
+        });
+        const body = await r.json();
+        if (!r.ok || body.status === "error") {
+          setNow("error: " + (body.detail || body.error || r.statusText), "#ffb4ab");
+          btn.disabled = false;
+          return;
+        }
+        // Build now runs as a detached subprocess. Jump to its detail page —
+        // closing this tab, navigating elsewhere, or refreshing has no effect.
+        location.href = `${BASE}/builds/${encodeURIComponent(body.job_id)}`;
+      } catch (e) {
+        setNow("error: " + e.message, "#ffb4ab");
+        btn.disabled = false;
+      }
+    };
+    document.getElementById("stop-btn").onclick = () => {
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "stop" }));
+    };
+    document.getElementById("repo-input").addEventListener("keydown", e => {
+      if (e.key === "Enter") document.getElementById("run-btn").click();
+    });
+
+    // Download this build's docker-buildable bundle (zip).
+    document.getElementById("download-btn").onclick = () => {
+      if (currentJobId) window.open(`${BASE}/builds/${encodeURIComponent(currentJobId)}/artifacts.zip`, "_blank");
+    };
+    // MCP address pill in the tools header.
+    function setServeStatus(state, text, url) {
+      const el = document.getElementById("serve-status");
+      el.classList.remove("hidden"); el.classList.add("flex");
+      const col = { ready: "#40e56c", error: "#ffb4ab" }[state] || "#8c90a1";
+      el.style.borderColor = col + "66"; el.style.color = col;
+      el.textContent = text; el.href = (state === "ready" && url) ? url : "#";
+    }
+    // The served server's own tool list: shows that the endpoint answers and
+    // gives the input schemas the Call form falls back to.
+    async function loadMcpTools() {
+      if (!currentJobId) return;
+      let body;
+      try {
+        const r = await fetch(`${BASE}/api/builds/${encodeURIComponent(currentJobId)}/mcp_tools`, { cache: "no-store" });
+        body = await r.json();
+      } catch (e) { return; }
+      Object.keys(mcpTools).forEach(k => delete mcpTools[k]);
+      Object.assign(mcpTools, body.tools || {});
+      if (body.error) {
+        const el = document.getElementById("serve-status");
+        setServeStatus("error", el.textContent + " · not answering", null);
+        attachTip(el, body.error);
+      }
+      renderServer();
+    }
+    document.getElementById("feed-toggle").onclick = () => {
+      feedOpen = !feedOpen;
+      document.getElementById("feed").style.display = feedOpen ? "block" : "none";
+      document.getElementById("feed-chevron").textContent = feedOpen ? "expand_more" : "expand_less";
+    };
+
+    // ─── floating tooltip (body-level, never clipped) ───────────────
+    const tipEl = document.getElementById("floating-tip");
+    function attachTip(el, text) {
+      if (!el) return;
+      if (!text) { el.onmouseenter = el.onmouseleave = el.onmousemove = null; return; }
+      el.onmouseenter = () => { tipEl.textContent = text; tipEl.style.display = "block"; posTip(el); };
+      el.onmousemove = () => posTip(el);
+      el.onmouseleave = () => { tipEl.style.display = "none"; };
+    }
+    function posTip(el) {
+      const r = el.getBoundingClientRect();
+      const tw = tipEl.offsetWidth, th = tipEl.offsetHeight, pad = 8;
+      let left = r.right - tw;
+      left = Math.max(pad, Math.min(left, innerWidth - tw - pad));
+      let top = r.top - th - 8;
+      if (top < pad) top = r.bottom + 8;
+      tipEl.style.left = left + "px";
+      tipEl.style.top = top + "px";
+    }
+
+    // ─── result image viewer: click an image to zoom (wheel) and pan (drag) ───
+    const viewer = document.createElement("div");
+    viewer.id = "viewer";
+    viewer.hidden = true;
+    viewer.innerHTML = `
+      <div id="viewer-stage"><div id="viewer-content"></div></div>
+      <div id="viewer-bar" class="text-[11px] font-mono text-on-surface-dim">
+        <span id="viewer-zoom">100%</span>
+        <button id="viewer-fit" class="px-2 h-7 rounded-control border border-outline-variant/40 hover:border-primary/60 hover:text-primary">fit</button>
+        <button id="viewer-close" title="Close (Esc)" class="flex items-center justify-center w-7 h-7 rounded-control border border-outline-variant/40 hover:border-primary/60 hover:text-primary">
+          <span class="material-symbols-outlined text-[18px]">close</span></button>
+      </div>
+      <div id="viewer-hint" class="text-[11px] font-mono text-outline">wheel: zoom · drag: pan · double-click or 0: fit · Esc: close</div>`;
+    document.body.appendChild(viewer);
+    const vStage = document.getElementById("viewer-stage");
+    const vContent = document.getElementById("viewer-content");
+    const view = { s: 1, x: 0, y: 0 };
+
+    function applyView() {
+      vContent.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
+      document.getElementById("viewer-zoom").textContent = Math.round(view.s * 100) + "%";
+    }
+    function fitView() {
+      vContent.style.transform = "none";
+      const w = vContent.offsetWidth, h = vContent.offsetHeight;
+      const W = vStage.clientWidth, H = vStage.clientHeight;
+      if (!w || !h) return;
+      view.s = Math.min(W * 0.9 / w, H * 0.9 / h);
+      view.x = (W - w * view.s) / 2;
+      view.y = (H - h * view.s) / 2;
+      applyView();
+    }
+    function zoomAt(factor, cx, cy) {
+      const s = Math.min(40, Math.max(0.05, view.s * factor));
+      view.x = cx - (cx - view.x) * (s / view.s);
+      view.y = cy - (cy - view.y) * (s / view.s);
+      view.s = s;
+      applyView();
+    }
+    function openViewer(source) {
+      vContent.innerHTML = "";
+      if (source.tagName === "IMG") {
+        const img = new Image();
+        img.draggable = false;
+        img.onload = fitView;
+        img.src = source.src;
+        vContent.appendChild(img);
+      } else {
+        // The card's SVG was already stripped of scripts by vizOutput.
+        const box = document.createElement("div");
+        box.className = "viewer-svg";
+        box.innerHTML = source.innerHTML;
+        const svg = box.querySelector("svg");
+        if (svg && !svg.getAttribute("width")) {
+          // An SVG sized only by viewBox collapses in an absolutely placed box.
+          const vb = (svg.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+          svg.setAttribute("width", vb.length === 4 && vb[2] ? vb[2] : 800);
+          if (!svg.getAttribute("height") && vb.length === 4 && vb[3]) svg.setAttribute("height", vb[3]);
+        }
+        vContent.appendChild(box);
+      }
+      viewer.hidden = false;
+      fitView();
+    }
+    function closeViewer() {
+      viewer.hidden = true;
+      vContent.innerHTML = "";
+    }
+
+    document.getElementById("right-panel").addEventListener("click", e => {
+      const target = e.target.closest(".tool-runs img, .tool-runs .svgbox");
+      if (target) openViewer(target);
+    });
+    vStage.addEventListener("wheel", e => {
+      e.preventDefault();
+      // Firefox scrolls the wheel in lines (deltaMode 1), Chrome in pixels.
+      const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      const r = vStage.getBoundingClientRect();
+      zoomAt(Math.exp(-dy * 0.0015), e.clientX - r.left, e.clientY - r.top);
+    }, { passive: false });
+    let drag = null;
+    vStage.addEventListener("pointerdown", e => {
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      vStage.setPointerCapture(e.pointerId);
+      vStage.classList.add("dragging");
+    });
+    vStage.addEventListener("pointermove", e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      view.x += e.clientX - drag.x;
+      view.y += e.clientY - drag.y;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      applyView();
+    });
+    const endDrag = () => { drag = null; vStage.classList.remove("dragging"); };
+    vStage.addEventListener("pointerup", endDrag);
+    vStage.addEventListener("pointercancel", endDrag);
+    vStage.addEventListener("dblclick", fitView);
+    document.getElementById("viewer-fit").onclick = fitView;
+    document.getElementById("viewer-close").onclick = closeViewer;
+    document.addEventListener("keydown", e => {
+      if (viewer.hidden) return;
+      const cx = vStage.clientWidth / 2, cy = vStage.clientHeight / 2;
+      if (e.key === "Escape") closeViewer();
+      else if (e.key === "+" || e.key === "=") zoomAt(1.25, cx, cy);
+      else if (e.key === "-") zoomAt(0.8, cx, cy);
+      else if (e.key === "0") fitView();
+    });
+    window.addEventListener("resize", () => { if (!viewer.hidden) fitView(); });
+
+    // ─── resizable activity panel (drag the grabber) ────────────────
+    (() => {
+      const grip = document.getElementById("feed-resizer");
+      const feed = document.getElementById("feed");
+      let startY = 0, startH = 0, dragging = false;
+      const onMove = e => {
+        if (!dragging) return;
+        const y = (e.touches ? e.touches[0].clientY : e.clientY);
+        const h = Math.max(80, Math.min(startH + (startY - y), innerHeight * 0.7));
+        feed.style.height = h + "px";
+      };
+      const onUp = () => {
+        dragging = false;
+        document.body.style.userSelect = "";
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      grip.addEventListener("pointerdown", e => {
+        if (!feedOpen) return;
+        dragging = true; startY = e.clientY; startH = feed.offsetHeight;
+        document.body.style.userSelect = "none";
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        e.preventDefault();
+      });
+    })();
+
+    // ─── mode-driven UI adjustments ─────────────────────────────────
+    if (MODE === "history") {
+      // The per-job page watches a build that already exists: hide the start
+      // controls and show the "New MCP from repo" link. Stop comes back while
+      // the build runs (setRunning).
+      for (const id of ["run-btn", "stop-btn", "repo-input"]) {
+        const el = document.getElementById(id);
+        if (el) el.classList.add("hidden");
+      }
+      // Also hide the wrapper div around repo-input for a clean header.
+      const repoWrap = document.getElementById("repo-input")?.parentElement;
+      if (repoWrap) repoWrap.classList.add("hidden");
+      const newBtn = document.getElementById("new-build-link");
+      if (newBtn) { newBtn.classList.remove("hidden"); newBtn.classList.add("flex"); newBtn.href = `${BASE}/`; }
+    }
+
+    // Header "Builds" button → mount-local history index.
+    document.getElementById("builds-link").href = `${BASE}/builds`;
+    // Header logo → mount-local live entry (paste a repo, run new build).
+    document.getElementById("home-link").href = `${BASE}/`;
+
+    // ─── init ───────────────────────────────────────────────────────
+    buildRail();
+    const _emptyMsg = MODE === "live" ? "awaiting explorer" : "loading build…";
+    emptyState(document.getElementById("left-panel"), "account_tree", _emptyMsg);
+    emptyState(document.getElementById("right-panel"), "build", _emptyMsg);
+    connect();
+  </script>
+</body>
+
+</html>

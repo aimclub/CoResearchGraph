@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S3 Vault — что изменилось в поверхности инструментов</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --card: #ffffff;
+    --ink: #1c1c1e;
+    --muted: #5f6368;
+    --accent: #0b5fff;
+    --border: #e3e3e0;
+    --code-bg: #f0f0ee;
+    --ok: #0a7a3d;
+    --warn: #a15c00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.55;
+  }
+  main {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 24px 64px;
+  }
+  header { margin-bottom: 32px; }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  h2 {
+    font-size: 19px;
+    margin: 36px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid var(--accent);
+  }
+  .subtitle { color: var(--muted); font-size: 15px; margin: 0; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 14px 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    margin: 10px 0;
+  }
+  th, td {
+    text-align: left;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: var(--code-bg); font-weight: 600; }
+  code {
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+  }
+  pre {
+    background: #16161a;
+    color: #e8e8e6;
+    border-radius: 10px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .tag {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 999px;
+    padding: 2px 10px;
+    margin-right: 6px;
+  }
+  .tag-worker { background: #e3f0ff; color: var(--accent); }
+  .tag-framework { background: #fff0dd; color: var(--warn); }
+  .tag-ok { background: #e1f4e8; color: var(--ok); }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  .note {
+    border-left: 4px solid var(--accent);
+    background: #eef4ff;
+    padding: 12px 16px;
+    border-radius: 0 8px 8px 0;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .warn {
+    border-left: 4px solid var(--warn);
+    background: #fff6ea;
+  }
+  footer {
+    margin-top: 40px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>S3 Vault: новая поверхность инструментов</h1>
+  <p class="subtitle">Что изменилось в работе с файлами в CoScientist и что нужно знать каждому. Сентябрь 2026.</p>
+</header>
+
+<h2>Зачем это сделано</h2>
+<div class="card">
+  <ul>
+    <li>Файлы прогонов больше не теряются: артефакты переживают завершение пайплайна и перезапуск.</li>
+    <li>Бакет больше не разрастается без контроля: временные файлы удаляются автоматически.</li>
+    <li>Все серверы и агенты передают файлы одинаково — один контракт, один формат ключей.</li>
+    <li>Каждый шаг пайплайна фиксирует входные и выходные файлы в графе исполнения.</li>
+  </ul>
+</div>
+
+<h2>Главное изменение: две поверхности инструментов</h2>
+<p>Vault-сервер предоставляет два набора инструментов. Агенты видят только рабочую поверхность.
+Операции жизненного цикла остаются на стороне фреймворка.</p>
+
+<table>
+  <tr>
+    <th>Поверхность</th>
+    <th>Инструменты</th>
+    <th>Кто вызывает</th>
+  </tr>
+  <tr>
+    <td><span class="tag tag-worker">worker</span></td>
+    <td><code>get_upload_link</code>, <code>get_download_link</code></td>
+    <td>Агенты (CoderAgent, DatasetCollectorAgent)</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-framework">framework</span></td>
+    <td><code>promote_artifact</code>, <code>cleanup_session</code>, <code>update_artifact_metadata</code>, <code>get_session_manifest</code>, <code>list_artifacts</code></td>
+    <td>Только код фреймворка. Агенты этих инструментов не видят.</td>
+  </tr>
+</table>
+
+<div class="note">
+  Разделение выполняется на клиенте через <code>tool_filter</code> в ADK. Работает один экземпляр
+  сервера (<code>VAULT_SURFACE=all</code>).
+</div>
+
+<h2>Структура ключей и время жизни</h2>
+<div class="card">
+  <pre><code>&lt;retention&gt;/&lt;user_id&gt;/&lt;session_id&gt;/&lt;feature&gt;/&lt;filename&gt;
+
+ephemeral/alice/session-1/figures/plot.png
+permanent/alice/session-1/figures/plot.png</code></pre>
+  <ul>
+    <li><code>ephemeral/</code> — рабочие файлы. Правило жизненного цикла бакета удаляет их через
+      <code>EPHEMERAL_TTL_DAYS</code> (по умолчанию 7 дней).</li>
+    <li><code>permanent/</code> — результаты. Хранятся бессрочно. Открыты на чтение без подписи.</li>
+    <li>Сервер строит каждый ключ сам. Вызывающая сторона не составляет ключи и не выбирает бакет.</li>
+    <li>Агент всегда пишет в <code>ephemeral/</code>. Фреймворк продвигает результаты в
+      <code>permanent/</code> на финализации отчёта.</li>
+  </ul>
+</div>
+
+<h2>Единый контракт ответа</h2>
+<p>Каждый инструмент, который работает с объектом, возвращает JSON одного вида:</p>
+<pre><code>{
+  "bucket": "agent-vault",
+  "s3_key": "ephemeral/alice/session-1/figures/plot.png",
+  "presigned_url": "http://...",
+  "expires_in": 604799
+}</code></pre>
+<div class="card">
+  <ul>
+    <li><code>bucket</code> + <code>s3_key</code> — постоянная ссылка. Храните только её.</li>
+    <li><code>presigned_url</code> — временная ссылка для скачивания. Её срок жизни равен оставшемуся
+      сроку жизни объекта. Никогда не сохраняйте её в граф или отчёт.</li>
+    <li>Для объектов <code>permanent/</code> ссылка обычная, без подписи и без срока
+      (<code>expires_in: null</code>).</li>
+  </ul>
+</div>
+
+<h2>Что это значит для вас</h2>
+
+<div class="card">
+  <p><strong>Разработчики MCP-серверов</strong></p>
+  <ul>
+    <li>Возвращайте контракт <code>bucket</code> + <code>s3_key</code> + <code>presigned_url</code> из каждого инструмента, который сохраняет файл.</li>
+    <li>Принимайте <code>user_id</code> и <code>session_id</code> параметрами. Плагин подставит их, если оставить пустыми.</li>
+    <li>Пишите объекты только под <code>ephemeral/&lt;user_id&gt;/&lt;session_id&gt;/</code>.</li>
+    <li>Конфигурация — только <code>S3__ENDPOINT_URL</code>, <code>S3__ACCESS_KEY</code>, <code>S3__SECRET_KEY</code>, <code>S3__BUCKET_NAME</code>. Старые имена переменных отзовут через один релиз.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <p><strong>Разработчики агентов</strong></p>
+  <ul>
+    <li>Менять ничего не нужно. Агент получает <code>get_upload_link</code> и <code>get_download_link</code>.</li>
+    <li>Загрузка — обычный HTTP PUT по ссылке, без дополнительных заголовков.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <p><strong>Эксплуатация</strong></p>
+  <ul>
+    <li>Новая переменная: <code>MCP__VAULT_URL=http://localhost:7338/mcp</code>.</li>
+    <li>Отдельный бакет <code>agent-vault</code> с правилом жизненного цикла на <code>ephemeral/</code>
+      и анонимным чтением <code>permanent/</code>.</li>
+    <li><code>EPHEMERAL_TTL_DAYS</code> в <code>.env</code> обязан совпадать с числом дней в правиле бакета.</li>
+    <li>Откат: убрать <code>MCP__VAULT_URL</code> и перезапустить сервис. Прогоны продолжат работать как раньше.</li>
+  </ul>
+</div>
+
+<div class="note warn">
+  <strong>Граница безопасности.</strong> Скоупинг ключей — это изоляция от коллизий, а не авторизация
+  между пользователями. Все компоненты по-прежнему делят одни учётные данные бакета. Префикс
+  <code>permanent/</code> открыт на чтение всем, кто видит MinIO.
+</div>
+
+<h2>Что видно в графе и отчётах</h2>
+<div class="card">
+  <ul>
+    <li>Узлы графа исполнения получили поля <code>input_files</code> и <code>output_files</code> со
+      ссылками вида <code>s3://bucket/key</code>. Подписанные URL в граф не попадают.</li>
+    <li>Индекс артефактов сессии хранится на диске:
+      <code>graph_runs/sessions/&lt;user&gt;/&lt;session&gt;/artifacts.json</code>. Перезапуск процесса
+      больше не теряет список файлов.</li>
+    <li><code>MANIFEST.json</code> отчёта содержит карту <code>promoted</code>: какие объекты продвинуты
+      в <code>permanent/</code> и под какими ключами.</li>
+  </ul>
+</div>
+
+<footer>
+  Дизайн: <code>DESIGN.md</code> (s3mcp). Изменения на стороне CoScientist: ветки
+  <code>feature/s3-vault-integration</code> и <code>feature/s3-vault-part2</code>.
+</footer>
+
+</main>
+</body>
+</html>

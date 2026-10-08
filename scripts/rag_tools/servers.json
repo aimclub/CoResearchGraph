@@ -1,0 +1,12 @@
+[
+  {
+    "url": "http://10.32.11.45:7336/mcp",
+    "name": "heracleum-tox",
+    "description": "In-silico toxicology of Heracleum sosnowskyi (Sosnowsky's hogweed) plant metabolites. Reproduces Rassabina & Fedorov 2025 (Plants 14, 3253) using open-source analogues of the Syntelly platform: RDKit/PubChem for SMILES, ECFP4 + t-SNE + agglomerative clustering as a SynMap analogue, open CatBoost/XGBoost models trained on Therapeutics Data Commons (TDC) and TOXRIC for acute LD50 (mouse) regression and hepatotoxicity / drug-induced liver injury (DILI) / cardiotoxicity (hERG) / carcinogenicity classification, a kNN(k=5)+Gaussian applicability domain, and ASKCOS for synthesis cost. Use for: predicting acute toxicity / LD50 of natural products and furanocoumarins (bergapten, psoralen, xanthotoxin, bergamottin, imperatorin, umbelliferone, scopoletin), chemical-space clustering of metabolite sets, hepatotoxicity/DILI/cardiotoxicity/carcinogenicity prediction with applicability-domain reliability, plant secondary-metabolite safety profiling, furanocoumarin/coumarin/terpenoid/fatty-acid analysis, synthesis-cost estimation, and full in-silico tox profiling of any molecule given by name or SMILES."
+  },
+  {
+    "url": "http://10.32.11.45:7335/mcp",
+    "name": "tox-antitargets",
+    "description": "Explainable computational toxicology linking antitarget / off-target protein binding to rodent acute toxicity (LD50). Reproduces Nikitin et al. 2025 (Pharmaceutics 17, 1573) from a public dataset of 12,654 compounds with mouse intravenous pLD50 and AutoDock Vina docking scores against the 44-protein Bowes safety pharmacology panel (hERG/KCNH2, AVPR1A, CACNA1C, KCNQ1, EDNRA, acetylcholinesterase, dopamine D2, cannabinoid CB1/CB2, muscarinic, adrenergic, opioid, ion channels, etc.). Use for: acute toxicity / LD50 analysis, antitarget interaction profiles, safety pharmacology, mechanism-of-action prediction via inverse docking and target fishing for a molecule given by SMILES or name, hERG and cardiotoxicity associations, NIH and Brenk medicinal-chemistry filtering, Butina chemical clustering, physicochemical property profiling, chemical-space t-SNE, and Spearman / Mann-Whitney structure-toxicity statistics."
+  }
+]

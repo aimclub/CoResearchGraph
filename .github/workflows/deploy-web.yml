@@ -1,0 +1,76 @@
+name: Deploy web UI
+
+# Manual run, or automatic on push to the deploy branch.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted]
+    env:
+      DEPLOY_BRANCH: main
+      SERVICE: coscientist-web
+      HEALTH_URL: http://127.0.0.1:7000/
+    steps:
+      - name: Set up environment
+        # A job-level env: block cannot expand $HOME or run id(1), so resolve the
+        # deploy path, put uv on PATH, and set the user-bus vars here. These land
+        # in the environment of every later step.
+        run: |
+          set -euo pipefail
+          {
+            echo "DEPLOY_DIR=$HOME/cosci/CoScientist"
+            echo "XDG_RUNTIME_DIR=/run/user/$(id -u)"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus"
+          } >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Clean up stale git locks
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          find .git -name "*.lock" -delete 2>/dev/null || true
+          git fsck --full 2>/dev/null || true
+          git gc --prune=now 2>/dev/null || true
+
+      - name: Update code in the deploy dir
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          git fetch --prune origin
+          git checkout "$DEPLOY_BRANCH"
+          git reset --hard "origin/$DEPLOY_BRANCH"
+          git rev-parse --short HEAD
+
+      - name: Sync dependencies (locked)
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          uv sync --frozen
+
+      - name: Link the server secrets
+        run: ln -sfn "$HOME/.config/coscientist/.env" "$DEPLOY_DIR/.env"
+
+      - name: Restart the service
+        run: systemctl --user restart "$SERVICE"
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS "$HEALTH_URL" >/dev/null; then
+              echo "healthy after ${i} tries"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "service did not answer on $HEALTH_URL"
+          systemctl --user status "$SERVICE" --no-pager || true
+          journalctl --user -u "$SERVICE" -n 80 --no-pager || true
+          exit 1

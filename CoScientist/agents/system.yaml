@@ -1,0 +1,660 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CoScientist multi-agent system — single source of truth.
+#
+# Everything about the system layout is declared here and assembled by
+# CoScientist.assembly: agents, who is subordinate to whom, tools, callbacks,
+# HITL usage, prompts, models, output keys/schemas, and A2A exposure.
+#
+# Per-agent reference:
+#   class:        llm | sequential | parallel | custom:<registered class>
+#   enabled:      bool or "${settings.path}" — a disabled agent is still built
+#                 (and can be served over A2A) but is NOT attached to parents
+#                 and disappears from their prompts
+#   root:         exactly one agent is the system root (the orchestrator)
+#   model:        main | coder | <literal litellm model string>  (default: main)
+#   reasoning:    model "thinking" for this agent: false (or "off") switches it
+#                 off entirely — the fastest setting for agents that only route,
+#                 reformat or fill a schema; "minimal"|"low"|"medium"|"high"
+#                 turns it down instead. Unset inherits `defaults.reasoning`,
+#                 and an unset default leaves the provider alone. Works on
+#                 hybrid models; one that always reasons ignores it.
+#   description:  THE one description — used in parents' prompt rosters, in the
+#                 AgentTool/RemoteA2aAgent declaration, and on the A2A card
+#   routing:      "when to pick me" bullet in the parent's prompt
+#   planning:     how the planner's AVAILABLE AGENTS roster describes me
+#   prompt:       prompt template name (CoScientist/agents/prompts/templates.py)
+#   tools:        tool registry names (CoScientist/assembly/bindings.py);
+#                 optional tools that are not configured drop out of BOTH the
+#                 agent and its prompt
+#   subordinates: agents attached as AgentTool and rendered into <<AGENTS>> /
+#                 <<ROUTING>> of my prompt
+#   children:     execution units of sequential/parallel composites
+#   callbacks:    before_model/after_model/before_tool/after_tool/
+#                 before_agent/after_agent -> registered callback names
+#   hitl:         I use human-in-the-loop (llm: approval/selection tools +
+#                 prompt section; custom:session: review-loop handler).
+#                 Takes effect only when HITL__ENABLED is on globally.
+#   critic:       an LLM critic reviews my output in that same review loop and
+#                 I rewrite once if it objects (custom:session agents only)
+#   report_output: my final answer is a deliverable of its own (hypotheses, a
+#                 research summary, an execution report) — post it to the chat
+#                 as MY message instead of leaving it inside the caller's
+#                 function_response, where only a preview was ever visible
+#   a2a:          standalone A2A service: key (env prefix <KEY>_PORT and serve
+#                 argument), default port, advertised skill, pre-import env
+#
+# Validate with:  python -m CoScientist.assembly
+# ─────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  model: main
+  # Reasoning is OFF by default and switched back ON per agent below. Most of
+  # the roster routes, reformats or fills a fixed shape — thinking before each
+  # of those turns costs seconds per call and buys nothing there. The agents
+  # that actually reason declare `reasoning:` for themselves. Set this to
+  # `medium` to restore the previous system-wide behaviour in one line.
+  reasoning: off
+
+# ─────────────────────────────────────────────────────────────────────────────
+# System lifecycle flow (separate from the delegation tree).
+#
+# `pre`  stages run, in order, BEFORE the root orchestrator.
+# `post` stages run, in order, AFTER it.
+# Each stage runs as its own pass over the SAME session, so state (output_keys,
+# fedot_artifacts, …) flows between them. Stage agents are declared in `agents`
+# below like any other; they do NOT need to be attached to a parent.
+#
+# The manager driver (CoScientist.main) executes: pre… → root → post…
+# ─────────────────────────────────────────────────────────────────────────────
+pipeline:
+  pre: [ContextInitAgent]         # draft + confirm + seed the research frame
+  post: [ResultAggregatorAgent]
+
+agents:
+  # ── Root orchestrator ───────────────────────────────────────────────────────
+  OrchestratorAgent:
+    class: llm
+    root: true
+    include_contents: none
+    description: Main CoScientist Orchestrator — coordinates specialized agents to solve scientific tasks.
+    # Picks who works next out of the whole roster and reads back what they
+    # returned; a wrong delegation costs an entire sub-agent run.
+    #reasoning: low
+    prompt: orchestrator
+    tools: [retrieval, graph, research_graph_orchestrator]
+    subordinates:
+      - PlannerAgent
+      - HypothesesAgent
+      - ResearchAgent
+      - TaskExecutorAgent
+      - MedicalAgent
+      - McpBuilderAgent
+    callbacks:
+      before_model: [save_uploaded_artifacts, seed_coder_workspace, redact_link_urls]
+      before_agent: [before_get_task, inject_graph_root, inject_research_context, user_links]
+      # Catch hallucinated tool calls (e.g. the orchestrator inventing a
+      # sub-agent's `execute_bash`) and correct them, instead of ADK raising
+      # ValueError('Tool not found') and crashing the whole run.
+      after_model: [expand_link_refs, guard_unknown_tools]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+      # after_model: [pre_action_critique]
+      # The post-action critic is intentionally not wired; add
+      # `after_tool: [post_action_critique]` to enable it — the orchestrator
+      # prompt's critic-protocol section follows automatically.
+    # Enables the human approval loop for research-graph decisions (approving a
+    # research profile, a Conclusion draft→approved). Inert until HITL__ENABLED
+    # is on globally, so this is safe to leave true.
+    hitl: true
+    a2a:
+      key: orchestrator
+      port: 8000
+      skill:
+        id: orchestrate
+        name: Orchestrate
+        description: Coordinate scientific research agents to solve complex tasks
+        tags: [orchestration, science, multi-agent]
+  PlanningPipelineAgent:
+    class: sequential
+    root: false
+    children:
+      - PlannerAgent
+      - OrchestratorAgent
+    enabled: false
+    hitl: true
+    description: Initial planning pipeline (PlannerAgent -> OrchestratorAgent)
+    a2a:
+      key: init
+      port: 8008
+      skill:
+        id: init
+        name: Init
+        description: Initialize the CoScientist planning pipeline
+        tags: [init, science, multi-agent]
+
+  # ── Direct subordinates ────────────────────────────────────────────────────
+  PlannerAgent:
+    class: custom:session
+    root: false
+    enabled: false #${orchestrator.use_planner}
+    description: >-
+      produces a step-by-step roadmap for a complex, multi-step task;
+      call it first, then execute the roadmap by delegating each step.
+    routing: >-
+      for a complex multi-step task, call this FIRST to produce a roadmap,
+      then follow it step by step.
+    # The roadmap is the shape of the whole run — the one place worth thinking
+    # hard, and it is produced once.
+    reasoning: medium
+    prompt: planner
+    tools: [planner_retrieval, create_plan_tool, planner_graph, research_graph_readonly]
+    output_key: planner_roadmap
+    report_output: true
+    callbacks:
+      before_agent: [inject_graph_root, inject_research_context, user_links]
+      before_model: [redact_link_urls]
+      after_model: [expand_link_refs, guard_unknown_tools, finish_after_plan_registered]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+    hitl: true
+    critic: ${web.planner_critic_enabled}
+    options:
+      critic_max_rounds: ${web.planner_critic_rounds}
+    a2a:
+      key: planner
+      port: 8001
+      skill:
+        id: plan
+        name: Plan
+        description: Produce a research roadmap for a scientific task
+        tags: [planning, roadmap, science]
+
+  # ── Context initialization (pre-stage) ──────────────────────────────────────
+  ContextInitAgent:
+    # context_init_session = SessionAgent whose review shows the operator a
+    # STRUCTURED FORM of the research frame (the framing entities of the
+    # meta-model). Once confirmed, it seeds the frame into the Research Context
+    # Graph (root question + constraint star + budgets + tools + empirical base +
+    # confirmation criteria + cost model) BEFORE the orchestrator picks a
+    # strategy. Runs as pipeline.pre; toggle via ${context_init.enabled}.
+    class: custom:context_init_session
+    enabled: ${context_init.enabled}
+    description: >-
+      агент инициализации контекста — превращает исследовательский вопрос в
+      структурированную рамку (вопрос, профиль, ограничения, бюджеты,
+      инструменты, эмпирическая база, условия подтверждения, модель стоимости),
+      согласует её с оператором и заполняет граф исследования до старта.
+    # Interprets a free-form question, but into a fixed schema, and the operator
+    # reviews the result before it is seeded — some thinking, not a lot.
+    reasoning: off
+    prompt: context_init
+    output_key: research_frame
+    output_schema: research_frame
+    hitl: true
+    callbacks:
+      before_agent: [user_links]
+      before_model: [redact_link_urls]
+      # expand_link_refs MUST come first: ADK's after_model chain stops at the
+      # first callback that returns a response, and sanitize_json_output
+      # returns one on every JSON answer. expand_link_refs mutates the text in
+      # place and returns None, so it never stops the chain — sanitize_json_output
+      # still runs next and reads the already-expanded text. Reversed, a
+      # `[[link1]]` inside a frame field would never be expanded.
+      after_model: [expand_link_refs, sanitize_json_output]
+
+  ResultAggregatorAgent:
+    class: llm
+    # Terminal stage of the pipeline (see top-level `pipeline.post`). Runs as the
+    # last child of the synthesized SequentialAgent run-root, so it executes inside
+    # the SAME ADK invocation as the orchestrator (one run, one trace) — not a
+    # separate run kicked off by a static directive.
+    description: >-
+      Reads the finished Research Context Graph (conclusions, evidence,
+      hypotheses with their status) and the run's figures/tables, and synthesizes
+      a single, complete, visually-rich Markdown report grounded in the graph.
+    # Writing from an already-decided graph, and it runs last, with the user
+    # waiting on the report — enough reasoning to organize it, no more.
+    reasoning: low
+    prompt: result_aggregator
+    tools: [result_formatter, research_graph_readonly]
+    # Graph-primary grounding: no conversation history — the report is built from
+    # the typed graph (via research_graph_readonly + injected digest) plus the
+    # figures/tables collected by format_results, not from the raw transcript.
+    include_contents: none
+    callbacks:
+      before_agent: [inject_research_context, inject_report_language, user_links]
+      before_model: [redact_link_urls]
+      after_model: [expand_link_refs]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+    output_key: final_report
+
+  HypothesesAgent:
+    class: custom:hypothesis_subsystem
+    description: >-
+      generates structured, falsifiable scientific hypotheses using PubMed
+      literature mining, LLM generation, and iterative critic refinement;
+      always delegates hypothesis generation to its internal tool pipeline
+      (MooseChem → critic loop) — never fabricates hypotheses from its own
+      knowledge.
+    routing: >-
+      when the user asks to generate or propose a new hypothesis.
+      The agent produces testable hypotheses with concrete verification plans
+      and Popperian refutation criteria.
+    planning: |-
+      Use this to generate and test hypotheses with built-in critic validation.
+      The agent always delegates generation to its internal tool pipeline.
+    output_key: hypotheses
+    report_output: true
+    # The subsystem's internal strategy tools are declared here so the assembler
+    # attaches them — keeping guard_unknown_tools' whitelist populated and making
+    # the generator + critic loop visible to the ADK runtime as regular tools.
+    tools: [generate_via_moosechem, run_critic_loop]
+    callbacks:
+      before_agent: [before_get_task, inject_research_context]
+      after_model: [guard_unknown_tools]
+    a2a:
+      key: hypotheses
+      port: 8002
+      skill:
+        id: hypothesize
+        name: Hypothesize
+        description: Generate novel scientific hypotheses for a research question
+        tags: [hypothesis, science, ideation]
+
+  # NOTE: hypothesis validation (verdict + Conclusion, spec Module 4) is NOT an
+  # agent here — it runs as a fully-async BACKGROUND plugin
+  # (graph/research/validator.py, source "ValidatorAgent"): when evidence lands on
+  # a hypothesis it judges it off the main loop, so it neither depends on the
+  # orchestrator delegating nor consumes the run's turn budget.
+  ResearchAgent:
+    class: llm
+    description: >-
+      retrieves scientific knowledge and searches/downloads literature
+      (web, RAG, paper search). Open-ended search only — it cannot read
+      a specific code repository.
+    routing: >-
+      when OPEN-ENDED external knowledge or literature is required, the problem
+      cannot be solved computationally, or claims need literature validation. If
+      it returns no/empty/insufficient results, escalate by reformulating into
+      "find and download papers about <expanded topic>". Do NOT use it to read a
+      specific repository or URL the user named — that goes to TaskExecutorAgent.
+    planning: |-
+      Use it when your domain knowledge is not enough.
+      Use it to gather extra information about the scientific field and literature.
+      Use it when information cannot be computed or retrieved via tools, and specifically 
+      requires searching information from the web or literature.  
+    # Decides how to search, then judges and synthesizes what comes back.
+    reasoning: medium
+    prompt: research
+    tools: [websearch, paper_analysis, papers_search, task_tracker, graph, research_graph]
+    output_key: search_results
+    report_output: true
+    callbacks:
+      before_agent: [before_get_task, inject_research_context, user_links]
+      before_model: [inject_uploaded_papers, redact_link_urls]
+      before_tool: [WebSearchLimiter, resolve_link_refs]
+      after_tool: [log_research_tool_calls, register_tool_result_links]
+      after_model: [expand_link_refs, guard_unknown_tools]
+    hitl: true
+    # Every agent asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    a2a:
+      key: research
+      port: 8003
+      skill:
+        id: research
+        name: Research
+        description: Search scientific literature and the web to answer research questions
+        tags: [research, literature, web-search, knowledge]
+
+  TaskExecutorAgent:
+    # Asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    class: llm
+    description: >-
+      executes tasks: routes each one to the path that can actually deliver it —
+      RUNNING existing ready-made MCP tools/services (property estimation,
+      docking, simulations, inference), or ENGINEERING it in a sandbox (writing
+      and running code, shell/git, data work) when no ready tool covers it.
+    routing: >-
+      for ANY task that must actually be EXECUTED — computed with an existing
+      tool OR built/run as code. It chooses the execution path itself, so you do
+      not have to decide up front whether a ready tool exists. Hallmark:
+      "compute/run X", "write code / clone repo X / assemble a dataset".
+    planning: |-
+      Use this as your primary choice for ANY task that must be EXECUTED:
+        - computations served by ready-made MCP tools
+        - engineering work: writing, debugging and running code, ML training and
+          evaluation, shell and git operations, collecting/processing data
+      It routes between those two paths internally, so assign it the OUTCOME and
+      let it choose how to reach it.
+    # A two-way switch (run a ready tool vs. write code): reasoning stays off
+    # (the default) — the thinking belongs to whichever branch it picks.
+    prompt: task_router
+    subordinates: [ToolPipelineAgent, CoderAgent]
+    output_key: executor_results
+    report_output: true
+    callbacks:
+      after_model: [expand_link_refs, guard_unknown_tools]
+      before_agent: [user_links]
+      before_model: [redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+    a2a:
+      key: task_execution
+      port: 8004
+      env:
+        CODER_WORKSPACE_ID: a2a_shared
+        GIT_HTTP_LOW_SPEED_LIMIT: "1000"
+        GIT_HTTP_LOW_SPEED_TIME: "20"
+      skill:
+        id: execute_task
+        name: Execute Task
+        description: Run a task via ready-made MCP tools or by writing and running code
+        tags: [experiment, mcp, computation, ml, code]
+
+  ToolPipelineAgent:
+    class: sequential
+    description: >-
+      runs computations by orchestrating EXISTING ready-to-use MCP
+      tools/services (property estimation, docking, simulations, inference
+      with available models). Does NOT write code or clone repos — it only
+      solves a task if the capability already exists as an MCP tool.
+    routing: >-
+      when the result can be obtained by RUNNING AN EXISTING tool/service.
+      Hallmark: "compute/run X using tools we already have."
+    children: [ToolPreparerAgent, ExecutorSwitchAgent]
+
+  CoderAgent:
+    class: llm
+    # Dedicated (stronger) model — multi-step engineering benefits from it.
+    # Falls back to the main model when LLM__CODER_MODEL is unset.
+    model: coder
+    description: >-
+      general-purpose coder/sandbox engineer: writes and runs code, shell
+      and git commands (clone/commit/push), manages files, installs
+      dependencies, processes data, and runs long jobs in an isolated
+      workspace.
+    routing: >-
+      when the task requires DOING engineering work: writing/running code,
+      shell/git operations, building or processing data, environment setup, or
+      any multi-step build/run no existing tool provides. ALSO when the user
+      names a specific repository or URL to inspect — clone/read it here rather
+      than web-searching for it. Hallmark: "write code / run a script / clone
+      and read repo X / assemble a dataset."
+    planning: |-
+      choose for steps that require ENGINEERING work in a sandbox:
+          * writing, debugging, and running scripts/code
+          * machine learning model preparation, training, and evaluation
+          * shell and git operations (cloning repos, committing, pushing)
+          * collecting, parsing, or transforming data
+          * environment setup and running long jobs
+          → Use whenever no existing tool covers the objective and the step requires
+            doing software/data engineering rather than calling a ready service
+    # Multi-step engineering: plans edits, reads failures, adapts.
+    reasoning: medium
+    prompt: coder
+    tools: [coder, sandbox, research_graph, verify, vault]
+    subordinates: [DatasetCollectorAgent]
+    output_key: coder_results
+    callbacks:
+      before_agent: [inject_research_context, inject_dataset_context, user_links]
+      before_model: [redact_link_urls]
+      #before_model: [hitl_before_model]
+      # Catch hallucinated tool names (e.g. calling `find` directly) and return a
+      # corrective message instead of letting ADK crash the whole run.
+      after_model: [expand_link_refs, guard_unknown_tools]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+    # Every agent asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    hitl: true
+    a2a:
+      key: coder
+      port: 8006
+      env:
+        # Over A2A each orchestrator delegation is a separate session; pin one
+        # shared sandbox workspace so multi-step work persists across calls.
+        CODER_WORKSPACE_ID: a2a_shared
+        # Fail fast on a stalled git clone/fetch instead of blocking for
+        # minutes: abort if the transfer stays under ~1 KB/s for 20s.
+        GIT_HTTP_LOW_SPEED_LIMIT: "1000"
+        GIT_HTTP_LOW_SPEED_TIME: "20"
+      skill:
+        id: code
+        name: Code & Run
+        description: Write/run code, shell & git operations, build and process data in a sandbox
+        tags: [code, sandbox, git, data]
+
+  # Subordinate of CoderAgent — assembles datasets in the SHARED sandbox.
+  # Uses the coder toolset (same per-session workspace) plus web search, so the
+  # data it downloads lands where the coder builds on it. Not exposed over A2A:
+  # it is reached only through CoderAgent.
+  DatasetCollectorAgent:
+    # Asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    class: llm
+    model: coder
+    description: >-
+      collects and assembles a dataset for a task from EXISTING external sources
+      (HuggingFace Datasets, scientific APIs like ChEMBL/PubChem/OpenAlex, and
+      direct web/URL downloads), materialising it as files in the shared sandbox.
+      NOT for data that must be COMPUTED/GENERATED by running a simulation,
+      optimizer or model — that is the CoderAgent's own job; searching the web
+      for it only wastes the run.
+    routing: >-
+      when a step needs raw data gathered/assembled from external sources before
+      building or training on it (e.g. "collect a dataset of BTK inhibitors with
+      IC50"). It downloads into the shared workspace and writes a MANIFEST.
+    # The same sandbox work as the coder, on a narrower, more mechanical job.
+    reasoning: low
+    prompt: dataset_collector
+    tools: [coder, sandbox, websearch, research_graph, verify, vault]
+    output_key: dataset_results
+    callbacks:
+      before_agent: [inject_research_context, inject_dataset_context, user_links]
+      before_model: [redact_link_urls]
+      after_model: [expand_link_refs, guard_unknown_tools]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+
+  MedicalAgent:
+    class: llm
+    description: >-
+      answers medical/clinical questions: PubMed literature search, PICO
+      extraction, study taxonomy, and DICOM image analysis.
+    routing: >-
+      when the task involves clinical questions, medical literature, or patient
+      data; if the user uploaded a medical image (DICOM/scan), pass its artifact_id.
+    planning: |-
+      use when:
+          - the step involves clinical or biomedical questions
+          - medical literature evidence (PubMed, PICO, study taxonomy) is required
+          - an uploaded medical image (DICOM/scan) must be analyzed
+    # Clinical judgement over retrieved evidence.
+    reasoning: medium
+    prompt: medical
+    tools: [medical, task_tracker, graph, research_graph]
+    output_key: medical_results
+    report_output: true
+    callbacks:
+      before_agent: [before_get_task, inject_research_context, user_links]
+      before_model: [inject_medical_artifacts, redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+      after_model: [expand_link_refs, guard_unknown_tools]
+    # Every agent asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    a2a:
+      key: medical
+      port: 8005
+      skill:
+        id: medical_research
+        name: Medical Research
+        description: PubMed search, PICO extraction, study taxonomy, and DICOM analysis
+        tags: [medical, pubmed, dicom, clinical]
+
+  McpBuilderAgent:
+    # Asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    class: llm
+    description: >-
+      builds a validated MCP tool server from a scientific GitHub repository
+      (the Alembic pipeline): clones the repo, sets up its environment,
+      generates and validates tools from its code, and serves a FastMCP
+      server in Docker.
+    routing: >-
+      when the needed capability exists only as CODE in a repository and must
+      be turned into a reusable MCP tool/service. NOT for a one-off run of
+      that code (that is CoderAgent) and NOT for calling an MCP tool that
+      already exists (that is TaskExecutorAgent). Hallmark: "turn repo X into
+      an MCP server / tool we can call."
+    planning: |-
+      choose when a repository's capability needs to become a callable MCP
+      tool server rather than a one-off run:
+          * building/serving a new MCP tool from a scientific GitHub repo
+          → Use ONLY to produce a reusable tool server; a single run of the
+            code belongs to CoderAgent, and calling an already-built MCP tool
+            belongs to TaskExecutorAgent.
+    # Drives the Alembic pipeline tool by tool; the hard reasoning lives inside
+    # that pipeline's own agents, not in this caller.
+    reasoning: low
+    prompt: mcp_builder
+    tools: [alembic]
+    output_key: mcp_build_results
+    callbacks:
+      after_model: [expand_link_refs, guard_unknown_tools]
+      before_agent: [user_links]
+      before_model: [redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+    a2a:
+      key: mcp_builder
+      port: 8007
+      skill:
+        id: build_mcp_server
+        name: Build MCP Server
+        description: Turn a scientific GitHub repository into a validated, served MCP tool server
+        tags: [mcp, codegen, docker, tools]
+
+  # ── ToolPipelineAgent stages ───────────────────────────────────────────────
+  ToolPreparerAgent:
+    class: sequential
+    description: Agent to find and prepare relevant mcp servers for current task
+    children: [ParallelToolSearcherAgent, FullSetToolReranker, WebToolsDeployerAgent]
+
+  ParallelToolSearcherAgent:
+    class: parallel
+    description: Runs multiple search agents in parallel to gather relevant MCP servers.
+    children: [LocalToolsExtractorAgent, ToolWebSearcherAgent]
+
+  LocalToolsExtractorAgent:
+    class: sequential
+    description: Agent to extract relevant ready-to-use tools from local storage
+    children: [ToolRetrieverAgent, ToolReranker]
+
+  ToolRetrieverAgent:
+    class: llm
+    description: Agent to retrieve relevant MCP servers from RAG database of MCP tools for given task.
+    prompt: tool_retriever
+    tools: [retrieval]
+    output_key: retrieved_tools
+
+  ToolReranker:
+    class: llm
+    description: Agent to rerank retrieved MCP servers from RAG database of MCP tools for given task.
+    prompt: tool_reranker
+    output_key: reranked_tools
+    llm_timeout: 45
+    callbacks:
+      before_agent: [shortlist_reranker_tools]
+      before_model: [skip_retriever_context]
+      # Nothing else validates the shape now that output_schema is gone: strip
+      # prose/```json fences here, parse and shape-check in collect_reranked_tools.
+      after_model: [sanitize_json_output]
+      after_agent: [collect_reranked_tools]
+
+  ToolWebSearcherAgent:
+    class: llm
+    description: Agent to web-search relevant MCP servers from public web storages.
+    prompt: tool_websearcher
+    tools: [mcp_server_search]
+    output_key: retrieved_web_tools
+
+  FullSetToolReranker:
+    class: llm
+    description: Agent to score found web MCP servers given already available local MCP servers for given task.
+    prompt: tool_scoring
+    output_key: reranked_web_servers
+    callbacks:
+      after_model: [sanitize_json_output]
+      after_agent: [collect_reranked_mcps]
+
+  WebToolsDeployerAgent:
+    class: custom:web_tools_deployer
+    description: Agent to deploy found web mcp servers
+
+  ExperimentAgent:
+    # Asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    class: llm
+    description: >-
+      Runs computational/experimental sub-tasks by directly using the
+      dynamically-provisioned MCP tools (ReAct: think → call tool → observe).
+    reasoning: low
+    prompt: experiment_react
+    # dynamic_tools surfaces the task's selected MCP servers (filtered_tools /
+    # deployed_mcps) as native tools, resolved per turn — the same servers
+    # FEDOT.MAS used to receive, but the agent calls them itself.
+    tools: [dynamic_tools, sleep, task_tracker, graph, research_graph]
+    output_key: fedot_results
+    callbacks:
+      # Abstain → recommend CoderAgent when the tool-prep pipeline found no tool
+      # that actually matches the task (instead of running a nearest-but-wrong one).
+      before_agent: [redirect_when_no_tools, before_get_task, inject_research_context, user_links]
+      before_model: [redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_model: [expand_link_refs]
+      # register_tool_result_links catches a URL an MCP tool returns for the
+      # link registry; capture_mcp_artifacts separately stashes figure/table
+      # artifact URLs (e.g. presigned MinIO PNGs) into state['mcp_artifacts']
+      # so the report collector downloads them. Two different jobs, same hook.
+      after_tool: [register_tool_result_links, capture_mcp_artifacts]
+
+  # Picks ONE of its children per task. ExperimentAgent normally; FedotAgent only
+  # when the tool reranker never actually judged the retrieved candidates (an
+  # unreadable reply, and the local cross-encoder could not stand in either) —
+  # `filtered_tools` is then empty for a reason that says nothing about
+  # relevance, and FEDOT.MAS's meta-agent can do the selection itself over the
+  # whole unfiltered pool. A switch rather than two siblings in the sequence
+  # because AgentTool returns the LAST content event of the agent it wraps, so a
+  # sibling standing down after the real executor ran would overwrite its answer.
+  ExecutorSwitchAgent:
+    class: custom:executor_switch
+    description: >-
+      Runs the task's executor: the ReAct MCP executor normally, or the
+      FEDOT.MAS fallback when the tool reranker produced no usable ranking.
+    children: [ExperimentAgent, FedotAgent]
+
+  # FEDOT.MAS is not reliable enough to be the primary executor, but it does
+  # cope with a large, unfiltered set of MCP servers — which is exactly what the
+  # reranker-failure path has to hand somebody. Gated by the same setting
+  # ExecutorSwitchAgent routes on, so one switch turns the whole path off.
+  FedotAgent:
+    # Asks before acting on a decision; inert until HITL__ENABLED.
+    hitl: true
+    class: llm
+    enabled: "${web.fedot_fallback_enabled}"
+    description: Agent to invoke FEDOT.MAS for solving given task. Uses MCP tools
+    prompt: fedot
+    tools: [fedot, task_tracker, graph]
+    output_key: fedot_results
+    callbacks:
+      # No redirect_when_no_tools here: this agent IS the no-usable-ranking path,
+      # and abstaining to CoderAgent is precisely what it exists to avoid.
+      before_agent: [inject_fedot_candidates, before_get_task, user_links]
+      before_model: [redact_link_urls]
+      before_tool: [resolve_link_refs]
+      after_tool: [register_tool_result_links]
+      after_model: [expand_link_refs]

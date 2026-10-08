@@ -1,0 +1,18 @@
+[project]
+name = "dataset-collection-mcp-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "boto3>=1.42.68",
+    "fastmcp>=2.2.0",
+    "langchain-core>=0.3.50",
+    "langchain-gigachat>=0.3.3",
+    "langchain-ollama>=0.3.0",
+    "langchain-openai>=0.3.3",
+    "pandas>=2.2.3",
+    "pillow>=10.4.0",
+    "pymupdf>=1.26.6",
+    "protollm @ git+https://github.com/aimclub/ProtoLLM.git@main",
+]

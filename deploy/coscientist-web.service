@@ -1,0 +1,32 @@
+[Unit]
+Description=CoScientist web UI (uvicorn)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/cosci/CoScientist
+
+# Runtime toggles live here. Secrets do not.
+# The application reads secrets from the .env symlink in WorkingDirectory
+# (load_dotenv). load_dotenv does not override real environment variables,
+# so these lines win over the same keys in .env.
+Environment=HITL__ENABLED=true
+Environment=RESEARCH_FRAME=true
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# openrouter.ai is blocked on the VM egress. Reach it through the institutional
+# tunnel on the docker0 bridge. The proxy tunnels only openrouter.ai and
+# forwards all other traffic normally, so a global setting is safe. httpx and
+# litellm read these variables on their own. The proxy is reachable only from
+# this server, and it is fail-closed (no direct fallback if it is down).
+Environment=HTTP_PROXY=http://172.17.0.1:7890
+Environment=HTTPS_PROXY=http://172.17.0.1:7890
+Environment=NO_PROXY=localhost,127.0.0.1
+
+# Absolute path to uv avoids a minimal-PATH surprise in the systemd session.
+ExecStart=%h/.local/bin/uv run --frozen python -m CoScientist web --host 0.0.0.0 --port 7000
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

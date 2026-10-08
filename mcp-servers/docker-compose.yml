@@ -1,0 +1,123 @@
+services:
+  papers-search-mcp-server:
+    build:
+      context: ..
+      dockerfile: mcp-servers/papers-search-mcp-server/Dockerfile
+    container_name: papers-search-mcp-server
+    env_file:
+      - ./papers-search-mcp-server/.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "7331:7331"
+    restart: unless-stopped
+  
+  chemical-mcp-server:
+    build: 
+      context: ..
+      dockerfile: mcp-servers/chemical-mcp-server/Dockerfile
+    ports:
+      - "7332:7331"
+    volumes:
+      - ./data:/tmp/chemical_mcp_annotated
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  dataset-collection-mcp-server:
+    build: 
+      context: ..
+      dockerfile: mcp-servers/dataset-collection-mcp-server/Dockerfile
+    ports:
+      - "7333:7331"
+    env_file:
+      - ./dataset-collection-mcp-server/.env
+    restart: unless-stopped
+
+  paper-analysis-mcp-server:
+    build: 
+      context: ..
+      dockerfile: mcp-servers/paper-analysis-mcp-server/Dockerfile
+    ports:
+      - "7334:7331"
+    env_file:
+      - ./paper-analysis-mcp-server/.env
+    restart: unless-stopped
+
+  moosechem-mcp-server:
+    build:
+      context: ..
+      dockerfile: mcp-servers/moosechem-mcp-server/Dockerfile
+    ports:
+      - "7335:7331"
+    env_file:
+      - ./moosechem-mcp-server/.env
+    restart: unless-stopped
+
+  result-aggregator-mcp-server:
+    build:
+      context: ..
+      dockerfile: mcp-servers/result-aggregator-mcp-server/Dockerfile
+    ports:
+      - "7337:7331"
+    volumes:
+      - ../logs:/app/logs
+      - ../workspace:/app/workspace
+    restart: unless-stopped
+  # The file vault. Every other server hands files over through it.
+  vault-mcp-server:
+    build:
+      context: ..
+      dockerfile: mcp-servers/vault-mcp-server/Dockerfile
+      args:
+        - HTTP_PROXY=${PIP_PROXY}
+        - HTTPS_PROXY=${PIP_PROXY}
+    container_name: vault-mcp-server
+    env_file:
+      - ./vault-mcp-server/.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "7338:7331"
+    restart: unless-stopped
+
+  # Local S3, for development only. The four servers above point at an endpoint
+  # this file does not define, so starting MinIO by default would move where
+  # they write. Start it on purpose:
+  #   docker compose --profile local-s3 up
+  minio:
+    profiles: ["local-s3"]
+    image: minio/minio
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # Web console
+    environment:
+      MINIO_ROOT_USER: "admin"
+      MINIO_ROOT_PASSWORD: "password123"
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  # One-shot setup. It carries the retention model: without the lifecycle rule
+  # nothing under ephemeral/ ever expires, and without the anonymous policy the
+  # plain permanent/ URLs do not resolve. Against an external MinIO, run the
+  # same two mc commands once by hand.
+  minio-setup:
+    profiles: ["local-s3"]
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set myminio http://minio:9000 admin password123); do echo 'waiting for minio...'; sleep 2; done;
+      /usr/bin/mc mb myminio/agent-vault --ignore-existing;
+      /usr/bin/mc admin user add myminio agent-user agent-secret-key;
+      /usr/bin/mc admin policy attach myminio readwrite --user=agent-user;
+      /usr/bin/mc ilm rule add --expire-days ${EPHEMERAL_TTL_DAYS:-7} --prefix ephemeral/ myminio/agent-vault;
+      /usr/bin/mc anonymous set download myminio/agent-vault/permanent;
+      exit 0;
+      "
+
+volumes:
+  minio_data:

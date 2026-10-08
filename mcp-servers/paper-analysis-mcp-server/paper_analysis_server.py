@@ -1,0 +1,400 @@
+import base64
+import logging
+import os
+
+from langchain_core.runnables import RunnableConfig
+from fastmcp import FastMCP
+from io import BytesIO
+
+
+class NamedBytesIO(BytesIO):
+    def __init__(self, data: bytes, name: str = "document.pdf"):
+        super().__init__(data)
+        self.name = name
+
+
+from CoScientist.chemical_utils.chemical_functions import extract_reactions_from_pdf, extract_molecules_from_pdf, remove_keys
+from CoScientist.paper_analysis.prompts import extract_query_filters_prompt
+from CoScientist.paper_analysis.question_processing import (
+    process_scientific_question,
+    simple_query_llm,
+    extract_metadata_filters,
+    build_chroma_where_filter,
+    get_domain_metadata_type
+)
+from CoScientist.paper_parser.s3_connection import S3BucketService
+
+from CoScientist.papers_processing_refactoring.embeddings import create_embedding_model
+from CoScientist.papers_processing_refactoring.storage.artifacts import S3DomainArtifactStore
+from CoScientist.papers_processing_refactoring.storage.vector import ChromaVectorStore
+from CoScientist.papers_processing_refactoring.retrieval import TwoStageRetriever
+from CoScientist.papers_processing_refactoring.reranking import create_reranker
+
+from prompts import explore_my_papers_prompt, sys_prompt
+
+# TODO: unify S3 clients for tools (use S3DomainArtifactStore)
+s3_service = S3BucketService(
+    endpoint=os.getenv("S3__ENDPOINT_URL"),
+    access_key=os.getenv("S3__ACCESS_KEY"),
+    secret_key=os.getenv("S3__SECRET_KEY"),
+    bucket_name=os.getenv("S3__BUCKET_NAME"),
+)
+embedding_model = create_embedding_model(
+        {
+            "type": os.getenv("EMBEDDINGS_TYPE"),
+            "url": os.getenv("EMBEDDINGS_API_URL"),
+            "batch_size": int(os.getenv("EMBEDDINGS_BATCH_SIZE", 4)),
+        }
+    )
+reranker = create_reranker(
+    {
+        "type": os.getenv("RERANKING_TYPE"),
+        "url": os.getenv("RERANKING_API_URL"),
+        "batch_size": int(os.getenv("RERANKING_BATCH_SIZE", 8)),
+    }
+)
+vector_store = ChromaVectorStore(
+    os.getenv("CHROMADB_HOST"),
+    os.getenv("CHROMADB_PORT"),
+    os.getenv("CHROMADB_COLLECTION")
+)
+s3_store = S3DomainArtifactStore(
+    endpoint=os.getenv("S3_ENDPOINT"),
+    access_key=os.getenv("S3_ACCESS_KEY"),
+    secret_key=os.getenv("S3_SECRET_KEY"),
+    bucket=os.getenv("S3_PUBLIC_BUCKET")
+)
+
+retriever = TwoStageRetriever(vector_store, embedding_model, reranker)
+simple_retriever = TwoStageRetriever(vector_store, embedding_model)
+
+VISION_LLM_URL = os.getenv("LLM__VISION_URL")
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+mcp = FastMCP("PaperAnalysis")
+
+
+@mcp.tool()
+def explore_scientific_database(
+    task: str,
+    top_k: int = 60,
+    rerank_k: int = 20,
+) -> dict:
+    """
+    Leverages a database of scientific papers to answer user questions. This tool is prioritized over web searches
+    for information. It is designed for general inquiries and not for details specific to individual papers (e.g.,
+    figure descriptions, experimental details, conclusions) or for identifying lists of relevant publications.
+
+    Args:
+        task (str): The user's question or query related to science.
+        top_k (int, optional): The number of body chunks the vector search returns
+        rerank_k (int, optional): The number of body chunks retained after reranking
+
+    Returns:
+        dict: A dictionary containing the LLM's response, the supporting text, images, and tables extracted from the
+            database, and metadata about the request (model used, token count, etc.).
+    """
+    try:
+        logger.info("Running explore_scientific_database tool...")
+        logger.info(f"task: {task}")
+        return process_scientific_question(
+            question=task,
+            system_prompt=sys_prompt,
+            retriever=retriever,
+            simple_retriever=simple_retriever,
+            s3_store=s3_store,
+            llm_url=VISION_LLM_URL,
+            top_k=top_k,
+            rerank_k=rerank_k,
+        )
+    except Exception as e:
+        logger.error(f"explore_scientific_database ERROR: {e}")
+        return {"answer": "Could not extract any data from DB."}
+
+
+@mcp.tool()
+def explore_my_papers(task: str, s3_keys: list[str]) -> dict:
+    """
+    Answers questions based on the content of user-provided scientific papers. This tool allows users to query
+    specific documents they've uploaded, retrieving insights like figure descriptions, experimental details,
+    or conclusions. It prioritizes answers from these papers over general web searches.
+    It can also answer questions concerning the document set itself (e.g., number of uploaded papers,
+    their presence, titles, authors, or other metadata).
+    
+    Args:
+        task (str): The user's question about the uploaded papers.
+        s3_keys (list[str]): The list of S3 keys for the uploaded papers.
+        config (RunnableConfig): The configuration for the runnable.
+
+    Returns:
+        dict: A dictionary containing the answer generated by the LLM and metadata about the request (e.g.,
+            model used, token count).
+            Returns an error message if no papers are provided or if data extraction fails.
+    """
+    logger.info('Running explore_my_papers tool...')
+    logger.info(f'task: {task}')
+
+    if not s3_keys:
+        return {'answer': 'No papers provided for search.'}
+
+    logger.info(f'S3 keys for explore_my_papers: {s3_keys}')
+
+    client = s3_service.create_s3_client()
+
+    try:
+        paper_buffers: list[BytesIO] = []
+        for s3_key in s3_keys:
+            try:
+                response = client.get_object(Bucket=s3_service.bucket_name, Key=s3_key)
+                paper_buffers.append(BytesIO(response['Body'].read()))
+            except client.exceptions.NoSuchKey:
+                logger.warning(f"S3 key not found, skipping: {s3_key}")
+
+        if not paper_buffers:
+            return {'answer': 'No valid papers could be loaded from S3.'}
+
+        logger.info(f'PAPERS from explore_my_papers: {s3_keys}')
+
+        logger.info(f'Requesting PDF image description from server...')
+        img_descriptions = 'This is additional information about the reactions and molecules that are presented' \
+                        'on the images in the paper. They are passed in the same order as papers themselves.' \
+                        'Use them to answer the question.\n\n'
+        for buf in paper_buffers:
+            buf.seek(0)
+            detected_reactions = remove_keys(extract_reactions_from_pdf(('document.pdf', buf, 'application/pdf')))
+            img_descriptions += f'Reactions: {str(detected_reactions)}\n'
+            buf.seek(0)
+            detected_molecules = remove_keys(extract_molecules_from_pdf(('document.pdf', buf, 'application/pdf')))
+            img_descriptions += f'Molecules: {str(detected_molecules)}\n'
+            img_descriptions += '\n\n'
+
+        for buf in paper_buffers:
+            buf.seek(0)
+        return simple_query_llm(VISION_LLM_URL, task, explore_my_papers_prompt, paper_buffers, img_descriptions)
+    except Exception as e:
+        logger.error(f'explore_my_papers ERROR: {e}')
+        return {'answer': 'Could not extract any data from uploaded papers.'}
+
+
+@mcp.tool()
+def find_papers_in_db(
+        task: str, initial_number_of_chunks: int = 60, number_of_chunks_after_rerank: int = 20
+) -> list |dict:
+    """Find relevant papers by searching and reranking their body chunks.
+
+    Args:
+        task (str): The user's question, query or task
+        initial_number_of_chunks (int): The number of body chunks returned by the initial search
+        number_of_chunks_after_rerank (int): The number of body chunks retained after reranking
+
+    Returns:
+        A list of unique relevant papers with metadata and retrieval scores
+    """
+    meta_filter = extract_metadata_filters(
+        task, VISION_LLM_URL, extract_query_filters_prompt
+    )
+    meta_filter_chroma = build_chroma_where_filter(meta_filter)
+    body_filters: dict = {"role": {"$eq": "body"}}
+    if meta_filter_chroma:
+        body_filters = {
+            "$and": [meta_filter_chroma, {"role": {"$eq": "body"}}]
+        }
+
+    try:
+        chunks = retriever.retrieve(
+            query=task,
+            top_k=initial_number_of_chunks,
+            rerank_k=number_of_chunks_after_rerank,
+            filters=body_filters,
+        )
+        papers_by_id: dict[str, dict] = {}
+        for chunk in chunks:
+            papers_by_id.setdefault(
+                chunk.article_id,
+                {
+                    "article_id": chunk.article_id,
+                    "title": chunk.metadata["paper_title"],
+                    "domain": chunk.domain,
+                    "field": chunk.field,
+                    "initial_score": chunk.metadata.get("chroma_score"),
+                    "rerank_score": chunk.metadata.get("reranker_score"),
+                },
+            )
+        return list(papers_by_id.values())
+    except Exception as e:
+        logger.error(f'find_papers_in_db ERROR: {e}')
+        return {'answer': f'Could not find any paper in DB. Error: {e}'}
+
+
+@mcp.tool()
+def find_relevant_data_in_db(
+    task: str,
+    search_images: bool = False,
+    top_k: int = 60,
+    rerank_k: int = 20,
+) -> dict:
+    """Retrieves relevant papers and structured context from the database in a single call.
+
+    Body chunks are retrieved directly from the metadata-filtered collection and reranked. Every figure referenced
+    in a chunk (``Chunk.images_in_chunk``) is attached next to the text together with its caption and the image
+    payload loaded from S3. If
+    ``search_images=True``, an additional semantic retrieval over image captions is performed and the found figures
+    are simply appended to the end of the context list.
+
+    Args:
+        task (str): The user's question, query or task
+        search_images (bool, optional): Whether to search images separately or not
+        top_k (int, optional): The number of body chunks the vector search returns
+        rerank_k (int, optional): The number of body chunks retained after reranking
+
+    Returns:
+        dict: JSON-serializable structure {"papers": [...], "context": [...]}
+    """
+    meta_filter = extract_metadata_filters(
+        task, VISION_LLM_URL, extract_query_filters_prompt
+    )
+    meta_filter_chroma = build_chroma_where_filter(meta_filter)
+    body_filters: dict = {"role": {"$eq": "body"}}
+    if meta_filter_chroma:
+        body_filters = {
+            "$and": [meta_filter_chroma, {"role": {"$eq": "body"}}]
+        }
+
+    # 1. Direct body retrieval and article metadata collection
+    papers: list[dict] = []
+    titles: dict[str, str] = {}
+    article_ids: list[str] = []
+    seen_articles: set[str] = set()
+    try:
+        body_chunks = retriever.retrieve(
+            query=task,
+            top_k=top_k,
+            rerank_k=rerank_k,
+            filters=body_filters,
+        )
+        for chunk in body_chunks:
+            if chunk.article_id in seen_articles:
+                continue
+            seen_articles.add(chunk.article_id)
+            article_ids.append(chunk.article_id)
+            title = (chunk.metadata or {}).get("paper_title", "")
+            if title:
+                titles[chunk.article_id] = title
+            papers.append(
+                {
+                    "article_id": chunk.article_id,
+                    "title": title,
+                    "domain": chunk.domain,
+                    "field": chunk.field,
+                    "rerank_score": (chunk.metadata or {}).get("reranker_score"),
+                }
+            )
+        raw_image_names: set[str] = set()
+        for chunk in body_chunks:
+            raw_image_names.update(chunk.images_in_chunk or [])
+        image_names = [img_name.split(".")[0] for img_name in raw_image_names]
+    except Exception as e:
+        logger.error(f'find_relevant_data_in_db ERROR: {e}')
+        return {'answer': f'An error occurred while searching body chunks. Error: {e}'}
+    
+    if not article_ids:
+        return {"papers": [], "context": []}
+    
+    def _load_image(domain: str, article_id: str, img_name: str):
+        try:
+            image = s3_store.get_image_bytes_from_s3(domain, article_id, img_name)
+        except Exception:
+            logger.exception("Could not load %s", img_name)
+            return None
+        if isinstance(image, (bytes, bytearray)):
+            image = base64.b64encode(image).decode()
+        return image
+    
+    # 2. Captions for images referenced by retrieved body chunks
+    captions: dict[tuple[str, str], object] = {}
+    if image_names:
+        try:
+            for c in simple_retriever.retrieve(
+                query=task,
+                top_k=1000,
+                filters={
+                    "$and": [
+                        {"article_id": {"$in": article_ids}},
+                        {"role": {"$eq": "image_caption"}},
+                        {"image_id": {"$in": image_names}},
+                    ]
+                }
+            ):
+                captions[(c.article_id, c.metadata["image_id"] + ".jpeg")] = c
+        except Exception as e:
+            logger.error(f'find_relevant_data_in_db ERROR: {e}')
+            return {'answer': f'An error occurred while retrieving image captions. Error: {e}'}
+
+    context: list[dict] = []
+    seen_images: set[tuple[str, str]] = set()
+
+    for chunk in body_chunks:
+        images: list[dict] = []
+        for image_name in chunk.images_in_chunk or []:
+            seen_images.add((chunk.article_id, image_name))
+            caption = captions.get((chunk.article_id, image_name))
+            images.append(
+                {
+                    "image_name": image_name,
+                    "caption": caption.content if caption else None,
+                    "image": _load_image(chunk.domain, chunk.article_id, image_name),
+                }
+            )
+        context.append(
+            {
+                "type": "text",
+                "paper_id": chunk.article_id,
+                "chunk_id": chunk.id,
+                "title": titles.get(chunk.article_id),
+                "content": chunk.content,
+                "images": images,
+            }
+        )
+
+    # 3. Optional separate semantic search over captions - appended to the end
+    if search_images:
+        try:
+            for caption_chunk in retriever.retrieve(
+                query=task,
+                top_k=40,
+                    rerank_k=10,
+                    filters={
+                        "$and": [
+                            {"article_id": {"$in": article_ids}},
+                            {"role": {"$eq": "image_caption"}},
+                        ]
+                    },
+            ):
+                image_id = (caption_chunk.metadata or {}).get("image_id")
+                if not image_id:
+                    continue
+                image_name = image_id + ".jpeg"
+                if (caption_chunk.article_id, image_name) in seen_images:
+                    continue  # already attached next to a body chunk
+                seen_images.add((caption_chunk.article_id, image_name))
+                context.append(
+                    {
+                        "type": "image",
+                        "article_id": caption_chunk.article_id,
+                        "title": titles.get(caption_chunk.article_id),
+                        "image_name": image_name,
+                        "caption": caption_chunk.content,
+                        "image": _load_image(caption_chunk.domain, caption_chunk.article_id, image_name),
+                    }
+                )
+        except Exception as e:
+            logger.error(f'find_relevant_data_in_db ERROR: {e}')
+            return {'answer': f'An error occurred while searching images in papers for task. Error: {e}'}
+            
+    return {"papers": papers, "context": context}
+
+
+if __name__ == "__main__":
+    mcp.run(transport="http", host="0.0.0.0", port=7331, path="/mcp")

@@ -1,0 +1,14 @@
+services:
+  chemical-mcp-server:
+    # The image needs the shared S3 client from CoScientist/paper_parser, so the
+    # build context is the repository root, as in mcp-servers/docker-compose.yml.
+    build:
+      context: ../..
+      dockerfile: mcp-servers/chemical-mcp-server/Dockerfile
+    ports:
+      - "7331:7331"
+    volumes:
+      - ./data:/tmp/chemical_mcp_annotated
+    env_file:
+      - .env
+    restart: unless-stopped

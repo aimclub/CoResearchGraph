@@ -1,0 +1,14 @@
+https://github.com/mahmoodlab/CONCH
+https://github.com/lilab-stanford/MUSK
+https://github.com/bowang-lab/MedSAM
+https://github.com/pixas/MedSSS
+https://github.com/AnswerDotAI/ModernBERT
+https://github.com/LiangJunhao-THU/PathFinderCRC
+https://github.com/rmaphoh/RETFound_MAE
+https://github.com/KatherLab/STAMP
+https://github.com/PriorLabs/TabPFN
+https://github.com/mahmoodlab/UNI
+https://github.com/wallet-maker/cytopus
+https://github.com/facebookresearch/esm
+https://github.com/dcharatan/flowmap
+https://github.com/MIC-DKFZ/nnUNet

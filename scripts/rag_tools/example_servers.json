@@ -1,0 +1,13 @@
+[
+  {
+    "url": "http://localhost:8080/mcp",
+    "name": "papers",
+    "description": "Academic tools"
+  },
+  {
+    "url": "http://localhost:9000/mcp",
+    "name": "chem",
+    "description": "Chemistry tools",
+    "token": "secret123"
+  }
+]

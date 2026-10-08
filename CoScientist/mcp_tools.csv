@@ -1,0 +1,519 @@
+server_id,server_name,server_url,server_protocol,server_status,server_description,tool_name,tool_description,tool_tags,tool_input_schema
+d6dac6fb09066080,AutoMLTools,http://10.32.11.22:8779/mcp,http,error,AutoML tools for prediction/generation tasks,predict_ml,"Run AutoML inference for SMILES list in an existing case.
+
+Runs inference for a list of SMILES strings in a selected case. Before
+inference, refreshes shared `state.json` from S3.
+
+Args:
+    case: Trained case name.
+    smiles_list: Molecules in SMILES format.
+    timeout: Optional timeout in minutes.
+
+Returns:
+    Inference result from `inference_ml(...)`. The structure depends on the
+    trained case and available predictors.
+
+Raises:
+    pydantic.ValidationError: if payload format does not match `MLData`.
+    Any exception propagated by inference or S3 sync logic.",,"{""additionalProperties"": false, ""properties"": {""case"": {""type"": ""string""}, ""smiles_list"": {""items"": {""type"": ""string""}, ""type"": ""array""}, ""timeout"": {""default"": 30, ""type"": ""integer""}}, ""required"": [""case"", ""smiles_list""], ""type"": ""object""}"
+d6dac6fb09066080,AutoMLTools,http://10.32.11.22:8779/mcp,http,error,AutoML tools for prediction/generation tasks,list_s3_train_cases,"Lists S3 objects and resolves dataset names (`case_name`) for MCP training workflows.
+
+Main purpose:
+    Find training dataset files for the MCP server of generative and predictive molecular models.
+    By default, this tool searches inside `train/` because `start_generative_model_training`
+    expects datasets at `train/{case_name}.csv`.
+
+Prefix behavior:
+    - Default (`prefix=""train/""`): standard mode for training dataset discovery.
+    - Global search (`prefix=""""`): lists all objects in the bucket.
+      This can be useful to inspect bucket structure (for example, understand available
+      folders first), and then run a narrower search for train files.
+
+Args:
+    prefix:
+        S3 prefix (folder) where train datasets are stored.
+        Default: `train/`.
+    extension:
+        File extension for train datasets.
+        Default: `.csv`.
+
+Returns:
+    Dict[str, Any]:
+        - `bucket_name`: resolved bucket name.
+        - `prefix`: normalized prefix used for listing.
+        - `extension`: normalized extension filter.
+        - `total_train_files`: count of files matching expected train format.
+        - `s3_keys`: matching S3 object keys.
+        - `case_names`: normalized case names (without prefix and extension) for `case_name`.",,"{""additionalProperties"": false, ""properties"": {""prefix"": {""default"": ""train/"", ""type"": ""string""}, ""extension"": {""default"": "".csv"", ""type"": ""string""}}, ""type"": ""object""}"
+d6dac6fb09066080,AutoMLTools,http://10.32.11.22:8779/mcp,http,error,AutoML tools for prediction/generation tasks,get_s3_train_case_columns,"Download train dataset by case from S3 and return CSV column names.
+
+Useful when dataset file is known but target/feature columns are unknown.",,"{""additionalProperties"": false, ""properties"": {""case_name"": {""type"": ""string""}, ""prefix"": {""default"": ""train/"", ""type"": ""string""}, ""extension"": {""default"": "".csv"", ""type"": ""string""}}, ""required"": [""case_name""], ""type"": ""object""}"
+d6dac6fb09066080,AutoMLTools,http://10.32.11.22:8779/mcp,http,error,AutoML tools for prediction/generation tasks,health_check,"Liveness probe for the AutoML MCP server.
+
+Returns:
+    Dictionary with fixed key/value: `{""health_check"": ""ok""}`.",,"{""additionalProperties"": false, ""properties"": {}, ""type"": ""object""}"
+d6dac6fb09066080,AutoMLTools,http://10.32.11.22:8779/mcp,http,error,AutoML tools for prediction/generation tasks,check_state,"Get current training registry and available calculable properties.
+
+State is read from local `state.json`.
+
+Returns:
+    Dictionary with fields:
+    - `state`: all registered cases and their metadata, excluding the internal
+      `Calculateble properties` section.
+    - `calc_propreties`: list of property names that are computed directly and
+      therefore do not require ML model training.",,"{""additionalProperties"": false, ""properties"": {}, ""type"": ""object""}"
+d6dac6fb09066080,AutoMLTools,http://10.32.11.22:8779/mcp,http,error,AutoML tools for prediction/generation tasks,train_ml,"Train AutoML pipelines for molecule property prediction by specific case.
+
+Training may take from minutes to hours depending on dataset size and resources.
+The tool starts training in a background process and returns immediately with `job_id`.
+
+Args:
+    case: Case identifier. Should be unique for each training dataset and will be used to reference the trained model for inference. and it is similar to trian dataset name.
+    target_column: Target column names for prediction.
+    feature_column: Feature column names, default is `['Smiles']`.
+    description: Case description.
+    regression_props: Regression targets.
+    classification_props: Classification targets.
+
+
+Returns:
+    Dictionary with async start metadata:
+    - `status`: `accepted`
+    - `case`: case name
+    - `job_id`: background training job id
+    - `pid`: OS process id
+    - `started_at`: UTC timestamp",,"{""additionalProperties"": false, ""properties"": {""case"": {""type"": ""string""}, ""target_column"": {""anyOf"": [{""items"": {""type"": ""string""}, ""type"": ""array""}, {""type"": ""null""}], ""default"": null}, ""feature_column"": {""anyOf"": [{""items"": {""type"": ""string""}, ""type"": ""array""}, {""type"": ""null""}], ""default"": null}, ""description"": {""default"": ""Unknown case."", ""type"": ""string""}, ""regression_props"": {""anyOf"": [{""items"": {""type"": ""string""}, ""type"": ""array""}, {""type"": ""null""}], ""default"": null}, ""classification_props"": {""anyOf"": [{""items"": {""type"": ""string""}, ""type"": ""array""}, {""type"": ""null""}], ""default"": null}}, ""required"": [""case""], ""type"": ""object""}"
+d6dac6fb09066080,AutoMLTools,http://10.32.11.22:8779/mcp,http,error,AutoML tools for prediction/generation tasks,train_ml_job_status,"Get status of a background training job started by `train_ml`.
+
+For model-level status/metrics use `check_state` with the corresponding case.",,"{""additionalProperties"": false, ""properties"": {""job_id"": {""type"": ""string""}}, ""required"": [""job_id""], ""type"": ""object""}"
+392f0aa31e346e20,test-server-8121,http://10.32.11.45:8121/mcp,http,active,Test MCP server at 8121,get_datasets_info,"Get a list of all available indexed datasets and their detailed descriptions.
+
+This tool should be used to understand what datasets are available to search,
+how many molecules they contain, and what columns are available for retrieval.",,"{""properties"": {}, ""type"": ""object""}"
+392f0aa31e346e20,test-server-8121,http://10.32.11.45:8121/mcp,http,active,Test MCP server at 8121,search_similar,Search a prepared dataset with exact Tanimoto similarity.,,"{""properties"": {""smiles"": {""description"": ""Query molecule as a SMILES string"", ""type"": ""string""}, ""dataset_id"": {""description"": ""Dataset identifier to search"", ""type"": ""string""}, ""top_k"": {""default"": 20, ""description"": ""Maximum hits to return"", ""maximum"": 1000, ""minimum"": 1, ""type"": ""integer""}, ""min_similarity"": {""default"": 0.0, ""description"": ""Minimum Tanimoto similarity threshold"", ""maximum"": 1.0, ""minimum"": 0.0, ""type"": ""number""}, ""collapse_duplicates"": {""default"": false, ""description"": ""Collapse hits that share the same canonical SMILES"", ""type"": ""boolean""}, ""return_columns"": {""anyOf"": [{""items"": {""type"": ""string""}, ""type"": ""array""}, {""type"": ""null""}], ""default"": null, ""description"": ""Optional subset of original dataset columns to return""}}, ""required"": [""smiles"", ""dataset_id""], ""type"": ""object""}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,fetch_activity_data,"Unified data retrieval tool for biochemical databases.
+
+Fetches protein-ligand interaction or activity data from BindingDB or ChEMBL.
+Saves results to the given CSV file path.
+
+Args:
+    source (str): Data source (""bindingdb"" or ""chembl"").
+    protein_name (str): Target protein name.
+    output_path (str): Full path to the output CSV file.
+    protein_id (str, optional): Target protein id. If passed, protein_name is ignored.
+    affinity_type (str, optional): Type of affinity (Ki, Kd, IC50). Defaults to ""IC50"".
+    cutoff (int, optional): Optional threshold (nM) for BindingDB. Defaults to 10000.
+
+Returns:
+    str: On success, path to the saved file and dataset info. On failure, error message.",,"{""type"": ""object"", ""properties"": {""source"": {""type"": ""string""}, ""protein_name"": {""type"": ""string""}, ""output_path"": {""description"": ""Full path to the output CSV file"", ""type"": ""string""}, ""protein_id"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null}, ""affinity_type"": {""default"": ""IC50"", ""type"": ""string""}, ""cutoff"": {""default"": 10000, ""type"": ""integer""}}, ""required"": [""source"", ""protein_name"", ""output_path""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,name2smiles,"Convert a molecule name to its SMILES representation.
+
+This method retrieves the SMILES string for a given molecule name via PubChem (pubchempy).
+
+Args:
+    mol (str): The name of the molecule to convert.
+
+Returns:
+    str: The SMILES string representation of the molecule if successful,
+         an error message if the request fails,
+         or a ""couldn't obtain smiles"" message if the name is invalid.",,"{""type"": ""object"", ""properties"": {""mol"": {""description"": ""Name of a molecule"", ""type"": ""string""}}, ""required"": [""mol""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,smiles2name,"Converts a SMILES string representing a molecule into its IUPAC name.
+
+Args:
+    smiles (str): The SMILES string of the molecule.
+
+Returns:
+    str: The IUPAC name of the molecule, or an error message if the conversion fails.",,"{""type"": ""object"", ""properties"": {""smiles"": {""description"": ""SMILES of a molecule"", ""type"": ""string""}}, ""required"": [""smiles""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,smiles2prop,"Calculate molecular properties from a SMILES string or IUPAC name.
+
+Args:
+    smiles (str, optional): The SMILES string of the molecule.
+    iupac (str, optional): The IUPAC name of the molecule.
+
+Returns:
+    CalcMolDescriptors: An object containing calculated molecular properties. 
+                         Returns an error message as a string if the calculation fails.",,"{""type"": ""object"", ""properties"": {""smiles"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null, ""description"": ""The SMILES string of the molecule. Leave empty if providing IUPAC name.""}, ""iupac"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null, ""description"": ""The IUPAC name of the molecule. (e.g., 'aspirin'). Leave empty if providing SMILES.""}}, ""required"": [], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,visualize_molecule,"Visualizes a molecule from its SMILES and returns a temporary presigned URL to an HTML file.
+
+The file is stored in S3 under 'visualizations/' with a auto-generated name
+and is intended for one-time viewing (URL expires in 1 hour).
+
+Args:
+    smiles: SMILES string of the molecule.
+
+Returns:
+    str: Presigned URL to the HTML visualization, or an error message.",,"{""type"": ""object"", ""properties"": {""smiles"": {""description"": ""SMILES of a molecule"", ""type"": ""string""}}, ""required"": [""smiles""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,extract_reactions,"Detect chemical reactions in images loaded by URLs (ChemService).
+
+Each URL is processed in turn (in memory, no local cache). Annotated JPEGs are uploaded to S3
+under ``chemical_mcp/annotated_images``; presigned URLs are listed in metadata.
+
+Args:
+    image_urls: One or more direct image links.
+
+Returns:
+    dict: ``answer`` maps labels (from URL paths; disambiguated with ``__{index}`` on collision)
+    to reaction dicts. ``metadata`` has ``annotated_image_presigned_urls``, ``source_urls``,
+    and optionally ``failed`` (per-URL errors) if some URLs could not be processed.",,"{""type"": ""object"", ""properties"": {""image_urls"": {""description"": ""List of public HTTP(S) URLs of images"", ""items"": {""type"": ""string""}, ""type"": ""array""}}, ""required"": [""image_urls""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,extract_molecules,"Detect molecular structures in images loaded by URLs (ChemService).
+
+Each URL is processed in turn. Annotated JPEGs go to S3 under ``chemical_mcp/annotated_images``;
+presigned URLs are returned in metadata.
+
+Args:
+    image_urls: One or more direct image links.
+
+Returns:
+    dict: ``answer`` maps labels to ``smiles`` / ``errors``. ``metadata`` includes
+    ``annotated_image_presigned_urls``, ``source_urls``, and optionally ``failed``.",,"{""type"": ""object"", ""properties"": {""image_urls"": {""description"": ""List of public HTTP(S) URLs of images"", ""items"": {""type"": ""string""}, ""type"": ""array""}}, ""required"": [""image_urls""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,calculate_docking,"Calculate docking score for a molecule; upload the HTML visualization to S3 and return a presigned URL.
+
+Args:
+    smiles: SMILES string of the molecule.
+    pdb_id: PDB identifier for the receptor structure.
+
+Returns:
+    dict: ``answer`` with affinity and errors; ``metadata`` may include ``docking_html_presigned_url``
+    (temporary link, same TTL as molecule visualizations) when a visualization is returned.",,"{""type"": ""object"", ""properties"": {""smiles"": {""type"": ""string""}, ""pdb_id"": {""type"": ""string""}}, ""required"": [""smiles"", ""pdb_id""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,retrosynthesis_tree_search,"Plan a retrosynthesis route for a target molecule.
+
+Use this when the user asks for possible synthetic routes or precursors
+for a target SMILES. This calls the retrosynthesis service and returns
+ASKCOS-like routes with steps, reactants, and scores.
+
+Args:
+    smiles (str): Target molecule SMILES.
+    mode (str): Search depth/quality preset (""fast"", ""balanced"", ""deep"").
+
+Returns:
+    dict: Retrosynthesis result payload with:
+        - target (str | None): input target SMILES returned by ASKCOS.
+        - routes (List[Dict]): list of retrosynthesis routes:
+            - id (str): unique route identifier.
+            - depth (int | None): longest path length in the route.
+            - precursor_cost (float | None): summed precursor cost metric.
+            - score (float | None): overall route score.
+            - min_step_plausibility (float | None): lowest step plausibility.
+            - avg_step_plausibility (float | None): average step plausibility.
+            - steps (List[Dict]): ordered reaction steps:
+                - reaction_smiles (str): step reaction SMILES.
+                - mapped_smiles (str | None): atom-mapped reaction SMILES.
+                - plausibility (float | None): step plausibility score.
+                - precursor_rank (int | None): ranking of precursor set.
+                - precursor_score (float | None): model score for precursors.
+                - model_score (float | None): model score for the step.
+                - template (Dict | None): template metadata:
+                    reaction_smarts (str): reaction SMARTS pattern.
+                    template_rank (int | None): rank among templates.
+                    num_examples (int | None): template training examples count.
+                - reactants (List[Dict]): precursor molecules:
+                    smiles (str): molecule SMILES.
+                    terminal (bool | None): True if purchasable/terminal.
+                    buy_link (str | None): vendor link if available.
+                    stoichiometry (int): reagent count (default 1).
+                - products (List[Dict]): products, same schema as reactants.
+        - metadata (Dict): visualization info:
+            - route_images (List[Dict]): one entry per route with:
+                - route_id (str): route identifier.
+                - s3_key (str): S3 object key.
+                - presigned_url (str): temporary URL to view the image (1 h TTL).
+    On failure returns a dict with an ""answer"" message.",,"{""type"": ""object"", ""properties"": {""smiles"": {""description"": ""Target molecule SMILES"", ""type"": ""string""}, ""mode"": {""default"": ""fast"", ""description"": ""One of: fast, balanced, deep"", ""type"": ""string""}}, ""required"": [""smiles""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,classify_reaction,"Classify reaction SMILES into reaction classes.
+
+Use this when the user provides reaction SMILES and wants the reaction
+type/class (e.g., named reactions or class labels). Returns ASKCOS-like
+classification hits with ranks and confidence.
+
+Args:
+    smiles (List[str]): One or more reaction strings; each is reactants>>products,
+        with multiple reactants joined by ""."" (e.g. [""CCO.CC(=O)O>>CCOC(=O)C""]).
+    num_results (int): Max number of classes per reaction (1..50).
+
+Returns:
+    dict: ASKCOS classification payload with:
+        - status_code (int): upstream status code.
+        - message (str): upstream message.
+        - result (List[Dict]): list of hits with:
+            - rank (int): hit rank.
+            - reaction_num (str): reaction identifier.
+            - reaction_name (str): reaction name.
+            - reaction_classnum (str): class number.
+            - reaction_classname (str): class name.
+            - reaction_superclassnum (str): superclass number.
+            - reaction_superclassname (str): superclass name.
+            - prediction_certainty (float): confidence score.
+    On failure returns a dict with an ""answer"" message.",,"{""type"": ""object"", ""properties"": {""smiles"": {""description"": ""Each entry is one full reaction SMILES: 'A.B>>C' (not separate molecules per list item)"", ""items"": {""type"": ""string""}, ""type"": ""array""}, ""num_results"": {""default"": 10, ""description"": ""Max classes per reaction (1..50)"", ""type"": ""integer""}}, ""required"": [""smiles""], ""additionalProperties"": false}"
+bfd3f80438ba403b,chemical-tools,http://10.32.11.45:7332/mcp,http,active,Chemistry tools for scientific calculations,forward_predict,"Predict reaction products from reactants (forward synthesis).
+
+Use this when the user provides reactants and wants predicted products.
+You can specify backend/model_name and optional reagents/solvent strings.
+
+Args:
+    smiles (List[str]): Batch of reaction inputs (reactants).
+    backend (str): One of ""wldn5"", ""graph2smiles"", ""augmented_transformer"".
+    retrosynthesis_model_name (str): Model name for the backend (default ""pistachio"").
+    reagents (str): Reagents string as in ASKCOS controller.
+    solvent (str): Solvent string as in ASKCOS controller.
+
+Returns:
+    dict: ASKCOS forward payload with:
+        - inputs (List[str]): normalized inputs (reactants+reagents+solvent).
+        - backend (str): backend identifier used.
+        - model_name (str): model name used.
+        - predictions (List[Dict]): predicted products:
+            - smiles (str): product SMILES.
+            - score (float): model probability/score.
+        - metadata (Dict): visualization info:
+            - predictions_image (Dict):
+                - s3_key (str): S3 object key.
+                - presigned_url (str): temporary URL to view the grid image (1 h TTL).
+            - top_reactions_image (Dict): reaction drawings for top 3 products:
+                - s3_key (str): S3 object key.
+                - presigned_url (str): temporary URL to view the reactions image (1 h TTL).
+    On failure returns a dict with an ""answer"" message.",,"{""type"": ""object"", ""properties"": {""smiles"": {""description"": ""Batch of reaction inputs (reactants)"", ""items"": {""type"": ""string""}, ""type"": ""array""}, ""backend"": {""description"": ""One of: wldn5, graph2smiles, augmented_transformer"", ""type"": ""string""}, ""retrosynthesis_model_name"": {""default"": ""pistachio"", ""description"": ""Model name for backend"", ""type"": ""string""}, ""reagents"": {""default"": """", ""description"": ""Reagents string"", ""type"": ""string""}, ""solvent"": {""default"": """", ""description"": ""Solvent string"", ""type"": ""string""}}, ""required"": [""smiles"", ""backend""], ""additionalProperties"": false}"
+f48c27fb26f70fbd,dataset-collection,http://10.32.11.45:7334/mcp,http,active,Extraction of molecules and their properties datasets from scientific papers,explore_chemistry_database,"Leverages a database of chemical scientific papers to answer user questions.
+This tool is prioritized over web searches for information.
+It is designed for general inquiries and not for details specific to individual papers
+(e.g., figure descriptions, experimental details, conclusions) or for identifying
+lists of relevant publications.
+
+Args:
+    task (str): The user's question or query related to chemistry.
+
+Returns:
+    dict: A dictionary containing the LLM's response, the supporting
+        text, images, and tables extracted from the database, and metadata
+        about the request (model used, token count, etc.).",,"{""additionalProperties"": false, ""properties"": {""task"": {""type"": ""string""}}, ""required"": [""task""], ""type"": ""object""}"
+f48c27fb26f70fbd,dataset-collection,http://10.32.11.45:7334/mcp,http,active,Extraction of molecules and their properties datasets from scientific papers,explore_my_papers,"Answers questions based on the content of user-provided scientific papers. 
+This tool allows users to query specific documents they've uploaded, retrieving insights 
+like figure descriptions, experimental details, or conclusions. It prioritizes answers
+from these papers over general web searches.
+It can also answer questions concerning the document set itself (e.g., number of uploaded papers,
+their presence, titles, authors, or other metadata).
+
+Args:
+    task (str): The user's question about the uploaded papers.
+    s3_keys (list[str]): The list of S3 keys for the uploaded papers.
+    config (RunnableConfig): The configuration for the runnable.
+
+
+Returns:
+    dict: A dictionary containing the answer generated by the LLM and metadata 
+          about the request (e.g., model used, token count).  
+          Returns an error message if no papers are provided or if data extraction fails.",,"{""additionalProperties"": false, ""properties"": {""task"": {""type"": ""string""}, ""s3_keys"": {""items"": {""type"": ""string""}, ""type"": ""array""}}, ""required"": [""task"", ""s3_keys""], ""type"": ""object""}"
+d36e3d994404e957,GenerativeMoleculeModels,http://10.32.2.2:8764/mcp,http,error,Generative molecular models MCP: de novo generation of SMILES / candidate molecules (e.g. for GSK-3beta and other targets).,list_generative_train_cases,"Lists S3 objects and resolves dataset names (`case_name`) for GAN training.
+
+This is the Generative (`GenerativeModelsMCP`) server's view of the shared
+bucket. The AutoML server exposes a functionally equivalent
+`list_automl_train_cases` against the same bucket — pick whichever server
+you are already talking to; the result is identical.",,"{""additionalProperties"": false, ""properties"": {""prefix"": {""default"": ""train/"", ""type"": ""string"", ""description"": ""\nS3 prefix (folder) where train datasets are stored.\nDefault: `train/`.""}, ""extension"": {""default"": "".csv"", ""type"": ""string"", ""description"": ""\nFile extension for train datasets.\nDefault: `.csv`.""}}, ""type"": ""object""}"
+d36e3d994404e957,GenerativeMoleculeModels,http://10.32.2.2:8764/mcp,http,error,Generative molecular models MCP: de novo generation of SMILES / candidate molecules (e.g. for GSK-3beta and other targets).,get_state_from_server,"Returns model registry state from prediction or generative API server.
+This state discribes available cases, their training status, and metadata. It is used by MCP clients to discover cases and track training progress.",,"{""additionalProperties"": false, ""properties"": {""url"": {""default"": ""gen"", ""type"": ""string"", ""description"": ""\n- \""pred\"" -> use prediction base URL.\n- \""gen\"" -> use generative base URL.\n- any other value is treated as explicit base URL.""}, ""case"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null, ""description"": ""\nOptional case key. If provided, returns only this case entry.""}}, ""type"": ""object""}"
+d36e3d994404e957,GenerativeMoleculeModels,http://10.32.2.2:8764/mcp,http,error,Generative molecular models MCP: de novo generation of SMILES / candidate molecules (e.g. for GSK-3beta and other targets).,start_generative_model_training,"Starts GAN generative training. The training CSV is always supplied as an
+HTTP(S) URL (e.g. an S3 presigned URL), which the training backend fetches
+via plain `requests.get(...)`. No S3 credentials are required for the read,
+so the URL may point at any reachable endpoint / account.
+
+BLOCKING call. Unlike `train_ml` (which spawns a background process and
+returns a `job_id` immediately), this tool issues a synchronous HTTP
+request to the FastAPI backend and waits for training to finish — up to
+`GAN_HTTP_TIMEOUT_S` seconds (default ~19 min). There is no `job_id` and
+nothing to poll; success/failure is reported in the response. Plan
+surrounding tool calls accordingly.
+
+Trained weights are uploaded to S3 under
+`gan_weights/{case_name}/train_GAN_{case_name}/...` by default
+(`save_trained_data_to_sync_server=True`). A fresh inference container
+will then auto-download them on the first `generate_mols(case=case_name)`.",,"{""additionalProperties"": false, ""properties"": {""case_name"": {""type"": ""string"", ""description"": ""\nUnique case identifier used to name and track the training run.\nUse `list_s3_train_cases` to discover available datasets.""}, ""train_data_url"": {""type"": ""string"", ""description"": ""\nRequired HTTP(S) URL of the training CSV — typically an S3\npresigned URL. The training server downloads it directly; the\nagent does not stream raw data through itself.""}, ""feature_column"": {""default"": [""Smiles""], ""items"": {""type"": ""string""}, ""type"": ""array"", ""description"": ""\nName of the SMILES column in the downloaded CSV.\nExample: `[\""canonical_smiles\""]`.""}, ""epochs"": {""default"": 10, ""type"": ""integer"", ""description"": ""\nNumber of GAN training steps/epochs.""}, ""fine_tune"": {""default"": true, ""type"": ""boolean"", ""description"": ""\nWhether to fine-tune existing GAN weights.""}, ""save_trained_data_to_sync_server"": {""default"": true, ""type"": ""boolean"", ""description"": ""\nIf True (default), trained GAN weights are uploaded to S3 under\n`gan_weights/{case_name}/train_GAN_{case_name}/...` after\ntraining finishes.""}}, ""required"": [""case_name"", ""train_data_url""], ""type"": ""object""}"
+d36e3d994404e957,GenerativeMoleculeModels,http://10.32.2.2:8764/mcp,http,error,Generative molecular models MCP: de novo generation of SMILES / candidate molecules (e.g. for GSK-3beta and other targets).,generate_mols,"Generic, FAST GAN molecule generator. Default tool for ""give me N drug-like
+molecules"" requests when no disease-specific tuning is required. Its generate good molecules fast, when training is timeconsuming or unavailable — for example, when the agent is exploring a new case and has not trained a GAN yet or has no train data.
+
+Model: GAN-LSTM (`gan_auto_generator` on the FastAPI side). One forward
+pass per batch — no iterative novelty/property filtering loop, no docking,
+no IC50 evaluation. Returns the SMILES plus a fixed set of RDKit-computed
+properties (`QED`, `LogP`, `Synthetic Accessibility`, `Brenk`, `PAINS`,
+`Glaxo`, `SureChEMBL`, `Polar Surface Area`, H-bond/Rotatable/Aromatic
+counters, `Validity`, `Duplicates`).
+
+Two operating modes:
+
+1. Generic mode (`case` omitted) — uses the bundled fallback GAN weights
+   shipped with the image (`GAN/gan_lstm_refactoring/weights/
+   v4_gan_mol_124_0.0003_8k.pkl`, pulled from HuggingFace at build time).
+   No S3 lookup, no case state required. This is the right tool for any
+   case that does NOT already have a fine-tuned GAN.
+
+2. Case-specific mode (`case` provided) — STRICT: weights MUST be the
+   case-specific ones produced by `start_generative_model_training`. If
+   missing locally, the FastAPI side tries to download
+   `gan_weights/{case}/train_GAN_{case}/...` from S3. If neither local
+   cache nor S3 has them, the response carries
+   `status=""case_not_trained"" / ""weights_not_found"" / ""weights_load_failed""`
+   — there is NO silent fallback to the generic GAN.
+
+Typical agent workflow: `generate_mols(num=...)` → pipe SMILES into
+`predict_ml(case=..., smiles_list=...)` for property prediction. If the
+results are insufficient, request more molecules — no retraining needed.
+
+For the 6 hard-coded disease cases (alzheimer, parkinson, cancer,
+skleroz, dyslipidemia, drug_resist) prefer `generate_case_mols` — it
+runs a different, slower model (multi-property CVAE) tuned for those
+targets with property constraints. Do NOT use those names here unless
+you have separately trained a GAN under that case name.",,"{""additionalProperties"": false, ""properties"": {""num"": {""default"": 10, ""type"": ""integer"", ""description"": ""Number of molecules requested. Default 10. No hard cap.""}, ""case"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null, ""description"": ""Optional trained-GAN case name (see \""Case-specific mode\"" above).\nOmit for the generic GAN.""}, ""upload_results_to_s3"": {""default"": true, ""type"": ""boolean"", ""description"": ""When True (default), upload the CSV with\ngenerated molecules to S3 and return a presigned URL.""}, ""output_s3_prefix"": {""default"": ""generated"", ""type"": ""string"", ""description"": ""S3 prefix for the uploaded CSV. Default `generated`.\nFinal key: `{output_s3_prefix}/{case_or_gan_default}/{uuid}.csv`.""}, ""return_inline_results"": {""default"": false, ""type"": ""boolean"", ""description"": ""When True, include the raw dict of arrays in\nthe response alongside the S3 link.""}}, ""type"": ""object""}"
+d36e3d994404e957,GenerativeMoleculeModels,http://10.32.2.2:8764/mcp,http,error,Generative molecular models MCP: de novo generation of SMILES / candidate molecules (e.g. for GSK-3beta and other targets).,generate_case_mols,"Generate molecules for a HARDCODED disease case using a multi-property
+conditional VAE — SLOWER but tuned for specific therapeutic targets.
+
+Model: 8-property conditional CVAE (`multi_generator` on the FastAPI side
+invoked through one of the `/search_*` endpoints) with case-specific
+pre-bundled weights:
+
+    alzheimer    -> autotrain/many_prop_CVAE/weights_8p_alzhmr/
+    skleroz      -> autotrain/many_prop_CVAE/weights_8p_sklrz/
+    cancer       -> autotrain/many_prop_CVAE/weights_8p_cnsr/
+    parkinson    -> autotrain/many_prop_CVAE/weights_parkinson/
+    dyslipidemia -> autotrain/many_prop_CVAE/weights_dislip/
+    drug_resist  -> autotrain/many_prop_CVAE/weights_8p_tablet/
+
+Unlike `generate_mols`, the backend applies property constraints
+(`spec_conds` — windows on docking_score, QED, Synthetic Accessibility,
+PAINS/SureChEMBL/Glaxo/Brenk flags) and ITERATIVELY regenerates until
+enough valid + novel molecules accumulate. Novelty is checked against the
+disease-specific ChEMBL training set
+(`docked_data_for_train/data_*.csv`). Because of this loop, latency is
+significantly higher than `generate_mols` — expect tens of seconds to a
+few minutes for a full batch.
+
+When to use this tool vs `generate_mols`:
+    - Use `generate_case_mols` ONLY for the 6 cases listed above and only
+      when you need property-constrained, case-tuned molecules (typical
+      for lead-discovery / SAR workflows).
+    - For any other target, fast generic generation, or when you just
+      need raw SMILES to feed into `predict_ml`, use `generate_mols`
+      (universal GAN, no constraints, no per-case weights required).
+
+Hard cap: the FastAPI side enforces `numb_mol <= 100` per request — any
+larger value is silently clamped to 100.",,"{""additionalProperties"": false, ""properties"": {""case"": {""type"": ""string"", ""description"": ""\nDisease case selector (case-insensitive). Supported values:\n- `skleroz` -> multiple sclerosis (BTK target).\n- `parkinson` -> Parkinson's disease (tyrosine-protein kinase ABL).\n- `cancer` -> cancer (8afb protein).\n- `dyslipidemia` -> dyslipidemia (ATP citrate synthase).\n- `drug_resist` -> drug-resistance (\""tablet\"" weights).\n- `alzheimer` -> Alzheimer's disease (4j1r target).""}, ""num"": {""default"": 10, ""type"": ""integer"", ""description"": ""\nNumber of molecules requested. Default `10`. Backend hard-caps\nat 100 — larger values are silently truncated.""}, ""upload_results_to_s3"": {""default"": true, ""type"": ""boolean"", ""description"": ""When True (default), upload CSV with generated\nmolecules to S3 and return a presigned URL.""}, ""output_s3_prefix"": {""default"": ""generated"", ""type"": ""string"", ""description"": ""S3 prefix for the uploaded CSV. Default `generated`.""}, ""return_inline_results"": {""default"": false, ""type"": ""boolean"", ""description"": ""When True, include the raw dict alongside the\nS3 link.""}}, ""required"": [""case""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,fetch_activity_data,"Unified data retrieval tool for biochemical databases.
+
+Fetches protein-ligand interaction or activity data from BindingDB or ChEMBL.
+Saves results to the given CSV file path.
+
+Args:
+    source (str): Data source (""bindingdb"" or ""chembl"").
+    protein_name (str): Target protein name.
+    output_path (str): Full path to the output CSV file.
+    protein_id (str, optional): Target protein id. If passed, protein_name is ignored.
+    affinity_type (str, optional): Type of affinity (Ki, Kd, IC50). Defaults to ""IC50"".
+    cutoff (int, optional): Optional threshold (nM) for BindingDB. Defaults to 10000.
+
+Returns:
+    str: On success, path to the saved file and dataset info. On failure, error message.",,"{""additionalProperties"": false, ""properties"": {""source"": {""type"": ""string""}, ""protein_name"": {""type"": ""string""}, ""output_path"": {""description"": ""Full path to the output CSV file"", ""type"": ""string""}, ""protein_id"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null}, ""affinity_type"": {""default"": ""IC50"", ""type"": ""string""}, ""cutoff"": {""default"": 10000, ""type"": ""integer""}}, ""required"": [""source"", ""protein_name"", ""output_path""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,name2smiles,"Convert a molecule name to its SMILES representation.
+
+This method attempts to retrieve the SMILES string for a given molecule name using a chemical database. It handles potential errors during the retrieval process and provides informative messages if the conversion fails.
+
+Args:
+    mol (str): The name of the molecule to convert.
+
+Returns:
+    str: The SMILES string representation of the molecule if successful, 
+         an error message if the conversion fails after multiple attempts,
+         or a ""couldn't obtain smiles"" message if the name is invalid.",,"{""additionalProperties"": false, ""properties"": {""mol"": {""description"": ""Name of a molecule"", ""type"": ""string""}}, ""required"": [""mol""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,smiles2name,"Converts a SMILES string representing a molecule into its IUPAC name.
+
+Args:
+    smiles (str): The SMILES string of the molecule.
+
+Returns:
+    str: The IUPAC name of the molecule, or an error message if the conversion fails.",,"{""additionalProperties"": false, ""properties"": {""smiles"": {""description"": ""SMILES of a molecule"", ""type"": ""string""}}, ""required"": [""smiles""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,smiles2prop,"Calculate molecular properties from a SMILES string or IUPAC name.
+
+Args:
+    smiles (str): The SMILES string of the molecule.
+    iupac (str, optional): The IUPAC name of the molecule. If provided, the SMILES string will be derived from it. Defaults to None.
+
+Returns:
+    CalcMolDescriptors: An object containing calculated molecular properties. 
+                         Returns an error message as a string if the calculation fails.",,"{""additionalProperties"": false, ""properties"": {""smiles"": {""description"": ""SMILES of a molecule"", ""type"": ""string""}, ""iupac"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null}}, ""required"": [""smiles""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,visualize_molecule,"Visualizes a molecule from its SMILES representation and saves the 3D structure as an HTML file.
+
+Args:
+    smiles (str): The SMILES string representing the molecule to visualize.
+    save_path (str): Path to the output HTML file or directory (saves vis.html in that case).
+
+Returns:
+    str: On success, returns the absolute path to the saved file. On failure, returns an error message.",,"{""additionalProperties"": false, ""properties"": {""smiles"": {""description"": ""SMILES of a molecule"", ""type"": ""string""}, ""save_path"": {""description"": ""Full path to the output HTML file, or directory (then vis.html is used)"", ""type"": ""string""}}, ""required"": [""smiles"", ""save_path""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,extract_reactions,"Detects chemical reactions in images from the given directory using the `reactions_ocr` pipeline.
+
+Args:
+    images_directory (str): Path to directory containing image files.
+
+Returns:
+    dict: On success: dictionary from `reactions_ocr` (image filenames to reactants,
+        conditions, products) and annotated images saved as <original_name>_annotated.jpg.
+        On failure or no images: dict with an ""answer"" key and an explanatory message.",,"{""additionalProperties"": false, ""properties"": {""images_directory"": {""description"": ""Path to directory containing images (.jpg, .png, .jpeg)"", ""type"": ""string""}}, ""required"": [""images_directory""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,extract_molecules,"Detects molecular structures in images from the given directory and converts them to SMILES using the `molecules_ocr` pipeline.
+
+Args:
+    images_directory (str): Path to directory containing image files.
+
+Returns:
+    dict: On success: dictionary from `molecules_ocr` (image filenames to SMILES and errors),
+        with annotated images saved as <original_name>_annotated.jpg. On failure or no images:
+        dict with an ""answer"" key and an explanatory message.",,"{""additionalProperties"": false, ""properties"": {""images_directory"": {""description"": ""Path to directory containing images (.jpg, .png, .jpeg)"", ""type"": ""string""}}, ""required"": [""images_directory""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,calculate_docking,"Calculate docking score for a molecule and save the visualization to the given path.
+
+Args:
+    smiles (str): SMILES string of the molecule.
+    pdb_id (str): ID of the PDB file containing the receptor structure.
+    output_path (str): Full path for the output HTML file.
+
+Returns:
+    dict: answer (affinity, errors) and metadata (html_file path). On failure, metadata may be None.",,"{""additionalProperties"": false, ""properties"": {""smiles"": {""type"": ""string""}, ""pdb_id"": {""type"": ""string""}, ""output_path"": {""description"": ""Full path for the output HTML file with docking result"", ""type"": ""string""}}, ""required"": [""smiles"", ""pdb_id"", ""output_path""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,retrosynthesis_tree_search,"Plan a retrosynthesis route for a target molecule.
+
+Use this when the user asks for possible synthetic routes or precursors
+for a target SMILES. This calls the retrosynthesis service and returns
+ASKCOS-like routes with steps, reactants, and scores.
+
+Args:
+    smiles (str): Target molecule SMILES.
+    mode (str): Search depth/quality preset (""fast"", ""balanced"", ""deep"").
+
+Returns:
+    dict: Retrosynthesis result with target and routes.
+    On failure returns a dict with an ""answer"" message.",,"{""additionalProperties"": false, ""properties"": {""smiles"": {""description"": ""Target molecule SMILES"", ""type"": ""string""}, ""mode"": {""default"": ""fast"", ""description"": ""One of: fast, balanced, deep"", ""type"": ""string""}}, ""required"": [""smiles""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,classify_reaction,"Classify reaction SMILES into reaction classes.
+
+Use this when the user provides reaction SMILES and wants the reaction
+type/class (e.g., named reactions or class labels). Returns ASKCOS-like
+classification hits with ranks and confidence.
+
+Args:
+    smiles (List[str]): List of reaction SMILES to classify.
+    num_results (int): Max classes per reaction (1..50).
+
+Returns:
+    dict: status_code/message/result list with classification hits.
+    On failure returns a dict with an ""answer"" message.",,"{""additionalProperties"": false, ""properties"": {""smiles"": {""description"": ""List of reaction SMILES, e.g. ['A.B>>C']"", ""items"": {""type"": ""string""}, ""type"": ""array""}, ""num_results"": {""default"": 10, ""description"": ""Max classes per reaction (1..50)"", ""type"": ""integer""}}, ""required"": [""smiles""], ""type"": ""object""}"
+d43aa0997787d27a,ChemTools,http://10.32.11.22:7332/mcp,http,active,Chemistry tools for scientific calculations,forward_predict,"Predict reaction products from reactants (forward synthesis).
+
+Use this when the user provides reactants and wants predicted products.
+You can specify backend/model_name and optional reagents/solvent strings.
+
+Args:
+    smiles (List[str]): Batch of reaction inputs (reactants).
+    backend (str): Model backend (""wldn5"", ""graph2smiles"", ""augmented_transformer"").
+    model_name (str): Model name for backend (default ""pistachio"").
+    reagents (str): Reagents string.
+    solvent (str): Solvent string.
+
+Returns:
+    dict: inputs/backend/model_name/predictions with product SMILES and scores.
+    On failure returns a dict with an ""answer"" message.",,"{""additionalProperties"": false, ""properties"": {""smiles"": {""description"": ""Batch of reaction inputs (reactants)"", ""items"": {""type"": ""string""}, ""type"": ""array""}, ""backend"": {""description"": ""One of: wldn5, graph2smiles, augmented_transformer"", ""type"": ""string""}, ""retrosynthesis_model_name"": {""default"": ""pistachio"", ""description"": ""Model name for backend"", ""type"": ""string""}, ""reagents"": {""default"": """", ""description"": ""Reagents string"", ""type"": ""string""}, ""solvent"": {""default"": """", ""description"": ""Solvent string"", ""type"": ""string""}}, ""required"": [""smiles"", ""backend""], ""type"": ""object""}"
+30500d11eb7d86df,vault,http://10.32.11.45:8000/mcp,http,active,,list_buckets,Lists all available buckets.,,"{""additionalProperties"": false, ""properties"": {}, ""type"": ""object""}"
+30500d11eb7d86df,vault,http://10.32.11.45:8000/mcp,http,active,,create_bucket,Creates a new S3 bucket.,,"{""additionalProperties"": false, ""properties"": {""bucket"": {""type"": ""string""}}, ""required"": [""bucket""], ""type"": ""object""}"
+30500d11eb7d86df,vault,http://10.32.11.45:8000/mcp,http,active,,get_upload_link,Gets a temporary URL to upload a file directly to the vault.,,"{""additionalProperties"": false, ""properties"": {""extension"": {""type"": ""string""}, ""custom_name"": {""anyOf"": [{""type"": ""string""}, {""type"": ""null""}], ""default"": null}, ""expires_in_seconds"": {""default"": 3600, ""type"": ""integer""}, ""bucket"": {""default"": ""agent-vault"", ""type"": ""string""}}, ""required"": [""extension""], ""type"": ""object""}"
+30500d11eb7d86df,vault,http://10.32.11.45:8000/mcp,http,active,,get_artifact_link,Gets a secure HTTP link to read an artifact. Call this immediately before downloading.,,"{""additionalProperties"": false, ""properties"": {""access_key"": {""type"": ""string""}, ""expires_in_seconds"": {""default"": 3600, ""type"": ""integer""}, ""bucket"": {""default"": ""agent-vault"", ""type"": ""string""}}, ""required"": [""access_key""], ""type"": ""object""}"
+30500d11eb7d86df,vault,http://10.32.11.45:8000/mcp,http,active,,list_artifacts,Lists all artifacts in the vault using S3 object listing.,,"{""additionalProperties"": false, ""properties"": {""bucket"": {""default"": ""agent-vault"", ""type"": ""string""}}, ""type"": ""object""}"
+30500d11eb7d86df,vault,http://10.32.11.45:8000/mcp,http,active,,update_artifact_metadata,Updates the description for a specific artifact using S3 Object Tags.,,"{""additionalProperties"": false, ""properties"": {""access_key"": {""type"": ""string""}, ""description"": {""type"": ""string""}, ""bucket"": {""default"": ""agent-vault"", ""type"": ""string""}}, ""required"": [""access_key"", ""description""], ""type"": ""object""}"

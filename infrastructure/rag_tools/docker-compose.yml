@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# rag_tools registry infra — Postgres + Qdrant.
+#
+# The persistent tool catalogue behind Retrieve_tools (CoScientist/tools/
+# retrieval_tools.py): Postgres holds the authoritative server/tool metadata,
+# Qdrant holds the embedding index. The embedding /
+# reranker API servers are SEPARATE infra (infrastructure/chroma) and not part
+# of it — a fresh registry connects and queries without them.
+#
+# Bring up / health / tear down (one command each):
+#   bash scripts/rag_tools/rag_infra.sh up        # start + wait for healthy
+#   bash scripts/rag_tools/rag_infra.sh health    # re-run the health check
+#   bash scripts/rag_tools/rag_infra.sh down      # stop (keep data volumes)
+#   bash scripts/rag_tools/rag_infra.sh destroy   # stop + delete data volumes
+#
+# Credentials/ports come from env (the same POSTGRES__*/QDRANT__* the app reads,
+# see rag_tools.config.settings); defaults match rag_tools' own defaults so a
+# bare `.env` works. Images are pinned for reproducibility (override via env).
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: rag-tools-registry
+
+services:
+  rag-postgres:
+    image: ${RAG_POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: rag_tools_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES__USER:-rag_tools}
+      POSTGRES_PASSWORD: ${POSTGRES__PASSWORD:-rag_tools_password}
+      POSTGRES_DB: ${POSTGRES__DATABASE:-rag_tools}
+    ports:
+      # host POSTGRES__PORT -> container 5432 (app connects on POSTGRES__PORT)
+      - "${POSTGRES__PORT:-5432}:5432"
+    volumes:
+      - rag_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES__USER:-rag_tools} -d ${POSTGRES__DATABASE:-rag_tools}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  rag-qdrant:
+    image: ${RAG_QDRANT_IMAGE:-qdrant/qdrant:v1.12.4}
+    container_name: rag_tools_qdrant
+    ports:
+      - "${RAG_QDRANT_HTTP_PORT:-6333}:6333"   # REST/HTTP (QDRANT__URL)
+      - "${RAG_QDRANT_GRPC_PORT:-6334}:6334"   # gRPC (optional; prefer_grpc)
+    volumes:
+      - rag_qdrant_data:/qdrant/storage
+    # Qdrant opens a segment file handle per shard/collection; the container's
+    # default nofile ulimit (1024 soft on this daemon) is enough at first but
+    # gets exhausted as the catalogue grows across long uptimes, crash-looping
+    # actix workers with "Too many open files" (observed E7.4a, 2026-07-29) —
+    # raise it well above what a single-node local catalogue could ever need.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    restart: unless-stopped
+
+volumes:
+  rag_postgres_data:
+  rag_qdrant_data:

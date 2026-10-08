@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>Alembic — Builds</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "primary": "#00daf3", "on-primary": "#00363d", "primary-container": "#007e8c",
+            "secondary": "#40e56c",
+            "error": "#ffb4ab", "error-strong": "#93000a",
+            "background": "#101319",
+            "surface-low": "#191c22", "surface": "#1d2026", "surface-lowest": "#0b0e14",
+            "surface-high": "#272a31",
+            "on-surface": "#e1e2eb", "on-surface-dim": "#c2c6d8",
+            "outline": "#8c90a1", "outline-variant": "#424656",
+          },
+          borderRadius: { "card": "0.75rem", "control": "0.5rem" },
+          fontFamily: {
+            head: ["Space Grotesk", "sans-serif"],
+            mono: ["JetBrains Mono", "monospace"],
+            body: ["Inter", "sans-serif"],
+          }
+        },
+      },
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+    tbody tr:hover { background: #1d2026; cursor: pointer; }
+    @keyframes spin { to { transform: rotate(360deg) } }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+    @media (prefers-reduced-motion: reduce) { .spin { animation: none !important; } }
+    .scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scroll::-webkit-scrollbar-thumb { background: #32353c; border-radius: 999px; }
+  </style>
+</head>
+
+<body class="bg-background text-on-surface min-h-screen">
+
+  <header class="flex items-center gap-5 px-6 min-h-16 py-2 border-b border-outline-variant/20 bg-surface-lowest">
+    <a id="home-link" href="#" class="flex items-center gap-2.5 hover:opacity-80 transition" title="New MCP from repo">
+      <span class="material-symbols-outlined text-primary text-[26px]">experiment</span>
+      <div class="leading-none">
+        <div class="font-head text-lg font-bold tracking-[0.2em] text-primary uppercase">Alembic</div>
+        <div class="text-[9px] font-mono text-outline tracking-[0.25em] uppercase mt-1">builds</div>
+      </div>
+    </a>
+    <div class="flex-1"></div>
+    <a id="back-chat-btn" href="/" class="flex items-center gap-1.5 bg-surface text-on-surface-dim font-head font-semibold text-sm px-4 h-10 rounded-control border border-outline-variant/30 hover:border-primary/60 hover:text-primary transition">
+      <span class="material-symbols-outlined text-[19px]">chat</span> CoScientist chat
+    </a>
+    <a id="new-build-btn" href="#" class="flex items-center gap-1.5 bg-primary text-on-primary font-head font-semibold text-sm px-4 h-10 rounded-control hover:brightness-110 active:scale-[.98] transition">
+      <span class="material-symbols-outlined text-[19px]">add</span> New MCP from repo
+    </a>
+  </header>
+
+  <main class="p-6 max-w-7xl mx-auto">
+    <div class="mb-4 flex items-center gap-3">
+      <span class="material-symbols-outlined text-outline text-[20px]">history</span>
+      <h1 class="font-head text-xl font-semibold text-on-surface">Pipeline runs</h1>
+      <span id="count-chip" class="text-[11px] font-mono text-outline bg-surface rounded-full px-2 py-0.5">0</span>
+      <label class="ml-auto flex items-center gap-1.5 text-xs font-mono text-outline cursor-pointer select-none"
+             title="Show only builds whose own image is on this host">
+        <input id="runnable-only" type="checkbox" class="accent-primary w-3.5 h-3.5 cursor-pointer rounded" /> runnable only
+      </label>
+      <span id="clear-note" class="text-[11px] font-mono cursor-help"></span>
+      <button id="clear-btn" title="Remove every build that cannot be served again from the history"
+        class="hidden items-center gap-1 text-xs font-mono text-error/80 hover:text-error transition disabled:opacity-60">
+        <span class="material-symbols-outlined text-[16px]">delete_sweep</span><span id="clear-label">clear non-runnable</span>
+      </button>
+      <button id="refresh-btn" title="Refresh" class="flex items-center gap-1 text-xs font-mono text-outline hover:text-primary transition">
+        <span class="material-symbols-outlined text-[16px]">refresh</span> refresh
+      </button>
+    </div>
+
+    <div class="bg-surface border border-outline-variant/20 rounded-card overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-low text-outline">
+          <tr>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Status</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Build</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Repository</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">MCP</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Server</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Stage</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Started</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3">Duration</th>
+            <th class="text-left font-head text-[11px] uppercase tracking-widest px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="hidden p-10 text-center text-outline font-mono text-sm"></div>
+    </div>
+  </main>
+
+  <script>
+    // Same base-URL detection as the dashboard: mounted at "/alembic" from the
+    // common web app, or at root by the standalone alembic app.
+    const _p = location.pathname;
+    const BASE = (_p === "/alembic/builds" || _p.startsWith("/alembic/")) ? "/alembic" : "";
+    document.getElementById("home-link").href = `${BASE}/`;
+    document.getElementById("new-build-btn").href = `${BASE}/`;
+
+    const STATUS = {
+      running: { color: "#00daf3", icon: "progress_activity", label: "running" },
+      done:    { color: "#40e56c", icon: "check_circle", label: "done" },
+      failed:  { color: "#ffb4ab", icon: "error", label: "failed" },
+    };
+    const esc = s => (s == null ? "" : String(s)).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const attr = s => esc(s).replace(/"/g, "&quot;");
+
+    // ─── state ─────────────────────────────────────────────────────
+    // Actions run on the server in the background; `b.action` in /api/builds
+    // says which one is running and how the last one ended, `cleanup` does the
+    // same for clearing non-runnable builds.
+    let builds = [];
+    const pending = {};  // job_id -> action sent, until the list shows it running
+    const notes = {};    // job_id -> {ok, text, detail} for the last finished action
+    const seen = {};     // job_id -> finished_at of the outcome already turned into a note
+    let cleanup = null, cleanupPending = false, cleanupSeen = null, cleanupNote = null;
+    let runnableOnly = false;
+    try { runnableOnly = localStorage.getItem("alembic.runnableOnly") === "1"; } catch (e) {}
+
+    function fmtDuration(sec) {
+      sec = Math.max(0, Math.round(sec || 0));
+      if (sec < 60) return sec + "s";
+      const m = Math.floor(sec / 60), s = sec % 60;
+      if (m < 60) return `${m}m ${s}s`;
+      const h = Math.floor(m / 60);
+      return `${h}h ${m % 60}m`;
+    }
+    // Compact "5m ago" / "2h ago" / "yesterday 14:20" / "Mar 3 14:20".
+    function fmtStarted(epoch) {
+      if (!epoch) return "—";
+      const d = new Date(epoch * 1000);
+      const diffSec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      if (diffSec < 60) return diffSec + "s ago";
+      if (diffSec < 3600) return Math.floor(diffSec / 60) + "m ago";
+      if (diffSec < 24 * 3600) return Math.floor(diffSec / 3600) + "h ago";
+      if (diffSec < 48 * 3600) return `yesterday ${hh}:${mm}`;
+      return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ` ${hh}:${mm}`;
+    }
+    function fmtStartedTitle(epoch) {
+      return epoch ? new Date(epoch * 1000).toLocaleString() : "";
+    }
+    function repoCell(url) {
+      if (!url) return `<span class="text-outline">—</span>`;
+      const short = url.replace(/^https?:\/\/(www\.)?/, "").replace(/\.git$/, "");
+      return `<a href="${attr(url)}" target="_blank" rel="noopener" class="font-mono text-[12px] text-primary hover:underline break-all">${esc(short)}</a>`;
+    }
+    // MCP endpoint + docker container status. `active` is true/false/null
+    // (null = docker unreachable, or build has no container yet).
+    function mcpCell(b) {
+      const url = b.mcp_url;
+      if (!url) return `<span class="text-outline">—</span>`;
+      const hostport = url.replace(/^https?:\/\//, "").replace(/\/mcp\/?$/, "");
+      let pill;
+      if (b.container_active === true) {
+        pill = `<span class="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wide text-secondary" title="container ${attr(b.container || '')} running"><span class="material-symbols-outlined text-[13px]">circle</span>active</span>`;
+      } else if (b.container_active === false) {
+        pill = `<span class="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wide text-error" title="container ${attr(b.container || '')} is not running"><span class="material-symbols-outlined text-[13px]">circle</span>stopped</span>`;
+      } else {
+        pill = `<span class="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-wide text-outline" title="docker status unknown"><span class="material-symbols-outlined text-[13px]">help</span>unknown</span>`;
+      }
+      return `<div class="flex flex-col gap-0.5"><a href="${attr(url)}" target="_blank" rel="noopener" class="font-mono text-[12px] text-primary hover:underline break-all">${esc(hostport)}</a>${pill}${catalogueNote(b)}</div>`;
+    }
+    // Why the server is missing from the shared tool catalogue (e.g. a localhost URL).
+    function catalogueNote(b) {
+      if (!b.registration_error) return "";
+      return `<span class="text-[10px] font-mono text-[#ffcf6b] cursor-help" title="${attr(b.registration_error)}">not in catalogue</span>`;
+    }
+
+    // ─── server controls ───────────────────────────────────────────
+    const BUSY_LABEL = { start: "starting", restart: "restarting", stop: "stopping", "delete-image": "deleting" };
+    const runningAction = b => (b.action && b.action.running) ? b.action.name : pending[b.job_id];
+    const spinner = size => `<span class="material-symbols-outlined text-[${size}px] spin">progress_activity</span>`;
+
+    function actionButton(action, icon, label, title, danger) {
+      const tone = danger
+        ? "text-error border-error/30 hover:bg-error/10"
+        : "text-on-surface-dim border-outline-variant/30 hover:border-primary/60 hover:text-primary";
+      return `<button data-action="${action}" title="${attr(title)}" class="inline-flex items-center gap-0.5 text-[11px] font-mono px-1.5 h-6 rounded-control border ${tone} transition"><span class="material-symbols-outlined text-[14px]">${icon}</span>${label}</button>`;
+    }
+    function serverCell(b) {
+      if (b.status !== "done") return `<span class="text-outline">—</span>`;
+      const jid = b.job_id;
+      const note = notes[jid]
+        ? `<div class="text-[10px] font-mono mt-1 ${notes[jid].ok ? "text-secondary" : "text-error"} cursor-help" title="${attr(notes[jid].detail || "")}">${esc(notes[jid].text)}</div>`
+        : "";
+      const shared = (b.image_shared_with || []).length
+        ? ` <span class="text-[#ffcf6b] cursor-help" title="${attr("the same image is also the image of " + b.image_shared_with.join(", "))}">shared</span>`
+        : "";
+      const size = b.image_size ? `<div class="text-[10px] font-mono text-outline mt-1">image ${esc(b.image_size)}${shared}</div>` : "";
+      const running = runningAction(b);
+      if (running)
+        return `<span class="inline-flex items-center gap-1 text-[11px] font-mono text-primary">${spinner(15)}${esc(BUSY_LABEL[running] || running)}…</span>`;
+      if (!b.runnable && !b.registered)
+        return `<span class="text-[11px] font-mono text-outline" title="${b.image_deleted ? "the image of this build was deleted" : "no image of this build on this host"}">${b.image_deleted ? "image deleted" : "no image"}</span>${note}`;
+      if (!b.controls) return size + note;
+      const buttons = [];
+      if (b.runnable && !b.container_active)
+        buttons.push(actionButton("start", "play_arrow", "Start", "Start the MCP server of this build and re-check catalogue registration"));
+      if (b.container_active)
+        buttons.push(actionButton("restart", "restart_alt", "Restart", "Restart the container and re-check catalogue registration"));
+      if (b.container_active || b.registered)
+        buttons.push(actionButton("stop", "stop", "Stop", "Stop the container and take the server out of the shared catalogue"));
+      if (b.runnable)
+        buttons.push(actionButton("delete-image", "delete", "", "Delete this build's image with its containers and tags", true));
+      return `<div class="flex items-center gap-1 flex-wrap">${buttons.join("")}</div>${size}${note}`;
+    }
+    function describe(action, r) {
+      if (!r.ok) return { ok: false, text: "failed: " + String(r.error || "error").split("\n")[0].slice(0, 80), detail: r.error || "" };
+      if (action === "delete-image") {
+        const also = (r.also_deleted_for || []).length;
+        return { ok: true, text: also ? `image deleted, also for ${also} other build(s)` : "image deleted",
+                 detail: "removed tags: " + (r.removed_tags || []).join(", ") +
+                         (also ? "; builds that lost it too: " + r.also_deleted_for.join(", ") : "") };
+      }
+      if (action === "stop") return { ok: !r.warning, text: r.warning ? "stopped, catalogue entry kept" : "stopped", detail: r.warning || r.registration_error || "" };
+      const reg = r.registered ? "registered" : "not in catalogue";
+      return { ok: true, text: `${action === "start" ? "started" : "restarted"}, ${reg}`, detail: r.registration_error || r.mcp_url || "" };
+    }
+    async function act(jid, action) {
+      const b = builds.find(x => x.job_id === jid);
+      if (!b || runningAction(b)) return;
+      let query = "";
+      if (action === "stop" && b.registered &&
+          !confirm(`Stop ${jid} and remove it from the shared tool catalogue?`)) return;
+      if (action === "delete-image") {
+        const shared = b.image_shared_with || [];
+        const sharedText = shared.length
+          ? `\n\nThe same image is also the image of ${shared.join(", ")}. Those builds lose it too.`
+          : "";
+        if (!confirm(
+            `Delete the image of ${jid}?\n\n` +
+            `Every container made from it is removed, and so is every tag on it, including ` +
+            `alembic-tool:<repo> when that tag points to this image. The build stays in the history.` +
+            sharedText)) return;
+        if (shared.length) query = "?include_shared=1";
+      }
+      pending[jid] = action;
+      delete notes[jid];
+      render();
+      try {
+        // Answers at once (202); the action itself runs on the server.
+        const r = await fetch(`${BASE}/api/builds/${encodeURIComponent(jid)}/${action}${query}`, { method: "POST" });
+        if (r.status !== 202) {
+          const body = await r.json().catch(() => ({}));
+          delete pending[jid];
+          notes[jid] = describe(action, { ok: false, error: body.error || body.detail || r.statusText });
+        }
+      } catch (e) {
+        delete pending[jid];
+        notes[jid] = { ok: false, text: "no response from the server; the list shows the current state", detail: e.message };
+      }
+      schedule(0);
+    }
+
+    // ─── clear non-runnable ────────────────────────────────────────
+    const clearable = () => builds.filter(b => b.status !== "running" && !b.runnable);
+    const cleanupRunning = () => cleanupPending || Boolean(cleanup && cleanup.running);
+
+    function describeCleanup(r) {
+      if (r.error) return { ok: false, text: "clearing failed", detail: r.error };
+      const kept = r.kept || [];
+      return { ok: !kept.length, text: `removed ${(r.removed || []).length}` + (kept.length ? `, kept ${kept.length}` : ""),
+               detail: kept.map(k => `${k.job_id}: ${k.reason}`).join("\n") };
+    }
+    function renderCleanup() {
+      const btn = document.getElementById("clear-btn");
+      const note = document.getElementById("clear-note");
+      const running = cleanupRunning();
+      const count = clearable().length;
+      const show = builds.some(b => b.controls) && (running || count > 0);
+      btn.classList.toggle("hidden", !show);
+      btn.classList.toggle("flex", show);
+      btn.disabled = running;
+      document.getElementById("clear-label").innerHTML = running
+        ? `${spinner(14)} clearing…` : `clear non-runnable (${count})`;
+      note.textContent = cleanupNote ? cleanupNote.text : "";
+      note.className = "text-[11px] font-mono cursor-help " + (cleanupNote && !cleanupNote.ok ? "text-error" : "text-secondary");
+      note.title = cleanupNote ? cleanupNote.detail || "" : "";
+    }
+    document.getElementById("clear-btn").addEventListener("click", async () => {
+      const ids = clearable().map(b => b.job_id);
+      if (!ids.length || cleanupRunning()) return;
+      const listed = ids.slice(0, 15).join("\n") + (ids.length > 15 ? `\n… and ${ids.length - 15} more` : "");
+      if (!confirm(
+          `Remove ${ids.length} non-runnable build(s) from the history?\n\n` +
+          `Their logs, metadata and artifacts are deleted, and so are their stopped containers. ` +
+          `Running builds and builds with an image of their own stay.\n\n${listed}`)) return;
+      cleanupPending = true;
+      cleanupNote = null;
+      renderCleanup();
+      try {
+        const r = await fetch(`${BASE}/api/builds/cleanup`, { method: "POST" });
+        if (r.status !== 202) {
+          const body = await r.json().catch(() => ({}));
+          cleanupPending = false;
+          cleanupNote = { ok: false, text: "failed: " + (body.error || body.detail || r.statusText) };
+        }
+      } catch (e) {
+        cleanupPending = false;
+        cleanupNote = { ok: false, text: "no response from the server", detail: e.message };
+      }
+      schedule(0);
+    });
+
+    // ─── table ─────────────────────────────────────────────────────
+    // Stage, and how many generated tools passed validation.
+    function stageCell(b) {
+      const c = b.tool_counts;
+      let chip = "";
+      if (c && c.tools_total) {
+        const passed = c.tools_passed || 0;
+        const tone = passed === c.tools_total ? "text-secondary border-secondary/40"
+          : passed ? "text-[#ffcf6b] border-[#ffcf6b]/40" : "text-error border-error/40";
+        const tip = `tools passed validation: ${passed} of ${c.tools_total}` +
+          (c.tools_perfect != null ? `, perfect ${c.tools_perfect}` : "") +
+          (c.tests_total ? `; tests ${c.tests_passed || 0}/${c.tests_total}` : "");
+        chip = `<div class="mt-1"><span class="inline-block font-mono text-[10px] px-1.5 py-0.5 rounded-full border ${tone} cursor-help" title="${attr(tip)}">${passed}/${c.tools_total} tools</span></div>`;
+      }
+      return `<span class="font-mono text-[11px] text-outline">${esc(b.stage || "")}</span>${chip}`;
+    }
+    function rowHtml(b) {
+      const s = STATUS[b.status] || { color: "#8c90a1", icon: "help", label: b.status || "?" };
+      return `<tr data-jid="${attr(b.job_id)}">
+        <td class="px-4 py-3">
+          <span class="inline-flex items-center gap-1.5 text-xs font-mono uppercase tracking-wide" style="color:${s.color}">
+            <span class="material-symbols-outlined text-[16px] ${b.status === 'running' ? 'spin' : ''}">${s.icon}</span>${s.label}
+          </span>
+        </td>
+        <td class="px-4 py-3 font-mono text-[12px] text-on-surface">${esc(b.job_id)}</td>
+        <td class="px-4 py-3">${repoCell(b.repo_url)}</td>
+        <td class="px-4 py-3">${mcpCell(b)}</td>
+        <td class="px-4 py-3">${serverCell(b)}</td>
+        <td class="px-4 py-3">${stageCell(b)}</td>
+        <td class="px-4 py-3 font-mono text-[11px] text-on-surface-dim" title="${attr(fmtStartedTitle(b.started_at))}">${fmtStarted(b.started_at)}</td>
+        <td class="px-4 py-3 font-mono text-[11px] text-on-surface-dim">${fmtDuration(b.elapsed_seconds)}</td>
+        <td class="px-4 py-3 text-right">
+          <span class="material-symbols-outlined text-outline text-[18px]">chevron_right</span>
+        </td>
+      </tr>`;
+    }
+    function render() {
+      const rows = document.getElementById("rows");
+      const empty = document.getElementById("empty");
+      const shown = runnableOnly ? builds.filter(b => b.runnable) : builds;
+      document.getElementById("count-chip").textContent =
+        runnableOnly ? `${shown.length} / ${builds.length}` : builds.length;
+      rows.innerHTML = shown.map(rowHtml).join("");
+      renderCleanup();
+      if (shown.length) { empty.classList.add("hidden"); return; }
+      empty.classList.remove("hidden");
+      empty.innerHTML = builds.length
+        ? "No runnable builds on this host."
+        : `No builds yet. <a href="${BASE}/" class="text-primary hover:underline">Start one →</a>`;
+    }
+    async function load() {
+      try {
+        const r = await fetch(`${BASE}/api/builds`, { cache: "no-store" });
+        if (r.ok) {
+          const body = await r.json();
+          builds = body.builds || [];
+          cleanup = body.cleanup || null;
+        }
+      } catch (e) {}
+      // Backend already sorts newest-first, but re-sort here defensively in
+      // case a merge from disk-only rows lands out of order.
+      builds.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+      for (const b of builds) {
+        const a = b.action;
+        if (!a) continue;
+        if (a.running) { delete pending[b.job_id]; continue; }
+        if (a.result && seen[b.job_id] !== a.finished_at) {
+          seen[b.job_id] = a.finished_at;
+          delete pending[b.job_id];
+          notes[b.job_id] = describe(a.name, a.result);
+        }
+      }
+      if (cleanup) {
+        if (cleanup.running) cleanupPending = false;
+        else if (cleanup.result && cleanupSeen !== cleanup.finished_at) {
+          cleanupSeen = cleanup.finished_at;
+          cleanupPending = false;
+          cleanupNote = describeCleanup(cleanup.result);
+        }
+      }
+      render();
+    }
+
+    // Poll fast while an action runs, slowly otherwise.
+    let timer = null;
+    function schedule(delay) {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        await load();
+        const busy = cleanupRunning() || builds.some(b => runningAction(b));
+        schedule(busy ? 1500 : 5000);
+      }, delay);
+    }
+
+    // One listener for the whole table: buttons act, links open, the rest of a row navigates.
+    document.getElementById("rows").addEventListener("click", e => {
+      const tr = e.target.closest("tr[data-jid]");
+      if (!tr) return;
+      const button = e.target.closest("button[data-action]");
+      if (button) { act(tr.dataset.jid, button.dataset.action); return; }
+      if (e.target.closest("a")) return;
+      location.href = `${BASE}/builds/${encodeURIComponent(tr.dataset.jid)}`;
+    });
+    const filterBox = document.getElementById("runnable-only");
+    filterBox.checked = runnableOnly;
+    filterBox.addEventListener("change", () => {
+      runnableOnly = filterBox.checked;
+      try { localStorage.setItem("alembic.runnableOnly", runnableOnly ? "1" : "0"); } catch (e) {}
+      render();
+    });
+    document.getElementById("refresh-btn").addEventListener("click", () => schedule(0));
+    schedule(0);
+  </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+.git
+.gitignore
+.github
+.idea
+.vscode
+
+# Pipeline work directory — never goes into the image
+.alembic
+.alembic/**
+
+# Python caches
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+
+# Virtual envs / build artefacts
+**/.venv
+**/venv
+**/dist
+**/build
+**/*.egg-info
+
+# Local secrets / large data
+**/.env
+**/.env.*
+!example.env
+!example_config.env
+*.log
+*.parquet
+*.h5
+*.ckpt
+*.pt
+*.pth
+*.npy
+*.npz
+docs
+tests

@@ -1,0 +1,170 @@
+from CoScientist.paper_analysis.research_taxonomy import (
+    format_domain_subdomain_mapping_for_prompt,
+)
+from .openalex import UNKNOWN_PUBLICATION_YEAR
+
+
+OPENALEX_TAXONOMY_FOR_PROMPT = format_domain_subdomain_mapping_for_prompt()
+
+
+summarisation_prompt = (
+    "You are a professional research analyst specializing in scientific indexing and semantic search. "
+    "Your task is to extract metadata and create a comprehensive summary from the provided scientific article (HTML). "
+    "This data will be used for RAG (Retrieval-Augmented Generation), so prioritize technical density and clarity.\n\n"
+    
+    "### FIELD GUIDELINES:\n"
+    "1. paper_title: Extract the full title. If missing, use 'NO TITLE'.\n"
+    f"2. publication_year: Extract as an integer. If missing, use {UNKNOWN_PUBLICATION_YEAR}.\n"
+    "3. authors: List as 'First Last, First Last'. If missing, use 'NO AUTHORS'.\n"
+    "4. source: Journal name, conference, or publisher. If missing, use 'UNDEFINED'.\n"
+    "5. paper_summary: This field MUST follow this internal structure:\n"
+    "   - KEYWORDS: [10-15 technical terms/entities for indexing]\n"
+    "   - BODY: A concise summary (max 250 words) covering: Objective (problem/hypothesis), "
+    "Methodology (approach/tools), Results (findings/significance), and Novelty (what is new).\n"
+    "   - APPENDICES: A list of all Tables (names), Images (captions/names), and Core Entities "
+    "(specific algorithms, chemicals, proteins, theorems, or variables mentioned).\n\n"
+    
+    "### CONSTRAINTS:\n"
+    "- Maintain a neutral, academic tone.\n"
+    "- Do not add any conversational filler or meta-comments about the task.\n"
+    "- Ensure all extracted data is strictly based on the provided text.\n\n"
+    "Article in HTML markup:\n"
+)
+
+metadata_extraction_prompt = (
+    "You are a professional research analyst specializing in scientific indexing and semantic search. "
+    "Your task is to extract metadata from the provided scientific article (HTML). This data will be used for RAG "
+    "(Retrieval-Augmented Generation), so prioritize accuracy and consistency.\n\n"
+
+    "### FIELD GUIDELINES:\n"
+    "1. paper_title: Extract the full title. If missing, use 'NO TITLE'.\n"
+    f"2. publication_year: Extract as an integer. If missing, use {UNKNOWN_PUBLICATION_YEAR}.\n"
+    "3. authors: List as 'First Last, First Last'. If missing, use 'NO AUTHORS'.\n"
+    "4. source: Journal name, conference, or publisher. If missing, use 'UNDEFINED'.\n"
+
+    "### CONSTRAINTS:\n"
+    "- Maintain a neutral, academic tone.\n"
+    "- Do not add any conversational filler or meta-comments about the task.\n"
+    "- Ensure all extracted data is strictly based on the provided text.\n"
+    "- Return only the fields required by the structured output schema.\n\n"
+    "Article in HTML markup:\n"
+)
+
+cls_prompt = (
+    "Act as a general domain scientific image classifier for a RAG knowledge retrieval system. Analyze the input image "
+    "from an academic paper. Determine if it conveys specific, non-trivial information related to the paper's "
+    "subject, method, or result.\n\n"
+    "**Meaningful scientific information (True):**\n"
+    "- Original data visualizations (charts, graphs, plots, heatmaps, maps).\n"
+    "- Diagrams of systems, processes, apparatus, or logical flows (e.g., computer architecture, flow charts, "
+    "experimental setups).\n"
+    "- Chemical/Biological/Physical structures.\n"
+    "- Data tables of any kind containing raw or processed numbers/labels.\n"
+    "- Microscopic, macroscopic, medical, or field observation imaging (photos of samples, organisms, archaeological "
+    "sites, etc.).\n"
+    "- Original mathematical or statistical formulas.\n"
+    "- Documented historical objects, handwritten notes, or specialized tools that are subjects of research.\n\n"
+    "**Non-meaningful information (False):**\n"
+    "- Journal, institution, or publisher Logos.\n"
+    "- Standard decorative icons (print, social media, download, generic UI elements).\n"
+    "- Copyright watermarks or navigation bars.\n"
+    "- Banner advertisements.\n"
+    "- Authors photos (unless the photo itself is the object of historical research).\n\n"
+    "**Classification Standard:**\n"
+    "An image is 'True' if it contains **any** unique visual or textual content related to the paper's research that "
+    "is worth indexing for future retrieval, beyond standardized decorative or navigational elements. If the image is "
+    "extremely low resolution or very small, only classify as 'True' if its content is undeniably unique scientific "
+    "data.\n\n"
+    "**Output Rules:**\n"
+    "1. Return *only* a single-word verdict: 'True' for meaningful images, 'False' for non-meaningful.\n"
+    "2. Prioritize 'True' if the image contains any research-related content, even if it is non-traditional (e.g., "
+    "historical photo).\n"
+    "3. Return 'False' *only* for non-informative logos, ads, or standard UI icons.\n\n"
+    "Classify this image:"
+)
+
+table_extraction_prompt = (
+    "You are a general scientific document analysis expert in a RAG knowledge retrieval pipeline. Analyze the provided "
+    "image to find valid, structure-convertible scientific data tables. Use precise technical terminology for "
+    "non-conversion reasons.\n\n"
+    "### STRICT OPERATIONAL STEPS:\n\n"
+    "**Step 1: Determine Table Suitability.**\n"
+    "You must classify the image into ONE of the following precise categories. Do *not* extract content yet.\n\n"
+    "A. **Invalid/Non-convertible structures:**\n"
+    "- Diagrammatized/Visual tables: The 'table' is primarily a schematic or diagram *formatted* as a grid, "
+    "containing drawings of objects (cells, circuits, apparatus, flow arrows) instead of purely text/numbers. (For "
+    "example, a process diagram with visual cells).\n"
+    "- Complex notation: A single table cell contains multiple chemical structures, equations, or non-unicode symbols "
+    "that cannot be easily converted to a clean string.\n"
+    "- Partial/Obscured table: Critical parts of the table (headers, large blocks of data) are missing or cut off.\n"
+    "- Multiple tables or non-table content: The image contains two or more distinct tables, or a table mixed with "
+    "separate paragraphs of text that are not captions.\n\n"
+    "B. **Single Valid data table:** Exactly one complete, self-contained table consisting *entirely* of rows/columns "
+    "of text and numbers, suitable for direct text indexing. All headers and data are readable as characters.\n\n"
+    "**Step 2: Generate Final Output based on Step 1.**\n"
+    "- If the image matches any description in category A, return EXACTLY this case-sensitive string: 'No table'\n"
+    "- If and *only if* the image matches category B, extract the data and convert it *only* to clean HTML code:"
+    "<table>...</table>\n\n"
+    "### FORMATTING RULES:\n\n"
+    "- The output MUST contain ONLY 'No table' or ONLY <table>...</table> code.\n"
+    "- Absolutely NO conversational text, explanations, markdown formatting (like ```html), or text outside the HTML "
+    "tags.\n"
+    "- Ignore all text outside the table borders (captions, surrounding paragraphs).\n"
+    "- Omit confidence scores.\n\n"
+    "CRITICAL: If the image is a diagram arranged in a grid (containing icons, drawings, or process flow arrows), it "
+    "is NOT a convertible data table. Output 'No table'.\n\n"
+    "Now process the image:"
+)
+
+image_captioning_prompt = (
+    "You are a technical vision assistant. Describe this scientific figure/image for a "
+    "knowledge retrieval system. Your description must include:\n"
+    "1. Type of Image: (e.g., flow chart, scatter plot, microscopic image, architectural diagram).\n"
+    "2. Key Elements: Identify labels, axes (if applicable), variables, and any distinct symbols.\n"
+    "3. Contextual Essence: Briefly explain what the image demonstrates or what trend it reveals.\n"
+    "Constraints:\n"
+    "- Be extremely objective. Describe only what is visible.\n"
+    "- Use precise technical terminology relevant to the context of the paper.\n"
+    "- Avoid vague phrases like 'this is a picture of...'. Start directly with the description.\n"
+    "- Length: 2-4 information-dense sentences."
+)
+
+classification_prompt = (
+    "You are an expert bibliometric system tasked with classifying scientific publications. Your goal is to determine "
+    "the SINGLE most relevant Field and its corresponding Domain strictly according to the OpenAlex taxonomy.\n\n"
+    "Available OpenAlex Taxonomy (4 Domains and 26 Fields):\n"
+    "1. Life Sciences: Agricultural and Biological Sciences; Biochemistry, Genetics and Molecular Biology; Immunology "
+    "and Microbiology; Neuroscience; Pharmacology, Toxicology and Pharmaceutics.\n"
+    "2. Social Sciences: Arts and Humanities; Business, Management and Accounting; Decision Sciences; Economics, "
+    "Econometrics and Finance; Psychology; Social Sciences.\n"
+    "3. Physical Sciences: Chemical Engineering; Chemistry; Computer Science; Earth and Planetary Sciences; Energy; "
+    "Engineering; Environmental Science; Materials Science; Mathematics; Physics and Astronomy.\n"
+    "4. Health Sciences: Dentistry; Health Professions; Medicine; Nursing; Veterinary.\n\n"
+    "Article Input Data:\n"
+    "- Title\n"
+    "- Paper summary\n\n"
+    "Classification Instructions:\n"
+    "1. Analyze the provided metadata to identify key subject indicators and research methodology.\n"
+    "2. If the article is interdisciplinary, select the SINGLE dominant field that most accurately reflects the main "
+    "contribution or focus of the work.\n"
+    "3. The domain and field names in your response must strictly (character-by-character) match the English names "
+    "from the OpenAlex taxonomy list provided above.\n"
+    "4. Assign a confidence score (confidence_score) from 0.00 to 1.00, reflecting the degree of unambiguous "
+    "correspondence of the article to the selected field.\n"
+    "5. Provide the justification (1-2 sentences), referencing specific terms from the abstract or "
+    "title.\n\nInput Data:\nTitle: {TITLE}\n\nPaper summary:{PAPER_SUMMARY}"
+)
+
+classification_from_content_prompt = (
+    "You are an expert bibliometric system tasked with classifying scientific publications. Your goal is to determine "
+    "the SINGLE most relevant Field and its corresponding Domain strictly according to the OpenAlex taxonomy.\n\n"
+    f"Available OpenAlex Taxonomy:\n{OPENALEX_TAXONOMY_FOR_PROMPT}\n\n"
+    "Classification Instructions:\n"
+    "1. Analyze the provided title and article content to identify key subject indicators and research methodology.\n"
+    "2. If the article is interdisciplinary, select the SINGLE dominant field that most accurately reflects the main "
+    "contribution or focus of the work.\n"
+    "3. Domain and field names must exactly match the English names from the taxonomy above.\n"
+    "4. Assign a confidence_score from 0.00 to 1.00.\n"
+    "5. Provide a brief justification based on specific terms from the title or article content.\n\n"
+    "Title: {TITLE}\n\nArticle content:\n{ARTICLE_CONTENT}"
+)

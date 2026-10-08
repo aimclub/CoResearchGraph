@@ -1,0 +1,151 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CoScientist — MICROFLUIDICS profile.
+#
+# A reduced CoScientist deployment for the microfluidics case (ПАВ / target
+# molecules synthesised on a flow / microfluidic reactor). Compared to the
+# default system.yaml everything is stripped except:
+#
+#   * TZAgent            — ported from the VibePAV project: turns the free-form
+#                          customer request into a structured ТЗ and a set of
+#                          literature queries (LIT-01…) BEFORE any planning
+#   * PlannerAgent       — builds the roadmap FROM the structured ТЗ
+#   * OrchestratorAgent  — executes the roadmap
+#   * ResearchAgent      — literature / web analysis (the only executor)
+#
+# Root flow (every request in this deployment IS the microfluidics case):
+#
+#   InitAgent (sequential)
+#     ├─ TZAgent (sequential)
+#     │    ├─ TZSpecAgent      -> state["structured_tz"]         (ТЗ table)
+#     │    └─ TZQueryGenAgent  -> state["tz_literature_queries"] (LIT-01…)
+#     ├─ PlannerAgent          -> create_plan(…), one task per LIT query
+#     └─ OrchestratorAgent     -> delegates each LIT task to ResearchAgent
+#
+# Run a separate CoScientist instance with this profile:
+#
+#   COSCIENTIST_CONFIG=microfluidics python CoScientist/web/server.py
+#   # or: python scripts/run_microfluidics_web.py
+#
+# Validate with:  COSCIENTIST_CONFIG=microfluidics python -m CoScientist.assembly
+# ─────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  model: main
+
+agents:
+  # ── Root ───────────────────────────────────────────────────────────────────
+  InitAgent:
+    class: sequential
+    root: true
+    children:
+      - TZAgent
+      - PlannerAgent
+      - OrchestratorAgent
+    description: CoScientist microfluidics pipeline — ТЗ, roadmap, literature analysis.
+
+  # ── ТЗ stage (ported from VibePAV) ─────────────────────────────────────────
+  TZAgent:
+    class: sequential
+    description: >-
+      составляет структурированное техническое задание (ТЗ) из свободного
+      запроса заказчика и выводит из него точечные поисковые задачи для
+      анализа литературы (кейс микрофлюидики).
+    children: [TZSpecAgent, TZQueryGenAgent]
+
+# Both ТЗ stages are session agents with a human review loop (hitl: true):
+  # the agent proposes its artifact (the ТЗ table / the literature queries),
+  # the human approves or sends corrections, and the agent rewrites until
+  # approved — the CoScientist counterpart of VibePAV's operator questionnaire.
+  # For HEADLESS runs (tests, benchmarks) set HITL__ENABLED=false — the review
+  # loops (and ResearchAgent approval tools) then pass through automatically.
+  TZSpecAgent:
+    # tz_session = SessionAgent whose review loop shows the human the RENDERED
+    # ТЗ document (reference format of Пример_уточненного_структурированного_ТЗ)
+    # instead of the raw JSON the machine pipeline consumes. Once accepted, the
+    # agent PUBLISHES the document: tz_documents/TZ_<timestamp>.md on disk,
+    # state["structured_tz_document"], and a chat message with the full text
+    # (see TZSessionAgent._post_final_events) before planning starts.
+    class: custom:tz_session
+    description: >-
+      агент постановки ТЗ — превращает свободный запрос заказчика в
+      структурированный документ ТЗ (16 блоков-таблиц: тип задачи, целевой
+      продукт, свойства, критерии качества, ограничения, оборудование,
+      приоритеты, форма результата) со статусом каждого поля.
+    prompt: microfluidics_tz
+    output_key: structured_tz
+    output_schema: structured_tz
+    hitl: true
+    callbacks:
+      # Not every provider honours response_format: strip prose/fences around
+      # the JSON before ADK's strict output_schema validation.
+      after_model: [sanitize_json_output]
+
+  TZQueryGenAgent:
+    class: custom:session
+    description: >-
+      генератор поисковых задач — из структурированного ТЗ формирует 4–6
+      конкретных литературных запросов (LIT-01…) с англоязычным поисковым
+      запросом и списком данных для извлечения.
+    prompt: microfluidics_query_gen
+    output_key: tz_literature_queries
+    output_schema: tz_literature_queries
+    hitl: true
+    callbacks:
+      after_model: [sanitize_json_output]
+      # Save the ТЗ + literature queries as shareable Markdown & HTML files.
+      after_agent: [export_tz_and_queries]
+
+  # ── Planning ───────────────────────────────────────────────────────────────
+  PlannerAgent:
+    class: custom:session
+    description: >-
+      builds the roadmap FROM the structured ТЗ: one literature task per
+      LIT-xx query, registered via create_plan.
+    prompt: microfluidics_planner
+    tools: [create_plan_tool]
+    output_key: planner_roadmap
+    hitl: true
+
+  # ── Execution ──────────────────────────────────────────────────────────────
+  OrchestratorAgent:
+    class: llm
+    include_contents: none
+    description: >-
+      Microfluidics CoScientist Orchestrator — executes the roadmap by
+      delegating literature tasks to ResearchAgent and composes the final
+      report against the ТЗ.
+    prompt: microfluidics_orchestrator
+    tools: [task_tracker]
+    subordinates:
+      - ResearchAgent
+    callbacks:
+      before_agent: [before_get_task]
+
+  ResearchAgent:
+    class: llm
+    description: >-
+      retrieves scientific knowledge and searches/downloads literature
+      (web, RAG, paper search). Open-ended search only.
+    routing: >-
+      for every literature task (LIT-xx) from the plan and any open-ended
+      knowledge question. Pass the task description with the English search
+      query (query_en) VERBATIM and the list of data to extract. If it returns
+      no/empty/insufficient results, escalate once by reformulating into
+      "find and download papers about <expanded topic>".
+    planning: |-
+      Use this for EVERY literature query derived from the ТЗ (one task per
+      LIT-xx query). It searches scientific literature and the web and
+      extracts the requested data (classes, IFT/CMC, synthesis routes,
+      limitations, analogues).
+    prompt: research
+    tools: [websearch, paper_analysis, papers_search, task_tracker]
+    output_key: search_results
+    # What each LIT-xx task actually found is the deliverable — post it to the
+    # chat instead of leaving it inside the orchestrator's function_response.
+    report_output: true
+    callbacks:
+      before_agent: [before_get_task]
+      before_model: [inject_uploaded_papers]
+      before_tool: [WebSearchLimiter]
+      after_tool: [log_research_tool_calls]
+    hitl: true

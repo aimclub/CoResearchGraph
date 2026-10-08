@@ -1,0 +1,33 @@
+version: "3.8"
+
+networks:
+  net:
+    driver: bridge
+
+services:
+  chroma-server:
+    image: chromadb/chroma:latest
+    environment:
+      - IS_PERSISTENT=TRUE
+    volumes:
+      - /var/essdata/llm/chemcoscientist/chromadb/:/data/
+    ports:
+      - 9941:8000
+    networks:
+      - net
+
+  embedding-service:
+    build:
+      context: ./embedding_service
+    ports:
+      - "5002:5002"
+    networks:
+      - net
+
+  reranker-service:
+    build:
+      context: ./reranker_service
+    ports:
+      - "5001:5001"
+    networks:
+      - net

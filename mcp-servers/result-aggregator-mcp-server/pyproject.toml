@@ -1,0 +1,23 @@
+[project]
+name = "result-aggregator-mcp-server"
+version = "0.1.0"
+description = "MCP server for result aggregation and formatting (CSV to Markdown, S3 image local download/copy)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.14.5",
+    "pydantic-settings>=2.0",
+    "requests>=2.28",
+    "python-dotenv>=1.0",
+    "pandas>=2.0",
+]
+
+[project.scripts]
+result-aggregator-mcp-server = "server.aggregator_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server"]
